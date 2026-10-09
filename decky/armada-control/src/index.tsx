@@ -11,9 +11,11 @@ import {
   sweepInstalledGames,
 } from "./lib/steamCompat";
 import { factoryDefaultTransition } from "./lib/protonPolicy";
+import { installY700FrameRateChoices } from "./lib/y700FrameRateChoices";
 
 export default definePlugin(() => {
   let unregisterDownloadWatcher = () => {};
+  let disposeFrameRateChoices = () => {};
   const persistHandledGames = () => {
     saveCompatApplied(handledGameAppids()).catch(() => {});
   };
@@ -25,6 +27,16 @@ export default definePlugin(() => {
     .then(async ([config, games, handled]) => {
       await (window as any).App.WaitForServicesInitialized();
       if (cancelled) return;
+      try {
+        disposeFrameRateChoices = installY700FrameRateChoices(config.deviceId || "");
+        if (cancelled) {
+          disposeFrameRateChoices();
+          disposeFrameRateChoices = () => {};
+          return;
+        }
+      } catch (error) {
+        console.warn("[armada-control] Y700 frame-rate filter failed to install", error);
+      }
       const explicitTool = config.tweaks?.global?.windowsCompatTool;
       configureCompatPolicy(
         explicitTool,
@@ -73,6 +85,7 @@ export default definePlugin(() => {
     onDismount() {
       cancelled = true;
       unregisterDownloadWatcher();
+      disposeFrameRateChoices();
     },
     icon: (
       <svg

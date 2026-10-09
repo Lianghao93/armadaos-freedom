@@ -42,6 +42,7 @@ def build_config(include_games=True):
         "envPresets": load_env_presets(),
         "perf": perf_info(),
         "cpuDeviceClass": env.get("ARMADA_SOC_CLASS", ""),
+        "deviceId": env.get("ARMADA_DEVICE_ID", ""),
         "rgbSupported": rgb_supported(),
         "protonDefaults": [
             default.strip()
