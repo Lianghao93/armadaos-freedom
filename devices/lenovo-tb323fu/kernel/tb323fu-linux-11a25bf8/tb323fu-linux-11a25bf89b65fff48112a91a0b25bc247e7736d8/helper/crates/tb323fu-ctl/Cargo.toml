@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Joonhoe Kim
+[package]
+name = "tb323fu-ctl"
+description = "Command-line client for tb323fu-helperd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zbus = { workspace = true, features = ["blocking-api"] }
+serde_json.workspace = true
+serde.workspace = true

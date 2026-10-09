@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * TB323FU ("baldur"): the board tree plus the display and everything else.
+ * MDSS takes the bootloader's splash buffer away from the base tree's
+ * simple-framebuffer.
+ */
+
+#include "kaanapali-lenovo-baldur.dts"
+/* the panel's reset line is GPIO 10 of pmh0110 F (SPMI0 SID 5) */
+#include "pmh0110-kaanapali.dtsi"
+#include "baldur-display.dtsi"
+#include "baldur-gpu.dtsi"
+#include "pmh0104-kaanapali.dtsi"
+#include "baldur-wifi.dtsi"
+#include "baldur-backlight.dtsi"
+#include "baldur-touch.dtsi"
+#include "baldur-audio.dtsi"
+#include "baldur-cdsp.dtsi"
+#include "pmh0101.dtsi"
+#include "baldur-haptics-flash.dtsi"
+#include "baldur-adc.dtsi"
+#include "baldur-skin-thermal.dtsi"
+#include "baldur-camera.dtsi"
+#include "baldur-ledring.dtsi"
+#include "baldur-stats.dtsi"
+#include "baldur-video.dtsi"
+#include "baldur-dp.dtsi"

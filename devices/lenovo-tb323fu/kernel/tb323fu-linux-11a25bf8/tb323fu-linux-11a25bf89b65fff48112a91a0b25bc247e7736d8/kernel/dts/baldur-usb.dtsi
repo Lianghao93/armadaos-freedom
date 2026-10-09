@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * TB323FU ("baldur"): USB-C. The eUSB2 repeater is on pmih0108 at SPMI1
+ * SID 7, as on the OnePlus 15 (kaanapali-oneplus-infiniti-common.dts).
+ * Rails from this device's vendor tree: repeater vdd18 pmh0101 l15 (1.8 V),
+ * vdd3 pmh0101 l5 (3.100-3.148 V); PHY vdd pmh0110 F l4 (0.880-0.912 V),
+ * vdda12 pmh0110 D l1 (1.2 V).
+ */
+
+&pmih0108_e1_eusb2_repeater {
+	vdd18-supply = <&vreg_l15b_1p8>;
+	vdd3-supply = <&vreg_l5b_3p1>;
+
+	status = "okay";
+};
+
+&usb_hsphy {
+	vdd-supply = <&vreg_l4f_0p8>;
+	vdda12-supply = <&vreg_l1d_1p2>;
+
+	phys = <&pmih0108_e1_eusb2_repeater>;
+
+	status = "okay";
+};
+
+&usb {
+	/* data role from ucsi (connector@0); peripheral until then */
+	dr_mode = "otg";
+	usb-role-switch;
+	role-switch-default-mode = "peripheral";
+
+	/delete-property/ snps,usb3_lpm_capable;
+
+	status = "okay";
+};
+
+/*
+ * SuperSpeed: the QMP USB3-DP combo PHY as on the MTP (vendor ssphy:
+ * vdd pmh0110 F l4, core pmh0110 D l1); its orientation comes from the
+ * pmic-glink connector (ucsi), its SS lanes go to the dwc3 (kaanapali.dtsi).
+ */
+&usb_dp_qmpphy {
+	vdda-phy-supply = <&vreg_l1d_1p2>;
+	vdda-pll-supply = <&vreg_l4f_0p8>;
+
+	status = "okay";
+};
+
+&usb_dp_qmpphy_out {
+	remote-endpoint = <&pmic_glink_ss_in>;
+};

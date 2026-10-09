@@ -1,3 +1,5 @@
+> 本仓库是 Y700 Gen 5 / TB323FU 的私有平板适配维护副本，仓库名为 armadaos-y705。
+> 当前成果、待解决问题与构建状态见 [设备维护入口](devices/lenovo-tb323fu/README.md)。下面保留 ArmadaOS 上游说明。
 <p align="center">
   <a href="https://armadaos.dev/">
     <picture>

@@ -1,0 +1,293 @@
+/* SPDX-License-Identifier: MIT */
+#include <qcom_dt.h>
+#include <Library/cr_splash.h>
+#include <string.h>
+#if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
+#include <stdio.h>
+static struct kshim_splash_trace g_kshim_splash_trace;
+const struct kshim_splash_trace *kshim_splash_trace_get(void)
+{
+    return &g_kshim_splash_trace;
+}
+static struct kshim_splash_snapshot g_kshim_splash_snapshot;
+
+const struct kshim_splash_snapshot *kshim_splash_snapshot_get(void)
+{
+    return &g_kshim_splash_snapshot;
+}
+
+void kshim_splash_snapshot_capture(const struct CrSplashResources *r, const struct CrIo *io)
+{
+    memset(&g_kshim_splash_snapshot, 0, sizeof(g_kshim_splash_snapshot));
+    if (!r || !io || !io->read32) return;
+    if (!r->lm_source_select) return;
+    if (r->ctl_count != 6 || r->mixer_count != 8 ||
+        r->pipe_count != 10 || r->stage_count != 11) return;
+    if (r->mixer_id[0] != 0 || r->mixer_id[1] != 1) return;
+    if (r->pipe_id[0] != 0 || r->pipe_id[1] != 1) return;
+    uint64_t base = r->base;
+    if (base == 0) return;
+    if ((uintptr_t)base != base) return;
+    uint64_t size = r->size;
+    if (size > UINTPTR_MAX ||
+        base > UINTPTR_MAX - size ||
+        (base & (uintptr_t)3u) != 0u) {
+        return;
+    }
+
+    uint64_t tmp[63];
+    unsigned n = 0;
+    {
+        uint64_t c = r->ctl[0];
+        tmp[n++] = c + 0xf4u;
+        tmp[n++] = c + 0x12cu;
+        tmp[n++] = c + 0x130u;
+    }
+    for (unsigned i = 0; i < 2; ++i) {
+        uint64_t lm = r->mixer[i];
+        tmp[n++] = lm + 0x00u;
+        tmp[n++] = lm + 0x04u;
+        tmp[n++] = lm + 0x14u;
+        for (unsigned s = 0; s < 11; ++s)
+            tmp[n++] = lm + (uint64_t)r->stage[s] + 4u;
+    }
+    for (unsigned i = 0; i < 2; ++i) {
+        uint64_t p = (uint64_t)r->pipe[i] + 0x1000u;
+        static const uint32_t rect0_offs[16] = {
+            0x0u, 0x4u, 0x8u, 0x10u, 0x14u, 0x18u, 0x1cu, 0x20u,
+            0x30u, 0x34u, 0x38u, 0x3cu, 0x4cu, 0x5cu, 0x64u, 0x74u
+        };
+        for (unsigned k = 0; k < 16; ++k) tmp[n++] = p + rect0_offs[k];
+    }
+    if (n != 63) return;
+
+    uint32_t offs[63];
+    for (unsigned i = 0; i < 63; ++i) {
+        uint64_t v = tmp[i];
+        uint64_t addr = base + v;
+        if (addr < base) return;
+        uint64_t rel = addr - base;
+        if ((rel & 0x3u)) return;
+        if (rel > 0xffffffffu) return;
+        if (rel + 4u > size) return;
+        if ((uintptr_t)(base + rel) != base + rel) return;
+        offs[i] = (uint32_t)rel;
+    }
+
+    for (unsigned i = 0; i < 3; ++i) {
+        uint32_t w = io->read32(io->context, (uintptr_t)(base + (uint64_t)offs[i]));
+        g_kshim_splash_snapshot.words[i] = w;
+        uint32_t want = (i == 0u) ? 6u : (i == 1u) ? 0x30000u : 3u;
+        if (w != want) return;
+    }
+    for (unsigned i = 3; i < 63; ++i)
+        g_kshim_splash_snapshot.words[i] =
+            io->read32(io->context, (uintptr_t)(base + (uint64_t)offs[i]));
+    g_kshim_splash_snapshot.valid = true;
+
+    for (unsigned i = 0; i < 3; ++i) {
+        uint32_t w = io->read32(io->context, (uintptr_t)(base + (uint64_t)offs[i]));
+        uint32_t want = (i == 0u) ? 6u : (i == 1u) ? 0x30000u : 3u;
+        if (w != want) {
+            g_kshim_splash_snapshot.stable = false;
+            return;
+        }
+    }
+    bool stable = true;
+    for (unsigned i = 3; i < 63; ++i) {
+        uint32_t w = io->read32(io->context, (uintptr_t)(base + (uint64_t)offs[i]));
+        if (w != g_kshim_splash_snapshot.words[i]) stable = false;
+    }
+    g_kshim_splash_snapshot.stable = stable;
+}
+
+int kshim_splash_snapshot_report(const struct kshim_splash_snapshot *s,
+                                 unsigned slot, char *out, size_t capacity)
+{
+    if (!s || !out || capacity < 81) return -1;
+    if (!s->valid) return -1;
+    if (slot > 7) return -1;
+    int n = snprintf(out, capacity, "r18:%u:%u:", slot, s->stable ? 1u : 0u);
+    if (n != 8) return -1;
+    for (unsigned i = 0; i < 8; ++i) {
+        unsigned idx = slot * 8u + i;
+        uint32_t w = idx < 63u ? s->words[idx] : 0u;
+        int m = snprintf(out + n, capacity - (size_t)n, "%08x", (unsigned)w);
+        if (m != 8) return -1;
+        n += m;
+    }
+    if ((size_t)n != 72) return -1;
+    return n;
+}
+
+struct kshim_splash_trace_ctx {
+    const struct CrIo *io;
+    uintptr_t base;
+};
+static uint32_t trace_read32(void *context, uintptr_t address)
+{
+    struct kshim_splash_trace_ctx *ctx = context;
+    struct kshim_splash_trace *t = &g_kshim_splash_trace;
+    uint32_t value = ctx->io->read32(ctx->io->context, address);
+    if (t->count < 15) t->first[t->count] = value;
+    t->values[t->count % 5] = value;
+    t->last_offset = (uint32_t)(address - ctx->base);
+    ++t->count;
+    return value;
+}
+int kshim_splash_trace_report(const struct kshim_splash_trace *t, int status, char *out, size_t capacity)
+{
+    if (!t || !out || capacity < 81) return -1;
+    int n;
+    if (status == -95 && t->count == 15 && t->last_offset == 0x104224u) {
+        int wide = -1;
+        for (int i = 3; i < 15; ++i) {
+            if (t->first[i] >> 16) {
+                wide = i;
+                break;
+            }
+        }
+        if (wide >= 0) {
+            n = snprintf(out, capacity, "r14:wide:i=%u:v=%x",
+                         (unsigned)wide, (unsigned)t->first[wide]);
+        } else {
+            n = snprintf(out, capacity,
+                "r14:%08x%08x%08x%04x%04x%04x%04x%04x%04x%04x%04x%04x%04x%04x%04x",
+                (unsigned)t->first[0], (unsigned)t->first[1], (unsigned)t->first[2],
+                (unsigned)t->first[3], (unsigned)t->first[4], (unsigned)t->first[5],
+                (unsigned)t->first[6], (unsigned)t->first[7], (unsigned)t->first[8],
+                (unsigned)t->first[9], (unsigned)t->first[10], (unsigned)t->first[11],
+                (unsigned)t->first[12], (unsigned)t->first[13], (unsigned)t->first[14]);
+        }
+    } else {
+        n = snprintf(out, capacity, "r14:s=%d:n=%u:o=%x:v=%x,%x,%x,%x,%x",
+                     status, (unsigned)t->count, (unsigned)t->last_offset,
+                     (unsigned)t->values[(t->count + 0) % 5],
+                     (unsigned)t->values[(t->count + 1) % 5],
+                     (unsigned)t->values[(t->count + 2) % 5],
+                     (unsigned)t->values[(t->count + 3) % 5],
+                     (unsigned)t->values[(t->count + 4) % 5]);
+    }
+    if (n >= 0 && (size_t)n < capacity && n <= 80) return n;
+    return -1;
+}
+#endif
+static int offsets(const void *f, int n, const char *name, uint32_t *out, unsigned capacity)
+{
+    int len;
+    const fdt32_t *p = fdt_getprop(f, n, name, &len);
+    if (!p || len <= 0 || len % 4 || (unsigned)len / 4 > capacity) return -1;
+    for (int i = 0; i < len / 4; ++i) out[i] = fdt32_to_cpu(p[i]);
+    return len / 4;
+}
+int kshim_dt_splash(const void *f, const struct CrIo *io,
+                    kshim_framebuffer_config_t *fb, kshim_mmu_region_t *mmio)
+{
+#if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
+    memset(&g_kshim_splash_trace, 0, sizeof(g_kshim_splash_trace));
+    memset(&g_kshim_splash_snapshot, 0, sizeof(g_kshim_splash_snapshot));
+#endif
+    if (!fb || !mmio) return -1;
+    memset(fb, 0, sizeof(*fb)); memset(mmio, 0, sizeof(*mmio));
+    int reserved = fdt_path_offset(f, "/reserved-memory"), node, found = -1;
+    struct dt_range memory = {0};
+    if (reserved < 0 || !dt_available(f, reserved)) return -1;
+    fdt_for_each_subnode(node, f, reserved) {
+        const char *label = dt_string(f, node, "label");
+        const char *name = fdt_get_name(f, node, NULL);
+        if (!dt_available(f, node) ||
+            !((label && !strcmp(label, "cont_splash_region")) ||
+              (name && !strncmp(name, "cont_splash_region@", 19)))) continue;
+        if (found >= 0 || dt_reg(f, node, 0, &memory)) return -1;
+        found = node;
+    }
+    if (found < 0) return -1;
+    int sde = -1;
+    for (node = fdt_node_offset_by_compatible(f, -1, "qcom,sde-kms"); node >= 0;
+         node = fdt_node_offset_by_compatible(f, node, "qcom,sde-kms")) {
+        if (!dt_available(f, node)) continue;
+        if (sde >= 0) return -1;
+        sde = node;
+    }
+    struct dt_range reg;
+    if (sde < 0 || dt_reg_named(f, sde, "mdp_phys", &reg)) return -1;
+    struct CrSplashResources resources = {.base = reg.base, .size = reg.size,
+        .reserved_base = memory.base, .reserved_size = memory.size};
+    uint32_t version;
+    bool canoe = dt_u32(f, sde, "qcom,sde-hw-version", &version) == 0 && version == 0xd0000000;
+    resources.lm_source_select = canoe;
+    resources.sspp_rec_separated = canoe;
+    int pipes = offsets(f, sde, "qcom,sde-sspp-off", resources.pipe, canoe ? 10 : 8);
+    int ctls = offsets(f, sde, "qcom,sde-ctl-off", resources.ctl, 8);
+    int count;
+    if (canoe) {
+        uint32_t raw[12];
+        int raw_n = offsets(f, sde, "qcom,sde-mixer-off", raw, 12);
+        if (raw_n < 1) return -1;
+        count = 0;
+        for (int i = 0; i < raw_n; ++i) {
+            if (raw[i] == 0 || raw[i] == 0xf0f) continue;
+            if (i >= 8) return -1;
+            /* Keep the DT slot as the hardware LM index: dummy slots (0 / 0xf0f)
+               still consume positions, so a compacted index would mis-address LMs. */
+            resources.mixer_id[count] = (uint8_t)i;
+            resources.mixer[count] = raw[i];
+            ++count;
+        }
+        if (count < 1) return -1;
+    } else {
+        count = offsets(f, sde, "qcom,sde-mixer-off", resources.mixer, 6);
+    }
+    if (pipes < 1 || ctls < 1 || count < 1) return -1;
+    resources.pipe_count = pipes; resources.ctl_count = ctls; resources.mixer_count = count;
+    if (canoe) {
+        int stages = offsets(f, sde, "qcom,sde-mixer-blend-op-off", resources.stage, 11);
+        uint32_t blendstages;
+        if (stages < 1 || dt_u32(f, sde, "qcom,sde-mixer-blendstages", &blendstages) ||
+            blendstages != (uint32_t)stages) return -1;
+        resources.stage_count = stages;
+    }
+    unsigned vig = 0, dma = 0, dma_max = canoe ? 6 : 4;
+    for (int i = 0; i < pipes; ++i) {
+        int len;
+        const char *type = fdt_stringlist_get(f, sde, "qcom,sde-sspp-type", i, &len);
+        if (!type) return -1;
+        if (len == 3 && !memcmp(type, "vig", 3) && vig < 4) resources.pipe_id[i] = vig++;
+        else if (len == 3 && !memcmp(type, "dma", 3) && dma < dma_max) resources.pipe_id[i] = 4 + dma++;
+        else return -1;
+    }
+    struct CrSplash scanout;
+#if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
+    int status;
+    if (io && io->read32) {
+        struct kshim_splash_trace_ctx ctx = {.io = io, .base = (uintptr_t)resources.base};
+        const struct CrIo proxy = {.context = &ctx, .read32 = trace_read32};
+        status = CrSplashRead(&resources, &proxy, &scanout);
+    } else {
+        status = CrSplashRead(&resources, io, &scanout);
+    }
+#else
+    int status = CrSplashRead(&resources, io, &scanout);
+#endif
+#if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
+    if (io && io->read32 && status == -95 &&
+        g_kshim_splash_trace.count == 15 &&
+        g_kshim_splash_trace.last_offset == 0x104224u &&
+        g_kshim_splash_trace.first[0] == 6 &&
+        g_kshim_splash_trace.first[1] == 0x30000u &&
+        g_kshim_splash_trace.first[2] == 3 &&
+        g_kshim_splash_trace.first[9] == 0x4140u) {
+        kshim_splash_snapshot_capture(&resources, io);
+    }
+#endif
+    if (status) return status;
+    static const kshim_fb_format_t formats[] = {KSHIM_FB_FORMAT_RGB565, KSHIM_FB_FORMAT_XRGB8888,
+        KSHIM_FB_FORMAT_ARGB8888, KSHIM_FB_FORMAT_XBGR8888, KSHIM_FB_FORMAT_ABGR8888};
+    *fb = (kshim_framebuffer_config_t){.render_address = scanout.address,
+        .width = scanout.width, .height = scanout.height, .stride = scanout.stride,
+        .format = formats[scanout.format], .buffer_size = scanout.size,
+        .bpp = scanout.format == CR_SPLASH_RGB565 ? 16 : 32,
+        .foreground = UINT32_MAX, .background = scanout.format == CR_SPLASH_RGB565 ? 0 : 0xff000000};
+    *mmio = (kshim_mmu_region_t){reg.base, reg.size, KSHIM_MMU_DEVICE, KSHIM_MMU_READ};
+    return 0;
+}

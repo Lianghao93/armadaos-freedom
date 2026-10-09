@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright (C) 2026 Joonhoe Kim -->
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  Actions of tb323fu-helperd (io.github.joonhoekim.OpenDeviceHelper1). The daemon
+  runs as root, so passwords are a policy choice: everyday device controls are
+  allowed for the active local user; changes that lower security or safety
+  (developer USB access, disabling the emergency way back to Android, admin
+  settings) ask for authentication. Override with rules in
+  /etc/polkit-1/rules.d/ if needed.
+-->
+<policyconfig>
+  <vendor>tb323fu-linux</vendor>
+  <vendor_url>https://github.com/joonhoekim/tb323fu-linux</vendor_url>
+
+  <action id="io.github.joonhoekim.opendevicehelper.charge-limit">
+    <description>Change the battery charge limit or bypass charging</description>
+    <message>Authentication is required to change the battery charge limit</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.android-switch">
+    <description>Restart into Android</description>
+    <message>Authentication is required to restart into Android</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <!-- used instead of android-switch when android.require_auth = true -->
+  <action id="io.github.joonhoekim.opendevicehelper.android-switch-auth">
+    <description>Restart into Android (authentication required by the device settings)</description>
+    <message>Authentication is required to restart into Android</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.torch">
+    <description>Switch the flashlight</description>
+    <message>Authentication is required to switch the flashlight</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.led-ring">
+    <description>Configure the LED ring</description>
+    <message>Authentication is required to configure the LED ring</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.refresh">
+    <description>Configure the idle refresh rate</description>
+    <message>Authentication is required to configure the display refresh rate</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.gpu">
+    <description>Configure the performance profile (CPU and GPU limits, CPU boost, Wi-Fi power saving)</description>
+    <message>Authentication is required to configure the performance profile</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.thermal">
+    <description>Choose a cooler board-temperature profile or the panel heat protection</description>
+    <message>Authentication is required to change the thermal profile</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <!-- the performance thermal profile (the back and battery get warmer) and switching the panel
+       heat protection off: asked once per session -->
+  <action id="io.github.joonhoekim.opendevicehelper.thermal-performance">
+    <description>Let the tablet run hotter (performance thermal profile, panel heat protection off)</description>
+    <message>Authentication is required to let the tablet run hotter</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.haptics">
+    <description>Change the vibration strength or test the vibration motors</description>
+    <message>Authentication is required to change the vibration strength</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.usb-wake">
+    <description>Allow or forbid waking up from USB devices or a charger</description>
+    <message>Authentication is required to change the wakeup sources</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.dev-mode">
+    <description>Enable or disable developer USB access (network and root console)</description>
+    <message>Authentication is required to change developer USB access</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.emergency-key">
+    <description>Enable or configure the emergency key combination</description>
+    <message>Authentication is required to configure the emergency key combination</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.emergency-key-disable">
+    <description>Disable the emergency key combination (volume up + down back to Android)</description>
+    <message>Authentication is required to disable the emergency way back to Android</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.diagnostics">
+    <description>Export a diagnostics bundle</description>
+    <message>Authentication is required to export diagnostics</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.boot-next">
+    <description>Choose the root filesystem for the next boot</description>
+    <message>Authentication is required to choose the next boot</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.reboot-into">
+    <description>Restart into another installed system</description>
+    <message>Authentication is required to restart into another system</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.boot-default">
+    <description>Change the default system</description>
+    <message>Authentication is required to change the default system</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.admin">
+    <description>Change administrative helper settings</description>
+    <message>Authentication is required to change the helper's administrative settings</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+  </action>
+
+  <!-- kernel updates (docs/helper.md "Kernel updates"): looking and downloading
+       are harmless (checked, nothing installed); writing boot_a and
+       changing the channel ask for authentication -->
+  <action id="io.github.joonhoekim.opendevicehelper.kernel-check">
+    <description>Look for a new kernel release</description>
+    <message>Authentication is required to look for a new kernel</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.kernel-download">
+    <description>Download a kernel release</description>
+    <message>Authentication is required to download a kernel</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.mesa-install">
+    <description>Change which Mesa graphics drivers applications use</description>
+    <message>Authentication is required to change the graphics drivers</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.kernel-install">
+    <description>Install a new kernel</description>
+    <message>Authentication is required to install a new kernel</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+
+  <!-- a kernel from a file nobody published: always the administrator's password, never
+       remembered (auth_admin, not _keep); the file decides what runs as the kernel, and
+       nothing but the person installing it vouches for it -->
+  <action id="io.github.joonhoekim.opendevicehelper.kernel-install-local">
+    <description>Install a kernel from a file</description>
+    <message>Authentication is required to install a kernel from a file</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.kernel-rollback">
+    <description>Go back to the previous kernel</description>
+    <message>Authentication is required to go back to the previous kernel</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.kernel-keep">
+    <description>Keep the kernel that is being tried</description>
+    <message>Authentication is required to keep this kernel</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <action id="io.github.joonhoekim.opendevicehelper.kernel-channel">
+    <description>Change the kernel update settings (channel, daily check)</description>
+    <message>Authentication is required to change the kernel update settings</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <!-- helper self-update (docs/helper.md "Helper updates"): install a helper release or go
+       back to the version before it; checking and downloading use kernel-check and
+       kernel-download -->
+  <action id="io.github.joonhoekim.opendevicehelper.helper-update">
+    <description>Update Open Device Helper</description>
+    <message>Authentication is required to update Open Device Helper</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+</policyconfig>

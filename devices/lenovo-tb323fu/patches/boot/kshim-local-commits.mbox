@@ -1,0 +1,2642 @@
+From 7662642c923bfcb674b9db50b0ce848a6cfa54af Mon Sep 17 00:00:00 2001
+From: danyi <308664957+mydanyi@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 02:29:24 +0800
+Subject: [PATCH 1/4] Add Canoe SPMI and TB323FU key resource support
+
+---
+ docs/tb323fu-offline.txt        |  27 ++++
+ src/dt/keys.c                   |   8 +-
+ src/dt/spmi.c                   | 222 +++++++++++++++++++++++++++-----
+ tests/CMakeLists.txt            |  21 +++
+ tests/fixtures/tb323fu-keys.dts |  76 +++++++++++
+ tests/tb323fu_keys_test.c       | 148 +++++++++++++++++++++
+ 6 files changed, 468 insertions(+), 34 deletions(-)
+ create mode 100644 docs/tb323fu-offline.txt
+ create mode 100644 tests/fixtures/tb323fu-keys.dts
+ create mode 100644 tests/tb323fu_keys_test.c
+
+diff --git a/docs/tb323fu-offline.txt b/docs/tb323fu-offline.txt
+new file mode 100644
+index 0000000..cc0ee37
+--- /dev/null
++++ b/docs/tb323fu-offline.txt
+@@ -0,0 +1,27 @@
++TB323FU / Canoe key-resource bring-up
++
++This change adds offline-tested device-tree resource parsing for Lenovo Legion Y700 Gen 5 (TB323FU / SM8850P). It is not a complete board port or an installation image.
++
++The stock DT places PMICs under a spmi child of qcom,canoe-spmi-pmic-arb. Shared core/channel/observer/channel-map regions are on the parent; configuration, interrupt and channel-owner regions are on the child. Controller enumeration and PMIC identity now agree on this layout while preserving the existing generic layout.
++
++The PON node has two address entries named hlos and pbs. The parser selects the unique hlos entry rather than treating the second address as a size. The resource fixture covers power, volume-down and volume-up descriptors, disabled buses, a missing core region, invalid SID and GPIO bounds. These tests only parse data; they do not perform device MMIO.
++
++Canoe/Kaanapali ordinary TLMM GPIO inputs use base + gpio * 0x1000 + 4. GPIO 0 through 216 are ordinary inputs; GPIO217 is UFS reset and is excluded. The GPIO101 volume-up mapping is derived from the stock tree and cross-checked against:
++https://github.com/torvalds/linux/blob/5e0f8396d4805a3e7f753fa58c8c55f1f3cc2160/drivers/pinctrl/qcom/pinctrl-kaanapali.c
++The fixture is a minimal description of the relevant stock hardware connections, not a complete bootable DT.
++
++Baseline and dependencies:
++kShimC feature/2610: 121734f64dd97d26efaf94a264cdbe7ac0551e53
++DualBootKernelPatcher feature/2610: 2276163d066596cb0750e76cbfeec5c193b1779f
++CrDK remains pinned at b6c3335136b7f6b28271917de11e8f11982975fc, available on Project-Aloha/CrDK backup/2610. No CrDK or packer production changes are included.
++
++Remaining board work:
++- Confirm actual key reads and firmware-granted SPMI/MMIO access on hardware.
++- Adapt continuous-splash discovery to the board's SDE/HFI resources. The current stock tree exposes more pipe/mixer slots than the existing reader accepts.
++- Add Novatek SPI touch support if required for the boot menu; FTM4/FTM5 are not substitutes.
++- Supply the mainline board DT and define how runtime memory, reservations, boot arguments and initramfs information reach that DT. The current runtime selects a payload DT; it does not merge these properties.
++- Validate Android boot container sizing, boot-chain requirements and recovery before physical testing.
++
++Hardware has not been accessed for this adaptation. No boot image has been flashed or packaged for installation. Builds of existing profiles validate code compilation only and do not declare those profiles suitable for TB323FU.
++
++Validation on 2026-10-03 (Docker, 192.168.88.9): the new fixture fails on the unmodified baseline at SPMI discovery and passes after the change; all 15 host tests pass with ASan/UBSan. The existing HDK8450 capability profile builds a 4 MiB Manifest runtime with no unresolved symbols, exercising the enabled key/SPMI code. All six Manifest QEMU cases pass with that runtime. Separate packer-only tests preserve the original TB323FU kernel byte-for-byte through unpacking and repacking, including independent payload-DT references. No physical device testing has occurred.
+diff --git a/src/dt/keys.c b/src/dt/keys.c
+index 188ede3..b0ff4a0 100644
+--- a/src/dt/keys.c
++++ b/src/dt/keys.c
+@@ -71,8 +71,10 @@ static int QcomFdtIsPmicGpioCompatible(const char *Value, int Length)
+ #define QcomFdtNodeAvailable dt_available
+ 
+ /* Only these verified TLMM layouts use base + gpio * 0x1000 + 4 for
+- * ordinary GPIO inputs.  GPIO210 is a special UFS-reset output on both
+- * platforms.  Other SoCs can have multiple tiles and require manual input
++ * ordinary GPIO inputs.  Regular GPIOs cover 0..216 on canoe and
++ * kaanapali (0..209 on sm8450 and sm8550); the final pin (217, resp.
++ * 210) is a special UFS-reset output and is excluded from the linear
++ * count.  Other SoCs can have multiple tiles and require manual input
+  * register descriptors until their complete layout is supported here. */
+ static uint32_t QcomFdtLinearTlmmGpioCount(const void *Blob, int Provider)
+ {
+@@ -80,6 +82,8 @@ static uint32_t QcomFdtLinearTlmmGpioCount(const void *Blob, int Provider)
+     const char *Compatible;
+     uint32_t GpioCount;
+   } Layouts[] = {
++      {"qcom,canoe-tlmm", 217U},
++      {"qcom,kaanapali-tlmm", 217U},
+       {"qcom,sm8450-tlmm", 210U},
+       {"qcom,sm8550-tlmm", 210U},
+   };
+diff --git a/src/dt/spmi.c b/src/dt/spmi.c
+index 8d7bee8..8275461 100644
+--- a/src/dt/spmi.c
++++ b/src/dt/spmi.c
+@@ -1,60 +1,195 @@
+ /* SPDX-License-Identifier: MIT */
+ #include <qcom_dt.h>
+ #include <string.h>
+-static int controller_node(const void *f, int n)
+-{ return fdt_node_check_compatible(f, n, "qcom,spmi-pmic-arb") == 0 && dt_available(f, n); }
++
++/* A recognized SPMI controller bus.  Two layouts exist:
++ *
++ *   - generic: a "qcom,spmi-pmic-arb" node is itself the bus.
++ *   - canoe:   a "qcom,canoe-spmi-pmic-arb" arbiter owns the shared
++ *              regions and the ee/channel selection, while the actual
++ *              bus is the arbiter's enabled "spmi@..." child.
++ *
++ * Disabled nodes and disabled canoe arbiters are never treated as buses.
++ */
++struct kshim_spmi_bus {
++    int bus;
++    int arb;
++    bool nested;
++};
++
++static bool kshim_spmi_bus_at(const void *f, int n, struct kshim_spmi_bus *b)
++{
++    if (!f || n < 0) return false;
++
++    if (fdt_node_check_compatible(f, n, "qcom,spmi-pmic-arb") == 0) {
++        if (!dt_available(f, n)) return false;
++        if (b) { b->bus = n; b->arb = n; b->nested = false; }
++        return true;
++    }
++
++    const char *name = fdt_get_name(f, n, NULL);
++    if (!name || strncmp(name, "spmi", 4) != 0) return false;
++    if (name[4] != '\0' && name[4] != '@') return false;
++
++    int parent = fdt_parent_offset(f, n);
++    if (parent < 0) return false;
++    if (fdt_node_check_compatible(f, parent, "qcom,canoe-spmi-pmic-arb") != 0)
++        return false;
++    if (!dt_available(f, n)) return false;
++
++    if (b) { b->bus = n; b->arb = parent; b->nested = true; }
++    return true;
++}
++
++/* Region name for a type.  Selected explicitly from the layout rather
++ * than guessed by falling back between the two spellings. */
++static const char *kshim_spmi_region_name(unsigned i, bool nested)
++{
++    switch (i) {
++    case SPMI_MEMORY_REGION_TYPE_CORE:      return "core";
++    case SPMI_MEMORY_REGION_TYPE_CH_SLAVES: return "chnls";
++    case SPMI_MEMORY_REGION_TYPE_OBSERVER:  return "obsrvr";
++    case SPMI_MEMORY_REGION_TYPE_INTERRUPT: return "intr";
++    case SPMI_MEMORY_REGION_TYPE_CONFIG:    return "cnfg";
++    case SPMI_MEMORY_REGION_TYPE_CH_MAP:
++        return nested ? "chnl_map" : "chnls-map";
++    case SPMI_MEMORY_REGION_TYPE_CH_OWNER:
++        return nested ? "chnl_owner" : "chnls-owner";
++    default:
++        return NULL;
++    }
++}
++
++/* Node that owns a region: shared regions live on the arbiter for the
++ * nested layout, bus-local regions on the bus.  Generic layouts keep
++ * everything on their single node. */
++static int kshim_spmi_region_src(unsigned i, bool nested, int arb, int bus)
++{
++    if (!nested) return arb;
++    switch (i) {
++    case SPMI_MEMORY_REGION_TYPE_CORE:
++    case SPMI_MEMORY_REGION_TYPE_CH_SLAVES:
++    case SPMI_MEMORY_REGION_TYPE_OBSERVER:
++    case SPMI_MEMORY_REGION_TYPE_CH_MAP:
++        return arb;
++    default:
++        return bus;
++    }
++}
++
++static bool kshim_spmi_region_required(unsigned i, bool nested)
++{
++    if (nested) return true;
++    return i == SPMI_MEMORY_REGION_TYPE_CORE ||
++           i == SPMI_MEMORY_REGION_TYPE_CH_SLAVES ||
++           i == SPMI_MEMORY_REGION_TYPE_OBSERVER;
++}
++
++struct kshim_spmi_sel {
++    uint32_t ee;
++    uint32_t channel;
++    uint32_t bus;
++};
++
++/* Optional bus-id: read from the bus node when present, else from the
++ * arbiter, else zero.  Absence is not an error; a malformed or
++ * out-of-range value is. */
++static int kshim_spmi_bus_id(const void *f, const struct kshim_spmi_bus *b,
++                             uint32_t *bus)
++{
++    *bus = 0;
++    if (fdt_getprop(f, b->bus, "qcom,bus-id", NULL)) {
++        if (dt_u32(f, b->bus, "qcom,bus-id", bus)) return -1;
++    } else if (fdt_getprop(f, b->arb, "qcom,bus-id", NULL)) {
++        if (dt_u32(f, b->arb, "qcom,bus-id", bus)) return -1;
++    }
++    if (*bus > 3) return -1;
++    return 0;
++}
++
++/* Resource enumeration selection.  ee/channel come from the arbiter for
++ * the nested layout and from the bus node for the generic layout; the
++ * optional bus-id is resolved through kshim_spmi_bus_id. */
++static int kshim_spmi_select(const void *f, const struct kshim_spmi_bus *b,
++                             struct kshim_spmi_sel *sel)
++{
++    int owner = b->nested ? b->arb : b->bus;
++    sel->channel = 0;
++    if (dt_u32(f, owner, "qcom,ee", &sel->ee) || sel->ee > 5) return -1;
++    if (fdt_getprop(f, owner, "qcom,channel", NULL) &&
++        dt_u32(f, owner, "qcom,channel", &sel->channel)) return -1;
++    if (sel->channel > 5) return -1;
++    return kshim_spmi_bus_id(f, b, &sel->bus);
++}
++
+ int kshim_dt_spmi(const void *f, struct kshim_resources *r)
+ {
+-    static const char *names[SPMI_MEMORY_REGION_TYPE_MAX] = {
+-        "core", "chnls", "obsrvr", "intr", "cnfg", "chnls-map", "chnls-owner"
+-    };
+     r->spmi_count = 0;
+     for (int n = fdt_next_node(f, -1, NULL); n >= 0; n = fdt_next_node(f, n, NULL)) {
+-        if (!controller_node(f, n)) continue;
++        struct kshim_spmi_bus b;
++        if (!kshim_spmi_bus_at(f, n, &b)) continue;
+         if (r->spmi_count == KSHIM_SPMI_MAX) return -1;
+         struct kshim_spmi_resource *s = &r->spmi[r->spmi_count];
+-        memset(s, 0, sizeof(*s)); s->node = n;
++        memset(s, 0, sizeof(*s));
++        s->node = b.bus;
++        bool nested = b.nested;
+         for (unsigned i = 0; i < SPMI_MEMORY_REGION_TYPE_MAX; ++i) {
+             struct dt_range range;
+-            if (dt_reg_named(f, n, names[i], &range)) {
+-                if (i == SPMI_MEMORY_REGION_TYPE_CORE || i == SPMI_MEMORY_REGION_TYPE_CH_SLAVES ||
+-                    i == SPMI_MEMORY_REGION_TYPE_OBSERVER) return -1;
++            const char *name = kshim_spmi_region_name(i, nested);
++            bool required = kshim_spmi_region_required(i, nested);
++            if (!name) { if (required) return -1; continue; }
++            if (dt_reg_named(f, kshim_spmi_region_src(i, nested, b.arb, b.bus),
++                             name, &range)) {
++                if (required) return -1;
+                 continue;
+             }
+-            if ((range.base & 3) || range.base > UINTPTR_MAX || range.size > SIZE_MAX) return -1;
++            if ((range.base & 3) || range.base > UINTPTR_MAX || range.size > SIZE_MAX)
++                return -1;
+             s->controller.Regions[i] = (SpmiMemoryRegion){range.base, range.size};
+         }
+-        uint32_t ee, channel = 0, bus = 0;
+-        if (dt_u32(f, n, "qcom,ee", &ee) || ee > 5) return -1;
+-        if (fdt_getprop(f, n, "qcom,channel", NULL) && dt_u32(f, n, "qcom,channel", &channel)) return -1;
+-        if (fdt_getprop(f, n, "qcom,bus-id", NULL) && dt_u32(f, n, "qcom,bus-id", &bus)) return -1;
+-        if (channel > 5 || bus > 3) return -1;
+-        s->controller.ActiveEE = ee; s->controller.Channel = channel; s->controller.BusId = bus;
++        struct kshim_spmi_sel sel;
++        if (kshim_spmi_select(f, &b, &sel)) return -1;
++        s->controller.ActiveEE = sel.ee;
++        s->controller.Channel = sel.channel;
++        s->controller.BusId = sel.bus;
+         ++r->spmi_count;
+     }
+     return r->spmi_count ? 0 : -1;
+ }
++
+ int kshim_dt_spmi_identity(const void *f, int node, uint8_t *controller,
+                            uint8_t *bus, uint8_t *sid)
+ {
+-    int pmic = node, arb = -1;
++    if (!f || node < 0 || !controller || !bus || !sid) return -1;
++    if (!dt_available(f, node)) return -1;
++
++    /* Walk ancestors until the PMIC's parent is an enabled recognized bus. */
++    struct kshim_spmi_bus b;
++    int pmic = node;
++    bool found = false;
+     for (; pmic > 0; pmic = fdt_parent_offset(f, pmic)) {
+         int parent = fdt_parent_offset(f, pmic);
+-        if (parent >= 0 && controller_node(f, parent)) { arb = parent; break; }
++        if (parent >= 0 && kshim_spmi_bus_at(f, parent, &b)) { found = true; break; }
+     }
+-    if (arb < 0 || !dt_available(f, node)) return -1;
++    if (!found) return -1;
++
+     int len;
+     const fdt32_t *reg = fdt_getprop(f, pmic, "reg", &len);
+-    if (!reg || len != 8 || fdt32_to_cpu(reg[0]) > 15 || fdt32_to_cpu(reg[1])) return -1;
+-    uint32_t id = 0;
+-    if (fdt_getprop(f, arb, "qcom,bus-id", NULL) && dt_u32(f, arb, "qcom,bus-id", &id)) return -1;
+-    if (id > 3) return -1;
++    if (!reg || len != 8 || fdt32_to_cpu(reg[0]) > 15 || fdt32_to_cpu(reg[1]))
++        return -1;
++
++    /* The enumeration index and bus must match the resource record. */
+     unsigned index = 0;
+     for (int n = fdt_next_node(f, -1, NULL); n >= 0; n = fdt_next_node(f, n, NULL)) {
+-        if (!controller_node(f, n)) continue;
+-        if (n == arb) {
++        struct kshim_spmi_bus cand;
++        if (!kshim_spmi_bus_at(f, n, &cand)) continue;
++        if (cand.bus == b.bus) {
++            uint32_t bus_id;
+             if (index >= KSHIM_SPMI_MAX) return -1;
+-            *controller = index; *bus = id; *sid = fdt32_to_cpu(reg[0]);
++            if (kshim_spmi_bus_id(f, &cand, &bus_id)) return -1;
++            *controller = (uint8_t)index;
++            *bus = (uint8_t)bus_id;
++            *sid = (uint8_t)fdt32_to_cpu(reg[0]);
+             return 0;
+         }
+         ++index;
+@@ -64,19 +199,42 @@ int kshim_dt_spmi_identity(const void *f, int node, uint8_t *controller,
+ 
+ /* Downstream Qualcomm encodes PMIC peripheral reg as <offset length> with
+  * address-cells=2, size-cells=0. Mainline uses <offset>, size-cells=0.
+- * This is a bus-specific tuple, not a 64-bit physical MMIO address. */
++ * This is a bus-specific tuple, not a 64-bit physical MMIO address.
++ *
++ * A size-cells=0 PMIC with address-cells=1 may also expose a multi-cell
++ * reg list; in that case only a well-formed, uniquely named "hlos" entry
++ * is accepted and the address is taken from its cell. */
+ int kshim_dt_spmi_reg(const void *f, int node, uint16_t *offset)
+ {
+     uint8_t controller, bus, sid;
+     if (!offset || kshim_dt_spmi_identity(f, node, &controller, &bus, &sid)) return -1;
++
+     int parent = fdt_parent_offset(f, node), len;
+     uint32_t ac, sc;
+     const fdt32_t *p = fdt_getprop(f, node, "reg", &len);
+     if (!p || dt_u32(f, parent, "#address-cells", &ac) ||
+         dt_u32(f, parent, "#size-cells", &sc) || sc ||
+-        (ac != 1 && ac != 2) || len != (int)ac * 4) return -1;
+-    uint32_t a = fdt32_to_cpu(p[0]), size = ac == 2 ? fdt32_to_cpu(p[1]) : 0;
+-    if ((a & 0xffU) || a > UINT16_MAX || size > 0x10000U - a) return -1;
+-    *offset = a;
++        (ac != 1 && ac != 2)) return -1;
++
++    uint32_t a;
++    if (ac == 2) {
++        if (len != 8) return -1;
++        uint32_t size = fdt32_to_cpu(p[1]);
++        a = fdt32_to_cpu(p[0]);
++        if ((a & 0xffU) || a > UINT16_MAX || size > 0x10000U - a) return -1;
++    } else {
++        if (len == 4) {
++            a = fdt32_to_cpu(p[0]);
++        } else if (len > 4 && (len % 4) == 0) {
++            int count = fdt_stringlist_count(f, node, "reg-names");
++            int index = dt_string_index(f, node, "reg-names", "hlos");
++            if (count != len / 4 || index < 0) return -1;
++            a = fdt32_to_cpu(p[index]);
++        } else {
++            return -1;
++        }
++        if ((a & 0xffU) || a > UINT16_MAX) return -1;
++    }
++    *offset = (uint16_t)a;
+     return 0;
+ }
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index db6cdb3..3522a70 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -112,3 +112,24 @@ target_compile_definitions(dt_test PRIVATE "GENERATED_FIXTURES=\"${CMAKE_CURRENT
+ kshim_test(mmu_test mmu_test.c "${KSHIM_ROOT}/src/arch/arm64/mmu.c")
+ target_include_directories(mmu_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+ target_link_libraries(mmu_test PRIVATE kshim_dt)
++# TB323FU key resource regression fixture.
++set(TB323FU_KEYS_DTS "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tb323fu-keys.dts")
++set(TB323FU_KEYS_DTB "${CMAKE_CURRENT_BINARY_DIR}/fixtures/tb323fu-keys.dtb")
++
++add_custom_command(
++    OUTPUT "${TB323FU_KEYS_DTB}"
++    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/fixtures"
++    COMMAND "${DTC_EXECUTABLE}" -I dts -O dtb -o "${TB323FU_KEYS_DTB}" "${TB323FU_KEYS_DTS}"
++    DEPENDS "${TB323FU_KEYS_DTS}"
++    VERBATIM)
++
++add_custom_target(tb323fu_fixture DEPENDS "${TB323FU_KEYS_DTB}")
++
++kshim_test(tb323fu_keys_test
++    tb323fu_keys_test.c
++    ${KSHIM_ROOT}/src/dt/keys.c
++    ${KSHIM_ROOT}/src/drivers/keys.c)
++
++target_link_libraries(tb323fu_keys_test PRIVATE kshim_dt)
++add_dependencies(tb323fu_keys_test tb323fu_fixture)
++target_compile_definitions(tb323fu_keys_test PRIVATE FIXTURE_PATH="${TB323FU_KEYS_DTB}")
+diff --git a/tests/fixtures/tb323fu-keys.dts b/tests/fixtures/tb323fu-keys.dts
+new file mode 100644
+index 0000000..2b3a789
+--- /dev/null
++++ b/tests/fixtures/tb323fu-keys.dts
+@@ -0,0 +1,76 @@
++// SPDX-License-Identifier: MIT
++/*
++ * Minimal test fixture (NOT a bootable device tree).
++ * Source: offline TB323FU, selected stock DTB12 + DTBO47.
++ * Purpose: compile-only fixture for remote Docker build; source retained on NAS.
++ * Contains only the exact data provided; no inferred hardware.
++ */
++
++/dts-v1/;
++
++/ {
++	#address-cells = <2>;
++	#size-cells = <2>;
++
++	arbiter@c400000 {
++		compatible = "qcom,canoe-spmi-pmic-arb";
++		reg = <0 0xc400000 0 0x3000>,
++		      <0 0xc900000 0 0x400000>,
++		      <0 0xc4c0000 0 0x400000>,
++		      <0 0xc403000 0 0x8000>;
++		reg-names = "core", "chnls", "obsrvr", "chnl_map";
++		#address-cells = <2>;
++		#size-cells = <2>;
++		ranges;
++		qcom,ee = <0>;
++		qcom,channel = <0>;
++
++		spmi@c426000 {
++			reg = <0 0xc426000 0 0x4000>,
++			      <0 0xc8c0000 0 0x10000>,
++			      <0 0xc42a000 0 0x8000>;
++			reg-names = "cnfg", "intr", "chnl_owner";
++			#address-cells = <2>;
++			#size-cells = <0>;
++
++			pmk8850@0 {
++				compatible = "qcom,spmi-pmic";
++				reg = <0 0>;
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				pon_hlos@1300 {
++					compatible = "qcom,pmk8350-pon";
++					reg = <0x1300 0x800>;
++					reg-names = "hlos", "pbs";
++
++					pwrkey {
++						compatible = "qcom,pmk8350-pwrkey";
++						linux,code = <116>;
++					};
++
++					resin {
++						compatible = "qcom,pmk8350-resin";
++						linux,code = <114>;
++					};
++				};
++			};
++		};
++	};
++
++	tlmm: pinctrl@f000000 {
++		compatible = "qcom,canoe-tlmm";
++		reg = <0 0xf000000 0 0x202000>;
++		gpio-controller;
++		#gpio-cells = <2>;
++	};
++
++	gpio_keys {
++		compatible = "gpio-keys";
++
++		vol_up {
++			gpios = <&tlmm 101 1>;
++			linux,code = <115>;
++		};
++	};
++};
+diff --git a/tests/tb323fu_keys_test.c b/tests/tb323fu_keys_test.c
+new file mode 100644
+index 0000000..8f12340
+--- /dev/null
++++ b/tests/tb323fu_keys_test.c
+@@ -0,0 +1,148 @@
++/* tests/tb323fu_keys_test.c - red test: tb323fu SPMI regions + key descriptors */
++#include <assert.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <qcom_dt.h>
++#include <qcom_keys_fdt.h>
++
++#ifndef FIXTURE_PATH
++#error "FIXTURE_PATH must be defined"
++#endif
++static void *load_fixture(void)
++{
++    FILE *fp = fopen(FIXTURE_PATH, "rb");
++    assert(fp);
++    fseek(fp, 0, SEEK_END);
++    long n = ftell(fp);
++    fseek(fp, 0, SEEK_SET);
++    assert(n > 0);
++    size_t total = (size_t)n + 4096;
++    void *buf = malloc(total);
++    assert(buf);
++    assert(fread(buf, 1, (size_t)n, fp) == (size_t)n);
++    fclose(fp);
++    assert(fdt_open_into(buf, buf, (int)total) == 0);
++    return buf;
++}
++static struct kshim_resources *new_resources(void)
++{
++    struct kshim_resources *r = calloc(1, sizeof(*r));
++    assert(r);
++    return r;
++}
++static void test_positive(void)
++{
++    void *fdt = load_fixture();
++    struct kshim_resources *r = new_resources();
++    assert(kshim_dt_spmi(fdt, r) == 0 && r->spmi_count == 1);
++    const uint32_t exp[7] = { 0xc400000u, 0xc900000u, 0xc4c0000u, 0xc8c0000u,
++                              0xc426000u, 0xc403000u, 0xc42a000u };
++    for (int i = 0; i < 7; i++)
++        assert(r->spmi[0].controller.Regions[i].BaseAddress == exp[i]);
++    int pon = fdt_path_offset(fdt, "/arbiter@c400000/spmi@c426000/pmk8850@0/pon_hlos@1300");
++    uint8_t ctrl = 0xff, bus = 0xff, sid = 0xff;
++    uint16_t addr = 0xffff;
++    assert(pon >= 0);
++    assert(kshim_dt_spmi_identity(fdt, pon, &ctrl, &bus, &sid) == 0);
++    assert(ctrl == 0 && bus == 0 && sid == 0);
++    assert(kshim_dt_spmi_reg(fdt, pon, &addr) == 0 && addr == 0x1300);
++    QcomKeyDescriptor keys[QCOM_KEYS_MAX];
++    size_t count = 0;
++    assert(QcomKeysBuildFromDeviceTree(fdt, keys, QCOM_KEYS_MAX, &count) == 0);
++    assert(count == 3);
++    const QcomKeyDescriptor *up = NULL, *down = NULL, *sel = NULL;
++    for (size_t i = 0; i < count; i++) {
++        if (keys[i].Action == QCOM_KEY_ACTION_UP) up = &keys[i];
++        else if (keys[i].Action == QCOM_KEY_ACTION_DOWN) down = &keys[i];
++        else if (keys[i].Action == QCOM_KEY_ACTION_SELECT) sel = &keys[i];
++    }
++    assert(up && down && sel);
++    assert((uint64_t)up->Base + (uint64_t)up->RegisterOffset == 0xf065004u);
++    assert(QCOM_KEY_IS_SPMI_TOKEN(sel->Base) && QCOM_KEY_SPMI_TOKEN_ADDRESS(sel->Base) == 0x1300);
++    assert(QCOM_KEY_SPMI_TOKEN_SID(sel->Base) == 0 && sel->RegisterOffset == 0x10 && sel->Mask == 128);
++    assert(QCOM_KEY_IS_SPMI_TOKEN(down->Base) && QCOM_KEY_SPMI_TOKEN_ADDRESS(down->Base) == 0x1300);
++    assert(QCOM_KEY_SPMI_TOKEN_SID(down->Base) == 0 && down->RegisterOffset == 0x10 && down->Mask == 64);
++    free(r);
++    free(fdt);
++}
++static void test_negative_disabled(void)
++{
++    void *fdt = load_fixture();
++    int arb = fdt_path_offset(fdt, "/arbiter@c400000");
++    struct kshim_resources *r = new_resources();
++    assert(arb >= 0);
++    assert(fdt_setprop_string(fdt, arb, "status", "disabled") == 0);
++    assert(kshim_dt_spmi(fdt, r) != 0);
++    free(r);
++    free(fdt);
++    fdt = load_fixture();
++    int spmi = fdt_path_offset(fdt, "/arbiter@c400000/spmi@c426000");
++    r = new_resources();
++    assert(spmi >= 0);
++    assert(fdt_setprop_string(fdt, spmi, "status", "disabled") == 0);
++    assert(kshim_dt_spmi(fdt, r) != 0);
++    free(r);
++    free(fdt);
++}
++static void test_negative_regnames(void)
++{
++    void *fdt = load_fixture();
++    int arb = fdt_path_offset(fdt, "/arbiter@c400000");
++    static const char bad[] = "missing\0chnls\0obsrvr\0chnl_map";
++    assert(arb >= 0);
++    assert(fdt_setprop(fdt, arb, "reg-names", bad, sizeof(bad)) == 0);
++    struct kshim_resources *r = new_resources();
++    assert(kshim_dt_spmi(fdt, r) != 0);
++    free(r);
++    free(fdt);
++}
++static void test_negative_pmic_reg(void)
++{
++    void *fdt = load_fixture();
++    int pmic = fdt_path_offset(fdt, "/arbiter@c400000/spmi@c426000/pmk8850@0");
++    int pon = fdt_path_offset(fdt, "/arbiter@c400000/spmi@c426000/pmk8850@0/pon_hlos@1300");
++    fdt32_t reg[2] = { cpu_to_fdt32(16), 0 };
++    uint8_t ctrl = 0xff, bus = 0xff, sid = 0xff;
++    assert(pmic >= 0 && pon >= 0);
++    assert(fdt_setprop(fdt, pmic, "reg", reg, sizeof(reg)) == 0);
++    assert(kshim_dt_spmi_identity(fdt, pon, &ctrl, &bus, &sid) != 0);
++    free(fdt);
++}
++static int fixture_up_present(uint32_t pin)
++{
++    void *fdt = load_fixture();
++    int vol = fdt_path_offset(fdt, "/gpio_keys/vol_up");
++    int has = 0, rc;
++    size_t count = 0;
++    QcomKeyDescriptor keys[QCOM_KEYS_MAX];
++    assert(vol >= 0);
++    const fdt32_t *gpios = fdt_getprop(fdt, vol, "gpios", NULL);
++    assert(gpios);
++    assert(fdt32_to_cpu(gpios[1]) == 101 && fdt32_to_cpu(gpios[2]) == 1);
++    fdt32_t cells[3] = { gpios[0], cpu_to_fdt32(pin), gpios[2] };
++    assert(fdt_setprop(fdt, vol, "gpios", cells, sizeof(cells)) == 0);
++    rc = QcomKeysBuildFromDeviceTree(fdt, keys, QCOM_KEYS_MAX, &count);
++    (void)rc; /* success with only the 2 PMIC keys is fine here */
++    for (size_t i = 0; i < count; i++)
++        if (keys[i].Action == QCOM_KEY_ACTION_UP)
++            has = 1;
++    free(fdt);
++    return has;
++}
++static void test_gpio_boundary(void)
++{
++    assert(fixture_up_present(216) == 1);
++    assert(fixture_up_present(217) == 0);
++    assert(fixture_up_present(218) == 0);
++}
++int main(void)
++{
++    test_positive();
++    test_negative_disabled();
++    test_negative_regnames();
++    test_negative_pmic_reg();
++    test_gpio_boundary();
++    printf("tb323fu keys test: PASS\n");
++    return 0;
++}
+-- 
+2.55.0.vfs.0.3
+
+
+From 8a2b84d81bf3017eec48b53085f81648b47824fa Mon Sep 17 00:00:00 2001
+From: danyi <308664957+mydanyi@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 03:07:20 +0800
+Subject: [PATCH 2/4] Add Canoe continuous splash routing support
+
+---
+ docs/tb323fu-offline.txt                      |  21 +-
+ ports/crdk/UPSTREAM.json                      |   2 +-
+ .../patches/0002-freestanding-resources.patch | 107 +++++++-
+ src/dt/splash.c                               |  36 ++-
+ tests/CMakeLists.txt                          |  21 ++
+ tests/fixtures/tb323fu-splash.dts             |  33 +++
+ tests/tb323fu_splash_test.c                   | 240 ++++++++++++++++++
+ 7 files changed, 438 insertions(+), 22 deletions(-)
+ create mode 100644 tests/fixtures/tb323fu-splash.dts
+ create mode 100644 tests/tb323fu_splash_test.c
+
+diff --git a/docs/tb323fu-offline.txt b/docs/tb323fu-offline.txt
+index cc0ee37..0d11772 100644
+--- a/docs/tb323fu-offline.txt
++++ b/docs/tb323fu-offline.txt
+@@ -1,4 +1,4 @@
+-TB323FU / Canoe key-resource bring-up
++TB323FU / Canoe offline bring-up
+ 
+ This change adds offline-tested device-tree resource parsing for Lenovo Legion Y700 Gen 5 (TB323FU / SM8850P). It is not a complete board port or an installation image.
+ 
+@@ -13,11 +13,11 @@ The fixture is a minimal description of the relevant stock hardware connections,
+ Baseline and dependencies:
+ kShimC feature/2610: 121734f64dd97d26efaf94a264cdbe7ac0551e53
+ DualBootKernelPatcher feature/2610: 2276163d066596cb0750e76cbfeec5c193b1779f
+-CrDK remains pinned at b6c3335136b7f6b28271917de11e8f11982975fc, available on Project-Aloha/CrDK backup/2610. No CrDK or packer production changes are included.
++CrDK remains pinned at b6c3335136b7f6b28271917de11e8f11982975fc, available on Project-Aloha/CrDK backup/2610. The upstream CrDK checkout and the packer remain unchanged. The Canoe splash extension lives in kShimC's existing ports/crdk patch, which introduces DisplayLib; that library does not exist at the pinned upstream CrDK revision.
+ 
+ Remaining board work:
+ - Confirm actual key reads and firmware-granted SPMI/MMIO access on hardware.
+-- Adapt continuous-splash discovery to the board's SDE/HFI resources. The current stock tree exposes more pipe/mixer slots than the existing reader accepts.
++- Validate inherited scanout, framebuffer format and firmware-granted display access on hardware. The offline Canoe reader does not initialize the panel or DSI.
+ - Add Novatek SPI touch support if required for the boot menu; FTM4/FTM5 are not substitutes.
+ - Supply the mainline board DT and define how runtime memory, reservations, boot arguments and initramfs information reach that DT. The current runtime selects a payload DT; it does not merge these properties.
+ - Validate Android boot container sizing, boot-chain requirements and recovery before physical testing.
+@@ -25,3 +25,18 @@ Remaining board work:
+ Hardware has not been accessed for this adaptation. No boot image has been flashed or packaged for installation. Builds of existing profiles validate code compilation only and do not declare those profiles suitable for TB323FU.
+ 
+ Validation on 2026-10-03 (Docker, 192.168.88.9): the new fixture fails on the unmodified baseline at SPMI discovery and passes after the change; all 15 host tests pass with ASan/UBSan. The existing HDK8450 capability profile builds a 4 MiB Manifest runtime with no unresolved symbols, exercising the enabled key/SPMI code. All six Manifest QEMU cases pass with that runtime. Separate packer-only tests preserve the original TB323FU kernel byte-for-byte through unpacking and repacking, including independent payload-DT references. No physical device testing has occurred.
++
++Canoe continuous-splash extension
++
++For qcom,sde-hw-version 0xd0000000, the DT adapter accepts four VIG and six DMA pipes, six stock CTLs, and eight real layer mixers. It skips zero/dummy (0x0f0f) entries while retaining each real mixer's original hardware index. The stock HFI node is disabled; the enabled qcom,sde-kms node supplies the MMIO resources.
++
++This generation uses CTL_PIPE_ACTIVE / CTL_LAYER_ACTIVE and the mixer's background/per-stage source selectors instead of legacy CTL_LAYER routing. The reader requires exactly one supported source per active mixer and agreement with the active-pipe mask. The existing legacy route remains selected for other versions and does not require the added stage properties.
++
++Register facts were cross-checked against the manufacturer's public SM8850 display driver, fixed at 5ab2a689ff87d7d28c511f1762cf41c1b90d965a:
++https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8850/blob/5ab2a689ff87d7d28c511f1762cf41c1b90d965a/vendor/qcom/opensource/display-drivers/msm/sde/sde_hw_catalog.c
++https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8850/blob/5ab2a689ff87d7d28c511f1762cf41c1b90d965a/vendor/qcom/opensource/display-drivers/msm/sde/sde_hw_ctl.c
++https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8850/blob/5ab2a689ff87d7d28c511f1762cf41c1b90d965a/vendor/qcom/opensource/display-drivers/msm/sde/sde_hw_lm.c
++
++The splash reader only reads display MMIO. It retains the existing linear RGB565/8888 formats and contiguous two-half framebuffer checks. Compressed, multirect, overlapping or inconsistent configurations are rejected. A 10-bpc panel specification does not establish the boot framebuffer's format. Real bootloader register state, framebuffer caching/access and actual menu rendering remain untested. This is not a TB323FU installation image or proof of Linux panel support.
++
++Display validation on 2026-10-03 (Docker, 192.168.88.9): the new dual-scanout fixture compiles against the previous code and fails at the expected success assertion. With the Canoe extension, all 16 ASan/UBSan host tests pass (7.81 seconds), including DMA4/5 and VIG routes, LM6/7, sparse mixer IDs, dummy-active slots, pipe-mask mismatch, unsupported rect/format/compression, out-of-reservation address, duplicate/out-of-range stage offsets, and a changing scanout address. Mock display writes and legacy CTL reads are forbidden by assertions in the Canoe test. The existing HDK8450 capability profile builds a 4 MiB ARM64 runtime with no undefined symbols; all six Manifest QEMU tests pass. These are offline software checks, not TB323FU boot/display acceptance.
+diff --git a/ports/crdk/UPSTREAM.json b/ports/crdk/UPSTREAM.json
+index d153964..4d58e51 100644
+--- a/ports/crdk/UPSTREAM.json
++++ b/ports/crdk/UPSTREAM.json
+@@ -40,7 +40,7 @@
+     },
+     {
+       "file": "0002-freestanding-resources.patch",
+-      "sha256": "3bfd7dd8de56acacf4600b2d56734d7c068f278a8a8200cc8387d41145253050"
++      "sha256": "22254c1f9c79014ea817cba69536b6015cc2653f8c93f0431e09c8cc3653d52a"
+     }
+   ]
+ }
+diff --git a/ports/crdk/patches/0002-freestanding-resources.patch b/ports/crdk/patches/0002-freestanding-resources.patch
+index 7ffec14..2c41124 100644
+--- a/ports/crdk/patches/0002-freestanding-resources.patch
++++ b/ports/crdk/patches/0002-freestanding-resources.patch
+@@ -910,10 +910,9 @@ index 0000000..a93bc74
+ +int CrQupQuiesce(struct CrQupContext *p);
+ diff --git a/Include/Library/cr_splash.h b/Include/Library/cr_splash.h
+ new file mode 100644
+-index 0000000..7f5f36d
+ --- /dev/null
+ +++ b/Include/Library/cr_splash.h
+-@@ -0,0 +1,21 @@
++@@ -0,0 +1,25 @@
+ +/* SPDX-License-Identifier: MIT */
+ +#pragma once
+ +#include <Library/cr_geni.h>
+@@ -923,9 +922,13 @@ index 0000000..7f5f36d
+ +    uintptr_t base;
+ +    size_t size;
+ +    uint64_t reserved_base, reserved_size;
+-+    uint32_t pipe[8], ctl[8], mixer[6];
+-+    uint8_t pipe_id[8]; /* VIG0..3=0..3, DMA0..3=4..7 */
+++    uint32_t pipe[10], ctl[8], mixer[8];
+++    uint8_t pipe_id[10]; /* VIG0..3=0..3, DMA0..5=4..9 */
+ +    unsigned pipe_count, ctl_count, mixer_count;
+++    bool lm_source_select;
+++    uint8_t mixer_id[8];
+++    uint32_t stage[11];
+++    unsigned stage_count;
+ +};
+ +struct CrSplash {
+ +    uintptr_t address;
+@@ -2148,10 +2151,9 @@ index 0000000..d4ce06e
+ +  BaseLib
+ diff --git a/Library/DisplayLib/splash.c b/Library/DisplayLib/splash.c
+ new file mode 100644
+-index 0000000..baed76e
+ --- /dev/null
+ +++ b/Library/DisplayLib/splash.c
+-@@ -0,0 +1,127 @@
++@@ -0,0 +1,204 @@
+ +/* SPDX-License-Identifier: MIT */
+ +#include <Library/cr_splash.h>
+ +#include <oskal/cr_string.h>
+@@ -2170,13 +2172,13 @@ index 0000000..baed76e
+ +        .op = rd(r, io, base + 56), .secure = rd(r, io, base + 112),
+ +        .rect = rd(r, io, base + 0x170)};
+ +}
+-+struct routing { unsigned mask; int mixer[8]; uint32_t out[8], op[8]; };
+-+static int active(const struct CrSplashResources *r, const struct CrIo *io, struct routing *route)
+++struct routing { unsigned mask; int mixer[10]; uint32_t out[10], op[10]; };
+++static int active_legacy(const struct CrSplashResources *r, const struct CrIo *io, struct routing *route)
+ +{
+ +    static const unsigned shift[] = {0, 3, 6, 26, 18, 21};
+ +    static const unsigned ext_shift[] = {0, 2, 4, 6, 16, 18};
+ +    cr_memset(route, 0, sizeof(*route));
+-+    for (unsigned p = 0; p < 8; ++p) route->mixer[p] = -1;
+++    for (unsigned p = 0; p < 10; ++p) route->mixer[p] = -1;
+ +    unsigned mixers = 0;
+ +    for (unsigned c = 0; c < r->ctl_count; ++c) {
+ +        unsigned base = r->ctl[c];
+@@ -2207,6 +2209,65 @@ index 0000000..baed76e
+ +    }
+ +    return 0;
+ +}
+++static int active_lm(const struct CrSplashResources *r, const struct CrIo *io, struct routing *route)
+++{
+++    cr_memset(route, 0, sizeof(*route));
+++    for (unsigned p = 0; p < 10; ++p) route->mixer[p] = -1;
+++    for (unsigned c = 0; c < r->ctl_count; ++c) {
+++        unsigned base = r->ctl[c];
+++        if (!rd(r, io, base + 0xf4)) continue;
+++        uint32_t pipe_active = rd(r, io, base + 0x12c);
+++        uint32_t lm_active = rd(r, io, base + 0x130);
+++        if ((pipe_active & ~0x000f003fU) || !pipe_active || !lm_active) return CR_BUS_UNSUPPORTED;
+++        unsigned supplied = 0;
+++        for (unsigned m = 0; m < r->mixer_count; ++m) supplied |= 1U << r->mixer_id[m];
+++        if (lm_active & ~supplied) return CR_BUS_UNSUPPORTED;
+++        unsigned acc = 0;
+++        for (unsigned i = 0; i < 8; ++i) {
+++            if (!(lm_active & (1U << i))) continue;
+++            unsigned m;
+++            for (m = 0; m < r->mixer_count; ++m) if (r->mixer_id[m] == i) break;
+++            if (m == r->mixer_count) return CR_BUS_UNSUPPORTED;
+++            uint32_t lbase = r->mixer[m];
+++            uint32_t sel[1 + 11];
+++            unsigned n = 0, chosen = 0, selected = 0;
+++            sel[n++] = rd(r, io, lbase + 0x14);
+++            for (unsigned s = 0; s < r->stage_count; ++s)
+++                sel[n++] = rd(r, io, lbase + r->stage[s] + 4);
+++            for (unsigned g = 0; g < n; ++g) {
+++                uint32_t v = sel[g];
+++                if (v >> 16) return CR_BUS_UNSUPPORTED;
+++                for (unsigned b = 0; b < 2; ++b) {
+++                    unsigned byte = (v >> (b * 8)) & 0xff;
+++                    if (byte == 0xc0) continue;
+++                    unsigned type = (byte >> 6) & 3;
+++                    unsigned id = byte & 0xf;
+++                    if (((byte >> 4) & 3) || type > 1) return CR_BUS_UNSUPPORTED;
+++                    unsigned mapped;
+++                    if (type == 0) { if (id > 5) return CR_BUS_UNSUPPORTED; mapped = 4 + id; }
+++                    else { if (id > 3) return CR_BUS_UNSUPPORTED; mapped = id; }
+++                    unsigned p;
+++                    for (p = 0; p < r->pipe_count; ++p) if (r->pipe_id[p] == mapped) break;
+++                    if (p == r->pipe_count || route->mixer[p] >= 0) return CR_BUS_UNSUPPORTED;
+++                    unsigned hw = mapped < 4 ? 16 + mapped : mapped - 4;
+++                    if (!(pipe_active & (1U << hw))) return CR_BUS_UNSUPPORTED;
+++                    if (selected) return CR_BUS_UNSUPPORTED;
+++                    selected = 1; chosen = p;
+++                    acc |= 1U << hw;
+++                }
+++            }
+++            if (!selected) return CR_BUS_UNSUPPORTED;
+++            route->mask |= 1U << chosen;
+++            route->mixer[chosen] = (int)m;
+++            route->out[chosen] = rd(r, io, lbase + 4);
+++            route->op[chosen] = rd(r, io, lbase) & (1U << 31);
+++        }
+++        if (acc != pipe_active) return CR_BUS_UNSUPPORTED;
+++    }
+++    return 0;
+++}
+++static int active(const struct CrSplashResources *r, const struct CrIo *io, struct routing *route)
+++{ return r->lm_source_select ? active_lm(r, io, route) : active_legacy(r, io, route); }
+ +static int format(const struct scan *s, enum CrSplashFormat *f, unsigned *bytes)
+ +{
+ +    /* Linear, tightly packed, interleaved RGB only; no rotate/YUV/DX/solid-fill. */
+@@ -2224,18 +2285,36 @@ index 0000000..baed76e
+ +int CrSplashRead(const struct CrSplashResources *r, const struct CrIo *io, struct CrSplash *fb)
+ +{
+ +    if (!r || !io || !io->read32 || !fb || !r->base || r->base > UINTPTR_MAX - r->size ||
+-+        !r->pipe_count || r->pipe_count > 8 || !r->ctl_count || r->ctl_count > 8 ||
+-+        !r->mixer_count || r->mixer_count > 6 || !r->reserved_size) return CR_BUS_INVALID;
+++        !r->pipe_count || !r->ctl_count || !r->mixer_count || !r->reserved_size) return CR_BUS_INVALID;
+++    bool canoe = r->lm_source_select;
+++    if (r->pipe_count > (canoe ? 10 : 8) || r->ctl_count > 8 || r->mixer_count > (canoe ? 8 : 6))
+++        return CR_BUS_INVALID;
+ +    unsigned ids = 0;
+ +    for (unsigned p = 0; p < r->pipe_count; ++p) {
+-+        if (r->pipe_id[p] > 7 || (ids & (1U << r->pipe_id[p])) ||
+++        if (r->pipe_id[p] > (canoe ? 9 : 7) || (ids & (1U << r->pipe_id[p])) ||
+ +            (r->pipe[p] & 3) || !within(0, r->size, r->pipe[p], 0x174)) return CR_BUS_INVALID;
+ +        ids |= 1U << r->pipe_id[p];
+ +    }
+++    unsigned ctl_span = canoe ? 0x134 : 0xf8;
+ +    for (unsigned c = 0; c < r->ctl_count; ++c)
+-+        if ((r->ctl[c] & 3) || !within(0, r->size, r->ctl[c], 0xf8)) return CR_BUS_INVALID;
+++        if ((r->ctl[c] & 3) || !within(0, r->size, r->ctl[c], ctl_span)) return CR_BUS_INVALID;
+ +    for (unsigned m = 0; m < r->mixer_count; ++m)
+-+        if ((r->mixer[m] & 3) || !within(0, r->size, r->mixer[m], 8)) return CR_BUS_INVALID;
+++        if ((r->mixer[m] & 3) || !within(0, r->size, r->mixer[m], canoe ? 0x18 : 8)) return CR_BUS_INVALID;
+++    if (canoe) {
+++        if (!r->stage_count || r->stage_count > 11) return CR_BUS_INVALID;
+++        unsigned mids = 0;
+++        for (unsigned m = 0; m < r->mixer_count; ++m) {
+++            if (r->mixer_id[m] > 7 || (mids & (1U << r->mixer_id[m]))) return CR_BUS_INVALID;
+++            mids |= 1U << r->mixer_id[m];
+++        }
+++        for (unsigned i = 0; i < r->stage_count; ++i) {
+++            if ((r->stage[i] & 3) || r->stage[i] < 0x40) return CR_BUS_INVALID;
+++            for (unsigned j = i + 1; j < r->stage_count; ++j)
+++                if (r->stage[i] == r->stage[j]) return CR_BUS_INVALID;
+++            for (unsigned m = 0; m < r->mixer_count; ++m)
+++                if (!within(0, r->size, (uint64_t)r->mixer[m] + r->stage[i], 8)) return CR_BUS_INVALID;
+++        }
+++    }
+ +    struct routing route, again;
+ +    if (active(r, io, &route) || !route.mask) return CR_BUS_UNSUPPORTED;
+ +    struct scan scans[2]; unsigned count = 0, pipe[2], bytes = 0;
+diff --git a/src/dt/splash.c b/src/dt/splash.c
+index 387d46c..689c0e8 100644
+--- a/src/dt/splash.c
++++ b/src/dt/splash.c
+@@ -39,18 +39,46 @@ int kshim_dt_splash(const void *f, const struct CrIo *io,
+     if (sde < 0 || dt_reg_named(f, sde, "mdp_phys", &reg)) return -1;
+     struct CrSplashResources resources = {.base = reg.base, .size = reg.size,
+         .reserved_base = memory.base, .reserved_size = memory.size};
+-    int pipes = offsets(f, sde, "qcom,sde-sspp-off", resources.pipe, 8);
++    uint32_t version;
++    bool canoe = dt_u32(f, sde, "qcom,sde-hw-version", &version) == 0 && version == 0xd0000000;
++    resources.lm_source_select = canoe;
++    int pipes = offsets(f, sde, "qcom,sde-sspp-off", resources.pipe, canoe ? 10 : 8);
+     int ctls = offsets(f, sde, "qcom,sde-ctl-off", resources.ctl, 8);
+-    int count = offsets(f, sde, "qcom,sde-mixer-off", resources.mixer, 6);
++    int count;
++    if (canoe) {
++        uint32_t raw[12];
++        int raw_n = offsets(f, sde, "qcom,sde-mixer-off", raw, 12);
++        if (raw_n < 1) return -1;
++        count = 0;
++        for (int i = 0; i < raw_n; ++i) {
++            if (raw[i] == 0 || raw[i] == 0xf0f) continue;
++            if (i >= 8) return -1;
++            /* Keep the DT slot as the hardware LM index: dummy slots (0 / 0xf0f)
++               still consume positions, so a compacted index would mis-address LMs. */
++            resources.mixer_id[count] = (uint8_t)i;
++            resources.mixer[count] = raw[i];
++            ++count;
++        }
++        if (count < 1) return -1;
++    } else {
++        count = offsets(f, sde, "qcom,sde-mixer-off", resources.mixer, 6);
++    }
+     if (pipes < 1 || ctls < 1 || count < 1) return -1;
+     resources.pipe_count = pipes; resources.ctl_count = ctls; resources.mixer_count = count;
+-    unsigned vig = 0, dma = 0;
++    if (canoe) {
++        int stages = offsets(f, sde, "qcom,sde-mixer-blend-op-off", resources.stage, 11);
++        uint32_t blendstages;
++        if (stages < 1 || dt_u32(f, sde, "qcom,sde-mixer-blendstages", &blendstages) ||
++            blendstages != (uint32_t)stages) return -1;
++        resources.stage_count = stages;
++    }
++    unsigned vig = 0, dma = 0, dma_max = canoe ? 6 : 4;
+     for (int i = 0; i < pipes; ++i) {
+         int len;
+         const char *type = fdt_stringlist_get(f, sde, "qcom,sde-sspp-type", i, &len);
+         if (!type) return -1;
+         if (len == 3 && !memcmp(type, "vig", 3) && vig < 4) resources.pipe_id[i] = vig++;
+-        else if (len == 3 && !memcmp(type, "dma", 3) && dma < 4) resources.pipe_id[i] = 4 + dma++;
++        else if (len == 3 && !memcmp(type, "dma", 3) && dma < dma_max) resources.pipe_id[i] = 4 + dma++;
+         else return -1;
+     }
+     struct CrSplash scanout;
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 3522a70..02f6144 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -133,3 +133,24 @@ kshim_test(tb323fu_keys_test
+ target_link_libraries(tb323fu_keys_test PRIVATE kshim_dt)
+ add_dependencies(tb323fu_keys_test tb323fu_fixture)
+ target_compile_definitions(tb323fu_keys_test PRIVATE FIXTURE_PATH="${TB323FU_KEYS_DTB}")
++
++file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
++
++set(TB323FU_SPLASH_DTB
++    ${CMAKE_CURRENT_BINARY_DIR}/fixtures/tb323fu-splash.dtb)
++
++add_custom_command(
++    OUTPUT ${TB323FU_SPLASH_DTB}
++    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/fixtures
++    COMMAND ${DTC_EXECUTABLE} -I dts -O dtb -o ${TB323FU_SPLASH_DTB}
++            ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tb323fu-splash.dts
++    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tb323fu-splash.dts
++    VERBATIM)
++
++add_custom_target(tb323fu_splash_fixture DEPENDS ${TB323FU_SPLASH_DTB})
++
++kshim_test(tb323fu_splash_test tb323fu_splash_test.c)
++target_link_libraries(tb323fu_splash_test PRIVATE kshim_dt)
++add_dependencies(tb323fu_splash_test tb323fu_splash_fixture)
++target_compile_definitions(tb323fu_splash_test PRIVATE
++    FIXTURE_PATH="${TB323FU_SPLASH_DTB}")
+diff --git a/tests/fixtures/tb323fu-splash.dts b/tests/fixtures/tb323fu-splash.dts
+new file mode 100644
+index 0000000..5369734
+--- /dev/null
++++ b/tests/fixtures/tb323fu-splash.dts
+@@ -0,0 +1,33 @@
++/dts-v1/;
++
++/ {
++	#address-cells = <2>;
++	#size-cells = <2>;
++
++	reserved-memory {
++		#address-cells = <2>;
++		#size-cells = <2>;
++		ranges;
++
++		splash: cont_splash_region@fc800000 {
++			reg = <0 0xfc800000 0 0x2b00000>;
++		};
++	};
++
++	sde: sde@9800000 {
++		compatible = "qcom,sde-kms";
++		qcom,sde-hw-version = <0xd0000000>;
++		reg-names = "mdp_phys";
++		reg = <0 0x9800000 0 0x1c8800>;
++
++		qcom,sde-sspp-off = <0x2c000 0x35000 0x3e000 0x47000 0x98000 0xa1000 0xaa000 0xb3000 0xbc000 0xc5000>;
++		qcom,sde-sspp-type = "vig", "vig", "vig", "vig", "dma", "dma", "dma", "dma", "dma", "dma";
++
++		qcom,sde-ctl-off = <0x20000 0x21000 0x22000 0x23000 0x24000 0x25000>;
++
++		qcom,sde-mixer-off = <0x104000 0x10c000 0x114000 0x11c000 0x124000 0x12c000 0x134000 0x13c000 0xf0f 0xf0f 0xf0f 0xf0f>;
++
++		qcom,sde-mixer-blendstages = <11>;
++		qcom,sde-mixer-blend-op-off = <0x40 0x70 0xa0 0xd0 0x100 0x130 0x160 0x190 0x1c0 0x1f0 0x220>;
++	};
++};
+diff --git a/tests/tb323fu_splash_test.c b/tests/tb323fu_splash_test.c
+new file mode 100644
+index 0000000..a511325
+--- /dev/null
++++ b/tests/tb323fu_splash_test.c
+@@ -0,0 +1,240 @@
++#include "qcom_dt.h"
++#include <assert.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define BASE      0x9800000u
++#define REG_SIZE  0x1c8800u
++
++static uint32_t regs[REG_SIZE / 4];
++
++static uintptr_t unstable_off;
++static unsigned unstable_reads;
++
++static uint32_t read32(void *ctx, uintptr_t addr)
++{
++	(void)ctx;
++	assert(addr >= BASE);
++	assert((addr & 3u) == 0);
++	uintptr_t off = addr - BASE;
++	assert(off + 4 <= REG_SIZE);
++
++	if (off >= 0x20000 && off < 0x26000) {
++		uintptr_t blk = off & ~0xfffu;
++		uintptr_t r = off - blk;
++		assert(blk >= 0x20000 && blk <= 0x25000);
++		assert(r == 0xf4 || r == 0x12c || r == 0x130);
++	} else {
++		int ok = 0;
++		if (off >= 0x2c000 && off <= 0x2c173) ok = 1;
++		if (off >= 0x35000 && off <= 0x35173) ok = 1;
++		if (off >= 0xbc000 && off <= 0xbc173) ok = 1;
++		if (off >= 0xc5000 && off <= 0xc5173) ok = 1;
++		if (off >= 0x104000 && off <= 0x13c3ff) ok = 1;
++		assert(ok);
++	}
++	if (off == unstable_off && ++unstable_reads == 2)
++		return regs[off / 4] ^ 4u;
++	return regs[off / 4];
++}
++
++static void write32(void *ctx, uintptr_t addr, uint32_t val)
++{
++	(void)ctx; (void)addr; (void)val;
++	assert(0);
++}
++
++int main(void)
++{
++	FILE *f = fopen(FIXTURE_PATH, "rb");
++	assert(f);
++	fseek(f, 0, SEEK_END);
++	long sz = ftell(f);
++	fseek(f, 0, SEEK_SET);
++	assert(sz > 0);
++	void *dtb = malloc((size_t)sz);
++	assert(dtb);
++	assert(fread(dtb, 1, (size_t)sz, f) == (size_t)sz);
++	fclose(f);
++
++	struct CrIo io = { .read32 = read32, .write32 = write32 };
++
++	const uintptr_t lm_off[8] = {
++		0x104000, 0x10c000, 0x114000, 0x11c000,
++		0x124000, 0x12c000, 0x134000, 0x13c000
++	};
++	const uintptr_t stage_off[11] = {
++		0x40, 0x70, 0xa0, 0xd0, 0x100, 0x130,
++		0x160, 0x190, 0x1c0, 0x1f0, 0x220
++	};
++	const uintptr_t dma4 = 0xbc000;
++	const uintptr_t dma5 = 0xc5000;
++
++	for (int i = 0; i < 8; i++)
++		regs[(lm_off[i] + 0x14) / 4] = 0xc0c0;
++
++	for (int i = 0; i < 8; i++)
++		for (int s = 0; s < 11; s++)
++			regs[(lm_off[i] + stage_off[s] + 4) / 4] = 0xc0c0;
++
++	regs[(0x20000 + 0xf4) / 4]  = 6;
++	regs[(0x20000 + 0x12c) / 4] = 0x30;
++	regs[(0x20000 + 0x130) / 4] = 3;
++
++	regs[(lm_off[0] + stage_off[0] + 4) / 4] = 0xc004;
++	regs[(lm_off[1] + stage_off[0] + 4) / 4] = 0xc005;
++
++	for (int i = 0; i < 8; i++)
++		regs[(lm_off[i] + 0x04) / 4] = (3040u << 16) | 952u;
++
++	regs[(lm_off[1] + 0x00) / 4] |= 0x80000000u;
++
++	regs[(dma4 + 0x00) / 4] = (3040u << 16) | 952u;
++	regs[(dma4 + 0x0c) / 4] = (3040u << 16) | 952u;
++	regs[(dma4 + 0x08) / 4] = 0;
++	regs[(dma4 + 0x14) / 4] = 0xfc800000u;
++	regs[(dma4 + 0x24) / 4] = 7616;
++	regs[(dma4 + 0x30) / 4] = 0x237ff;
++	regs[(dma4 + 0x34) / 4] = 0x03020001;
++
++	regs[(dma5 + 0x00) / 4] = (3040u << 16) | 952u;
++	regs[(dma5 + 0x0c) / 4] = (3040u << 16) | 952u;
++	regs[(dma5 + 0x08) / 4] = 952;
++	regs[(dma5 + 0x14) / 4] = 0xfc800000u;
++	regs[(dma5 + 0x24) / 4] = 7616;
++	regs[(dma5 + 0x30) / 4] = 0x237ff;
++	regs[(dma5 + 0x34) / 4] = 0x03020001;
++
++	kshim_mmu_region_t mmio = {0};
++	kshim_framebuffer_config_t fb;
++	memset(&fb, 0, sizeof(fb));
++
++	int rc = kshim_dt_splash(dtb, &io, &fb, &mmio);
++	assert(rc == 0);
++	assert(fb.width == 1904);
++	assert(fb.height == 3040);
++	assert(fb.stride == 7616);
++	assert(fb.bpp == 32);
++	assert(fb.render_address == 0xfc800000u);
++	assert(fb.buffer_size == 23152640u);
++	assert(fb.format == KSHIM_FB_FORMAT_ARGB8888);
++
++	regs[(dma4 + 0x38) / 4] = 1;
++	rc = kshim_dt_splash(dtb, &io, &fb, &mmio);
++	assert(rc != 0);
++	regs[(dma4 + 0x38) / 4] = 0;
++
++	regs[(lm_off[0] + stage_off[1] + 4) / 4] = 0xc005;
++	rc = kshim_dt_splash(dtb, &io, &fb, &mmio);
++	assert(rc != 0);
++	regs[(lm_off[0] + stage_off[1] + 4) / 4] = 0xc0c0;
++
++	/* Succeeds again once the negative cases have been reset. */
++	rc = kshim_dt_splash(dtb, &io, &fb, &mmio);
++	assert(rc == 0);
++
++	/* CTL0 pipe-active without the DMA5 bit must fail. */
++	regs[(0x20000 + 0x12c) / 4] = 0x10;
++	assert(kshim_dt_splash(dtb, &io, &fb, &mmio) != 0);
++	regs[(0x20000 + 0x12c) / 4] = 0x30;
++
++	/* Multirect rect1 is unsupported. */
++	regs[(lm_off[0] + stage_off[0] + 4) / 4] = 0xc014;
++	assert(kshim_dt_splash(dtb, &io, &fb, &mmio) != 0);
++	regs[(lm_off[0] + stage_off[0] + 4) / 4] = 0xc004;
++
++	/* DMA4 address outside the reserved buffer must fail. */
++	regs[(dma4 + 0x14) / 4] = 0xfc7ff000u;
++	assert(kshim_dt_splash(dtb, &io, &fb, &mmio) != 0);
++	regs[(dma4 + 0x14) / 4] = 0xfc800000u;
++
++	/* DMA4 format with bit 30 set must fail. */
++	regs[(dma4 + 0x30) / 4] |= 0x40000000u;
++	assert(kshim_dt_splash(dtb, &io, &fb, &mmio) != 0);
++	regs[(dma4 + 0x30) / 4] = 0x237ff;
++
++	/* VIG routing test */
++	memcpy(&regs[0x2c000 / 4], &regs[dma4 / 4], 0x174);
++	memcpy(&regs[0x35000 / 4], &regs[dma5 / 4], 0x174);
++	regs[(0x20000 + 0x12c) / 4] = 0x30000;
++	regs[(lm_off[0] + stage_off[0] + 4) / 4] = 0xc040;
++	regs[(lm_off[1] + stage_off[0] + 4) / 4] = 0xc041;
++	assert(kshim_dt_splash(dtb, &io, &fb, &mmio) == 0);
++	assert(fb.width == 1904);
++	regs[(0x20000 + 0x12c) / 4] = 0x30;
++	regs[(lm_off[0] + stage_off[0] + 4) / 4] = 0xc004;
++	regs[(lm_off[1] + stage_off[0] + 4) / 4] = 0xc005;
++
++	/* Move the active routes to hardware LM6/LM7. */
++	memcpy(&regs[lm_off[6] / 4], &regs[lm_off[0] / 4], 0x400);
++	memcpy(&regs[lm_off[7] / 4], &regs[lm_off[1] / 4], 0x400);
++	regs[(0x20000 + 0x130) / 4] = 0xc0;
++
++	assert(kshim_dt_splash(dtb, &io, &fb, &mmio) == 0);
++	int sde = fdt_node_offset_by_compatible(dtb, -1, "qcom,sde-kms");
++	assert(sde >= 0);
++
++	int prop_len = 0;
++	const fdt32_t *mixer_prop =
++		fdt_getprop(dtb, sde, "qcom,sde-mixer-off", &prop_len);
++	assert(mixer_prop && prop_len == 12 * (int)sizeof(fdt32_t));
++	fdt32_t mixer_copy[12];
++	memcpy(mixer_copy, mixer_prop, sizeof(mixer_copy));
++
++	const fdt32_t *stage_prop =
++		fdt_getprop(dtb, sde, "qcom,sde-mixer-blend-op-off", &prop_len);
++	assert(stage_prop && prop_len == 11 * (int)sizeof(fdt32_t));
++	fdt32_t stage_copy[11];
++	memcpy(stage_copy, stage_prop, sizeof(stage_copy));
++
++	/* Zeroing the first mixer slot must still succeed (IDs preserved). */
++	fdt32_t mixer_tmp[12];
++	memcpy(mixer_tmp, mixer_copy, sizeof(mixer_tmp));
++	mixer_tmp[0] = cpu_to_fdt32(0);
++	assert(fdt_setprop_inplace(dtb, sde, "qcom,sde-mixer-off",
++				   mixer_tmp, sizeof(mixer_tmp)) == 0);
++	assert(kshim_dt_splash(dtb, &io, &fb, &mmio) == 0);
++	assert(fdt_setprop_inplace(dtb, sde, "qcom,sde-mixer-off",
++				   mixer_copy, sizeof(mixer_copy)) == 0);
++	regs[(0x20000 + 0x130) / 4] = 3;
++
++	/* A bogus mixer slot while LM0 is active must fail. */
++	memcpy(mixer_tmp, mixer_copy, sizeof(mixer_tmp));
++	mixer_tmp[0] = cpu_to_fdt32(0xf0f);
++	assert(fdt_setprop_inplace(dtb, sde, "qcom,sde-mixer-off",
++				   mixer_tmp, sizeof(mixer_tmp)) == 0);
++	assert(kshim_dt_splash(dtb, &io, &fb, &mmio) != 0);
++	assert(fdt_setprop_inplace(dtb, sde, "qcom,sde-mixer-off",
++				   mixer_copy, sizeof(mixer_copy)) == 0);
++
++	/* Duplicate stage offset must fail. */
++	fdt32_t stage_tmp[11];
++	memcpy(stage_tmp, stage_copy, sizeof(stage_tmp));
++	stage_tmp[1] = stage_tmp[0];
++	assert(fdt_setprop_inplace(dtb, sde, "qcom,sde-mixer-blend-op-off",
++				   stage_tmp, sizeof(stage_tmp)) == 0);
++	assert(kshim_dt_splash(dtb, &io, &fb, &mmio) != 0);
++	assert(fdt_setprop_inplace(dtb, sde, "qcom,sde-mixer-blend-op-off",
++				   stage_copy, sizeof(stage_copy)) == 0);
++
++	/* Invalid stage offset must fail. */
++	memcpy(stage_tmp, stage_copy, sizeof(stage_tmp));
++	stage_tmp[0] = cpu_to_fdt32(0xfffffffc);
++	assert(fdt_setprop_inplace(dtb, sde, "qcom,sde-mixer-blend-op-off",
++				   stage_tmp, sizeof(stage_tmp)) == 0);
++	assert(kshim_dt_splash(dtb, &io, &fb, &mmio) != 0);
++	assert(fdt_setprop_inplace(dtb, sde, "qcom,sde-mixer-blend-op-off",
++				   stage_copy, sizeof(stage_copy)) == 0);
++
++	/* An unstable pipe-address read must fail, then recover. */
++	unstable_off = dma4 + 0x14;
++	unstable_reads = 0;
++	assert(kshim_dt_splash(dtb, &io, &fb, &mmio) != 0);
++	unstable_off = 0;
++	assert(kshim_dt_splash(dtb, &io, &fb, &mmio) == 0);
++
++	puts("Canoe dual scanout, sparse LM IDs, bounds and unstable-state checks passed");
++	free(dtb);
++	return 0;
++}
+-- 
+2.55.0.vfs.0.3
+
+
+From 661fadd942b0d3e6da1cd4ea26aa5c359472c5ee Mon Sep 17 00:00:00 2001
+From: danyi <308664957+mydanyi@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 03:37:50 +0800
+Subject: [PATCH 3/4] test: verify distinct device tree handoff per image
+
+---
+ docs/tb323fu-offline.txt |   8 +-
+ tests/manifest_qemu.py   | 161 +++++++++++++++++++++++++++++++--------
+ 2 files changed, 135 insertions(+), 34 deletions(-)
+
+diff --git a/docs/tb323fu-offline.txt b/docs/tb323fu-offline.txt
+index 0d11772..bbf89b2 100644
+--- a/docs/tb323fu-offline.txt
++++ b/docs/tb323fu-offline.txt
+@@ -13,7 +13,7 @@ The fixture is a minimal description of the relevant stock hardware connections,
+ Baseline and dependencies:
+ kShimC feature/2610: 121734f64dd97d26efaf94a264cdbe7ac0551e53
+ DualBootKernelPatcher feature/2610: 2276163d066596cb0750e76cbfeec5c193b1779f
+-CrDK remains pinned at b6c3335136b7f6b28271917de11e8f11982975fc, available on Project-Aloha/CrDK backup/2610. The upstream CrDK checkout and the packer remain unchanged. The Canoe splash extension lives in kShimC's existing ports/crdk patch, which introduces DisplayLib; that library does not exist at the pinned upstream CrDK revision.
++CrDK remains pinned at b6c3335136b7f6b28271917de11e8f11982975fc, available on Project-Aloha/CrDK backup/2610. The upstream CrDK checkout remains unchanged. The display batch did not modify the packer; the later handoff validation below requires a separate packer alignment fix. The Canoe splash extension lives in kShimC's existing ports/crdk patch, which introduces DisplayLib; that library does not exist at the pinned upstream CrDK revision.
+ 
+ Remaining board work:
+ - Confirm actual key reads and firmware-granted SPMI/MMIO access on hardware.
+@@ -40,3 +40,9 @@ https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm88
+ The splash reader only reads display MMIO. It retains the existing linear RGB565/8888 formats and contiguous two-half framebuffer checks. Compressed, multirect, overlapping or inconsistent configurations are rejected. A 10-bpc panel specification does not establish the boot framebuffer's format. Real bootloader register state, framebuffer caching/access and actual menu rendering remain untested. This is not a TB323FU installation image or proof of Linux panel support.
+ 
+ Display validation on 2026-10-03 (Docker, 192.168.88.9): the new dual-scanout fixture compiles against the previous code and fails at the expected success assertion. With the Canoe extension, all 16 ASan/UBSan host tests pass (7.81 seconds), including DMA4/5 and VIG routes, LM6/7, sparse mixer IDs, dummy-active slots, pipe-mask mismatch, unsupported rect/format/compression, out-of-reservation address, duplicate/out-of-range stage offsets, and a changing scanout address. Mock display writes and legacy CTL reads are forbidden by assertions in the Canoe test. The existing HDK8450 capability profile builds a 4 MiB ARM64 runtime with no undefined symbols; all six Manifest QEMU tests pass. These are offline software checks, not TB323FU boot/display acceptance.
++
++Distinct-DTB handoff validation on 2026-10-03
++
++The Manifest QEMU regression now verifies each byte of separate DTBs selected for the base and alternate images. The two fixture blobs are 163 and 167 bytes, so they also expose a packer layout defect: feature/2610 at 2276163 defaults DTB alignment to four bytes, placing the second DTB on an invalid four-mod-eight address. The runtime rejects that Manifest and falls back to the base image.
++
++With the companion packer change (DTB default Align=3, explicit Align<3 rejected), all eight QEMU cases pass using the previously built display-validation runtime. Runtime-DT fallback receives a header check; distinct selected DTBs receive full-byte comparisons. No runtime property merging, real-board memory fixups, initramfs placement or physical boot is tested. The companion packer test also passes its five layout/rejection/round-trip cases. Until that packer change is available, the expanded QEMU test is expected to fail against the unmodified sibling packer.
+diff --git a/tests/manifest_qemu.py b/tests/manifest_qemu.py
+index 0b0bd75..8bb7ef7 100644
+--- a/tests/manifest_qemu.py
++++ b/tests/manifest_qemu.py
+@@ -12,6 +12,10 @@ def run(command, **kwargs):
+     return subprocess.run([str(x) for x in command], check=True, **kwargs)
+ 
+ 
++def escape_incbin(path):
++    return path.as_posix().replace("\\", "\\\\").replace('"', '\\"')
++
++
+ def main():
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--runtime", type=Path, default=Path("build/manifest/kShimC.bin"))
+@@ -30,11 +34,17 @@ def main():
+ 
+     payload_dts = out / "payload.dts"
+     payload_dtb = out / "payload.dtb"
+-    payload_dts.write_text('/dts-v1/; / { model="kshim-payload-fixture"; };\n')
++    payload_dts.write_text('/dts-v1/; / { model="kshim-payload-fixture"; '
++                           'chosen { bootargs="linux-only"; }; };\n')
+     run(["dtc", "-I", "dts", "-O", "dtb", "-o", payload_dtb, payload_dts])
+-    for name in ("A", "B", "D"):
+-        assembly = out / (name + ".S")
+-        assembly.write_text('''.global _start
++
++    base_dts = out / "base.dts"
++    base_dtb = out / "base.dtb"
++    base_dts.write_text('/dts-v1/; / { model="kshim-base-fixture"; '
++                        'chosen { bootargs="android-base-only"; }; };\n')
++    run(["dtc", "-I", "dts", "-O", "dtb", "-o", base_dtb, base_dts])
++
++    simple_template = '''.global _start
+ .text
+ _start:
+     b start
+@@ -69,40 +79,123 @@ finish:
+     movk x0, #0x8400, lsl #16
+     hvc #0
+     b .
+-message: .asciz "PAYLOAD_''' + name + '''_PASS\\n"
++message: .asciz "PAYLOAD_NAME_PASS\\n"
+ error: .asciz "PAYLOAD_BAD_DTB\\n"
+-''')
+-        if name == "D":
+-            assembly.write_text(assembly.read_text().replace(
+-                "    adr x4, message", f"    ldr w1, [x0, #4]\n    rev w1, w1\n"
+-                f"    ldr w2, ={payload_dtb.stat().st_size}\n    cmp w1, w2\n"
+-                "    b.ne fail\n    adr x4, message"))
++'''
++
++    dtb_template = '''.global _start
++.text
++_start:
++    b start
++    nop
++    .quad 0
++    .quad 4096
++    .quad 0
++    .quad 0
++    .quad 0
++    .quad 0
++    .ascii "ARM\\x64"
++    .long 0
++start:
++    cbz x0, fail
++    ldr w1, [x0]
++    mov w2, #0x0dd0
++    movk w2, #0xedfe, lsl #16
++    cmp w1, w2
++    b.ne fail
++    adr x7, expected_dtb
++    ldr x8, =DTB_SIZE
++    mov x9, x0
++1:  cbz x8, match
++    ldrb w10, [x9], #1
++    ldrb w11, [x7], #1
++    cmp w10, w11
++    b.ne fail
++    sub x8, x8, #1
++    b 1b
++match:
++    adr x4, message
++    b print
++fail:
++    adr x4, error
++print:
++    mov x5, #0x09000000
++2:  ldrb w6, [x4], #1
++    cbz w6, finish
++    str w6, [x5]
++    b 2b
++finish:
++    mov x0, #8
++    movk x0, #0x8400, lsl #16
++    hvc #0
++    b .
++message: .asciz "PAYLOAD_NAME_PASS\\n"
++error: .asciz "PAYLOAD_BAD_DTB\\n"
++.balign 8
++expected_dtb:
++.incbin "DTB_PATH"
++'''
++
++    for name, dtb_path in (("A", None), ("B", None), ("D", payload_dtb), ("E", base_dtb)):
++        assembly = out / (name + ".S")
++        if dtb_path is None:
++            assembly.write_text(simple_template.replace("NAME", name))
++        else:
++            assembly.write_text(
++                dtb_template.replace("NAME", name)
++                .replace("DTB_SIZE", str(dtb_path.stat().st_size))
++                .replace("DTB_PATH", escape_incbin(dtb_path)))
+         run(["aarch64-linux-gnu-gcc", "-nostdlib", "-static", "-Wl,--build-id=none",
+              "-Wl,-Ttext=0", assembly, "-o", out / (name + ".elf")], capture_output=True)
+         run(["aarch64-linux-gnu-objcopy", "-O", "binary", out / (name + ".elf"),
+              out / (name + ".bin")])
+ 
++    cases = [
++        {"name": "default", "default": "Image-A", "key": b"", "copied": False, "dtb": False, "new": False},
++        {"name": "select-linux", "default": "Image-A", "key": b"2\n", "copied": False, "dtb": False, "new": False},
++        {"name": "copy-freeexec", "default": "Image-B", "key": b"", "copied": True, "dtb": False, "new": False},
++        {"name": "payload-dtb", "default": "Image-B", "key": b"", "copied": False, "dtb": True, "new": False},
++        {"name": "short-dtb-entry", "default": "Image-B", "key": b"", "copied": False, "dtb": True, "new": False},
++        {"name": "bad-dtb-structure", "default": "Image-B", "key": b"", "copied": False, "dtb": True, "new": False},
++        {"name": "distinct-base-dtb", "default": "Image-A", "key": b"", "copied": False, "dtb": False, "new": True},
++        {"name": "distinct-alt-dtb", "default": "Image-B", "key": b"", "copied": False, "dtb": False, "new": True},
++    ]
++    expected_map = {
++        "default": "PAYLOAD_A_PASS",
++        "select-linux": "PAYLOAD_B_PASS",
++        "copy-freeexec": "PAYLOAD_B_PASS",
++        "payload-dtb": "PAYLOAD_D_PASS",
++        "short-dtb-entry": "PAYLOAD_A_PASS",
++        "bad-dtb-structure": "PAYLOAD_A_PASS",
++        "distinct-base-dtb": "PAYLOAD_E_PASS",
++        "distinct-alt-dtb": "PAYLOAD_D_PASS",
++    }
++
+     results = []
+-    for name, default, key, copied in (("default", "Image-A", b"", False),
+-                                      ("select-linux", "Image-A", b"2\n", False),
+-                                      ("copy-freeexec", "Image-B", b"", True),
+-                                      ("payload-dtb", "Image-B", b"", False),
+-                                      ("short-dtb-entry", "Image-B", b"", False),
+-                                      ("bad-dtb-structure", "Image-B", b"", False)):
++    for case in cases:
++        name = case["name"]
++        default = case["default"]
++        key = case["key"]
++        with_dtb = case["dtb"]
++        is_new = case["new"]
++        rejected = name in ("short-dtb-entry", "bad-dtb-structure")
+         config = out / (name + ".cfg")
+         packed = out / (name + ".bin")
+-        extra = "Type=FreeExec\nCopyTo=0x47000000\nCopySizeMax=0x10000\n" if copied else "Type=Linux\n"
+-        with_dtb = name in ("payload-dtb", "short-dtb-entry", "bad-dtb-structure")
++
++        extra = "Type=FreeExec\nCopyTo=0x47000000\nCopySizeMax=0x10000\n" if case["copied"] else "Type=Linux\n"
++
++        base_path = out / "E.bin" if is_new else out / "A.bin"
++        alt_path = out / "D.bin" if (with_dtb or is_new) else out / "B.bin"
++        base_extra = "DeviceTreeBlob=Image-Base-DTB\n" if is_new else ""
+         dtb_section = ""
+-        base_reference = ""
+         if with_dtb:
+             extra += "DeviceTreeBlob=Image-DTB\n"
+-            # Both executable entries deliberately share this payload DT.
+-            # The sibling packer currently emits the base entry's reference
+-            # for secondary entries (pack.c); distinct overrides need its
+-            # own repair. This still proves separation from the runtime DT.
+-            base_reference = "DeviceTreeBlob=Image-DTB\n"
+             dtb_section = f"[Image-DTB]\nName=Payload DT\nType=DTB\nPath={payload_dtb}\nBaseImage=false\n"
++        elif is_new:
++            extra += "DeviceTreeBlob=Image-DTB\n"
++            dtb_section = (f"[Image-DTB]\nName=Payload DT\nType=DTB\nPath={payload_dtb}\nBaseImage=false\n"
++                           f"[Image-Base-DTB]\nName=Base DT\nType=DTB\nPath={base_dtb}\nBaseImage=false\n")
++
+         config.write_text(f"""[Pack]
+ Shim={runtime}
+ Output={packed}
+@@ -110,13 +203,13 @@ Default={default}
+ Timeout=1500
+ [Image-A]
+ Name=Linux A
+-Path={out / 'A.bin'}
++Path={base_path}
+ Type=Linux
+ BaseImage=true
+-{base_reference}
++{base_extra}
+ [Image-B]
+ Name=Alternate B
+-Path={out / ('D.bin' if with_dtb else 'B.bin')}
++Path={alt_path}
+ BaseImage=false
+ {extra}
+ {dtb_section}
+@@ -125,7 +218,7 @@ Type=Manifest
+ """)
+         with (out / (name + "-pack.log")).open("w") as log:
+             run([out / "packer/MultiBootKernelPatcher", config], stdout=log, stderr=subprocess.STDOUT)
+-        if name in ("short-dtb-entry", "bad-dtb-structure"):
++        if rejected:
+             data = bytearray(packed.read_bytes())
+             manifest = struct.unpack_from("<Q", data, 0x20)[0]
+             cursor = manifest + 60
+@@ -149,16 +242,18 @@ Type=Manifest
+         result = run(command, input=key, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20)
+         output = result.stdout.decode(errors="replace")
+         (out / (name + ".log")).write_text(output)
+-        rejected = name in ("short-dtb-entry", "bad-dtb-structure")
+-        expected = "PAYLOAD_A_PASS" if name == "default" or rejected else "PAYLOAD_D_PASS" if with_dtb else "PAYLOAD_B_PASS"
++        expected = expected_map[name]
+         assert expected in output, output
+         if rejected:
+             assert "Manifest not found, booting base image" in output, output
+-        results.append({"case": name, "passed": True})
++        results.append({"case": name, "expected": expected, "passed": True})
+         print(name + ": PASS", flush=True)
+     (out / "validation.json").write_text(json.dumps({
+         "runtime_sha256": hashlib.sha256(runtime.read_bytes()).hexdigest(),
+-        "dtb_scope": "One shared payload DT, separate from boot/runtime DT. Distinct per-image packer references are not covered.",
++        "case_count": len(results),
++        "dtb_scope": ("Byte-for-byte verified distinct payload DT references per image; header-checked base "
++                      "runtime DT fallback. No property merging, initramfs placement, or real board "
++                      "boot validation is covered."),
+         "tests": results}, indent=2) + "\n")
+ 
+ 
+-- 
+2.55.0.vfs.0.3
+
+
+From 01a8c015e9a1889ed01ee63df8c5107413425648 Mon Sep 17 00:00:00 2001
+From: danyi <308664957+mydanyi@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 04:55:15 +0800
+Subject: [PATCH 4/4] feat: inherit runtime RAM for opt-in Linux payloads
+
+---
+ CMakeLists.txt                       |   2 +-
+ configs/tb323fu_defconfig            |  13 ++
+ docs/runtime-memory-handoff.txt      |  13 ++
+ src/core/main.c                      |  32 ++++
+ src/dt/handoff.c                     | 202 ++++++++++++++++++++++
+ src/dt/handoff_reservations.c        | 242 +++++++++++++++++++++++++++
+ src/include/dt_handoff.h             |  24 +++
+ tests/CMakeLists.txt                 |   6 +-
+ tests/dt_handoff_reservations_test.c | 162 ++++++++++++++++++
+ tests/dt_handoff_test.c              | 148 ++++++++++++++++
+ tests/linux_handoff_qemu.py          | 170 +++++++++++++++++++
+ 11 files changed, 1012 insertions(+), 2 deletions(-)
+ create mode 100644 configs/tb323fu_defconfig
+ create mode 100644 docs/runtime-memory-handoff.txt
+ create mode 100644 src/dt/handoff.c
+ create mode 100644 src/dt/handoff_reservations.c
+ create mode 100644 src/include/dt_handoff.h
+ create mode 100644 tests/dt_handoff_reservations_test.c
+ create mode 100644 tests/dt_handoff_test.c
+ create mode 100644 tests/linux_handoff_qemu.py
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 09836ce..3254bba 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -119,7 +119,7 @@ include_directories(${INCLUDE_DIRS})
+ # Define the executable target, including assembly and C source files
+ set(SRC_FILES
+     src/core/main.c src/core/platform.c src/core/uefi_boot.c src/core/picoport.c
+-    src/dt/dt.c src/dt/console.c src/dt/resources.c
++    src/dt/dt.c src/dt/handoff.c src/dt/handoff_reservations.c src/dt/console.c src/dt/resources.c
+     src/drivers/console.c src/drivers/pl011.c src/drivers/keys.c
+     src/arch/arm64/exception.c src/arch/arm64/relocation.c src/arch/arm64/mmu.c
+     src/arch/arm64/psci.c src/arch/arm64/timer.c src/arch/arm64/smp.c src/arch/arm64/smp_selftest.c src/arch/arm64/gicv3.c
+diff --git a/configs/tb323fu_defconfig b/configs/tb323fu_defconfig
+new file mode 100644
+index 0000000..d656d93
+--- /dev/null
++++ b/configs/tb323fu_defconfig
+@@ -0,0 +1,13 @@
++CONFIG_QCOM_KEYS=y
++CONFIG_QCOM_SPMI=y
++CONFIG_QCOM_KEY_DEBOUNCE_SAMPLES=2
++# CONFIG_KSHIM_QEMU_PLATFORM is not set
++CONFIG_KSHIM_FRAMEBUFFER=y
++CONFIG_KSHIM_LVGL=y
++CONFIG_KSHIM_LVGL_BUFFER_BYTES=262144
++# CONFIG_KSHIM_TOUCH is not set
++# CONFIG_KSHIM_SMP is not set
++# CONFIG_KSHIM_UEFI_TEST_MENU is not set
++# CONFIG_ENABLE_BANNER is not set
++CONFIG_DEBUG_LEVEL_NONE=y
++CONFIG_ASSERT_HALT=y
+diff --git a/docs/runtime-memory-handoff.txt b/docs/runtime-memory-handoff.txt
+new file mode 100644
+index 0000000..c8e86ef
+--- /dev/null
++++ b/docs/runtime-memory-handoff.txt
+@@ -0,0 +1,13 @@
++Runtime RAM handoff and TB323FU diagnostic profile (2026-10-03)
++
++configs/tb323fu_defconfig enables framebuffer/LVGL and Qualcomm volume/power keys, disables touch, SMP workers and the borrowed UEFI test menu. It is a first-hardware-test profile, not proof of TB323FU support.
++
++For a Linux manifest entry with a separate DTB, the zero-length /chosen/kshim,inherit-runtime-memory property opts into dt_handoff_memory. Unmarked payloads retain their existing behavior. The source is the bootloader runtime DT; the destination is a copy of the payload DT in a 256 KiB, 8-byte-aligned static buffer. Root RAM banks are normalized to destination 2/2 cells. Source reservations are conservatively reconciled without copying Android hardware bindings, phandles or bootargs. Existing destination reservations remain; source no-map intervals are added only for uncovered gaps. Conflicts with mapped/reusable destination areas fail rather than weaken reservation semantics. Missing, empty, malformed, overflowing or overlapping source RAM fails.
++
++The first Linux profile requires a built-in initramfs. Destination linux,initrd-start/end are removed; Android initrd addresses are not imported. A malformed opt-in or handoff failure returns to the original base kernel and original runtime DT. CrDK pin and Manifest ABI are unchanged.
++
++Validation on 192.168.88.9 Docker: 18/18 ASan/UBSan host tests; ARM64 build within the 4 MiB slot with no undefined symbols; 8/8 manifest QEMU cases; tests/linux_handoff_qemu.py passes actual Linux boot into an embedded diagnostic PID1 and rejection/fallback. The Linux test accepts explicit runtime/kernel/packer/base/out paths; base is the existing manifest_qemu.py A.bin fixture. It does not build or contact hardware.
++
++The diagnostic kernel used the Kaanapali source commit 37a76066478cadff757c8dcf7cb3fde58d5c5e58 (7.2.0-rc5). The TB323FU DTS and diagnostic initramfs sources are retained outside this repository in the task's mainline-bringup directory. A synthetic-RAM fixture is only test evidence, never a device DT.
++
++Remaining hardware boundary: actual display format/address, MMIO permission, PMIC key access, bootloader runtime memory layout, Android return and unsigned boot image acceptance. QEMU does not validate these. No hardware was accessed. No new PR or remote push accompanies this local change.
+diff --git a/src/core/main.c b/src/core/main.c
+index d0186e1..7e93802 100644
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -8,6 +8,8 @@
+ #include <platform.h>
+ #include <dt.h>
+ #include <qcom_dt.h>
++#include <dt_handoff.h>
++static uint64_t HandoffDtb[256 * 1024 / sizeof(uint64_t)]; /* bounded private DT scratch; 4 MiB linker assert applies */
+ 
+ #define PL011_UART_BASE 0x09000000ULL
+ #ifndef CONFIG_KSHIM_QEMU_PLATFORM
+@@ -298,6 +300,36 @@ int kshim_main(
+             const MANIFEST_ENTRY *dtb =
+                 view.entries[entry->device_tree_blob_entry];
+             selected_device_tree = linux_base + dtb->offset;
++
++            if (entry->type == MF_ENTRY_TYPE_LINUX) {
++                const void *payload = (const void *)(uintptr_t)selected_device_tree;
++                int chosen = fdt_path_offset(payload, "/chosen");
++                bool inherit = false;
++                int status = 0;
++
++                if (chosen >= 0) {
++                    status = dt_bool(payload, chosen, "kshim,inherit-runtime-memory", &inherit);
++                } else if (chosen != -FDT_ERR_NOTFOUND) {
++                    status = chosen;
++                }
++
++                if (status == 0 && inherit) {
++                    status = dt_handoff_memory(runtime_fdt,
++                                               runtime_fdt ? fdt_totalsize(runtime_fdt) : 0,
++                                               payload,
++                                               (size_t)dtb->size,
++                                               HandoffDtb,
++                                               sizeof(HandoffDtb));
++                    if (status == 0)
++                        selected_device_tree = (uint64_t)(uintptr_t)HandoffDtb;
++                }
++
++                if (status != 0) {
++                    printf("Memory handoff failed; booting base image\n");
++                    prepare_boot();
++                    arm64_boot_linux(linux_base, device_tree_address, 4);
++                }
++            }
+         }
+         if (entry->flags & MF_ENTRY_FLAG_COPY) {
+             uint64_t source_address = linux_base + entry->offset;
+diff --git a/src/dt/handoff.c b/src/dt/handoff.c
+new file mode 100644
+index 0000000..307b07a
+--- /dev/null
++++ b/src/dt/handoff.c
+@@ -0,0 +1,202 @@
++#include "dt_handoff.h"
++#include "dt.h"
++#include <string.h>
++#include <stdint.h>
++#include <limits.h>
++int dt_handoff_reservations(const void *runtime, void *output); /* internal helper */
++
++#define HANDOFF_MAX_BANKS 64
++#define HANDOFF_MAX_CAP   (2u * 1024u * 1024u)
++
++static int dt_ovl(uint64_t a, uint64_t b, uint64_t c, uint64_t d)
++{
++	return (a < d) && (c < b);
++}
++
++int dt_handoff_memory(const void *runtime, size_t runtime_size,
++		      const void *payload, size_t payload_size,
++		      void *output, size_t capacity)
++{
++	int rc, root, node, child;
++	uint32_t sac, ssc, tac, tsc;
++	size_t per_bank, nbank = 0, i, j;
++	struct dt_range banks[HANDOFF_MAX_BANKS];
++	fdt32_t reg[HANDOFF_MAX_BANKS * 4];
++	uint64_t ob, oe, rb, re, pb, pe;
++
++	rc = dt_validate(runtime, runtime_size);
++	if (rc < 0)
++		return rc;
++	rc = dt_validate(payload, payload_size);
++	if (rc < 0)
++		return rc;
++
++	if (output == NULL)
++		return -FDT_ERR_BADVALUE;
++	if (((uintptr_t)output & 7u) != 0)
++		return -FDT_ERR_BADVALUE;
++	if (capacity < sizeof(struct fdt_header))
++		return -FDT_ERR_NOSPACE;
++	if (capacity > HANDOFF_MAX_CAP || capacity > (size_t)INT_MAX)
++		return -FDT_ERR_BADVALUE;
++
++	ob = (uint64_t)(uintptr_t)output;
++	oe = ob + (uint64_t)capacity;
++	if (oe < ob)
++		return -FDT_ERR_BADVALUE;
++	rb = (uint64_t)(uintptr_t)runtime;
++	re = rb + (uint64_t)runtime_size;
++	if (re < rb || dt_ovl(ob, oe, rb, re))
++		return -FDT_ERR_BADVALUE;
++	pb = (uint64_t)(uintptr_t)payload;
++	pe = pb + (uint64_t)payload_size;
++	if (pe < pb || dt_ovl(ob, oe, pb, pe))
++		return -FDT_ERR_BADVALUE;
++
++	/* source root address/size cells */
++	root = fdt_path_offset(runtime, "/");
++	if (root < 0)
++		return root;
++	rc = dt_u32(runtime, root, "#address-cells", &sac);
++	if (rc < 0)
++		return rc;
++	rc = dt_u32(runtime, root, "#size-cells", &ssc);
++	if (rc < 0)
++		return rc;
++	if ((sac != 1 && sac != 2) || (ssc != 1 && ssc != 2))
++		return -FDT_ERR_BADVALUE;
++
++	/* target root must be 2/2 */
++	{
++		int proot = fdt_path_offset(payload, "/");
++		if (proot < 0)
++			return proot;
++		rc = dt_u32(payload, proot, "#address-cells", &tac);
++		if (rc < 0)
++			return rc;
++		rc = dt_u32(payload, proot, "#size-cells", &tsc);
++		if (rc < 0)
++			return rc;
++		if (tac != 2 || tsc != 2)
++			return -FDT_ERR_BADVALUE;
++	}
++
++	per_bank = 4u * ((size_t)sac + (size_t)ssc);
++
++	/* collect enabled memory banks in traversal order */
++	for (node = fdt_first_subnode(runtime, root); node >= 0;
++	     node = fdt_next_subnode(runtime, node)) {
++		const char *dtype = dt_string(runtime, node, "device_type");
++		const void *prop;
++		int plen;
++		if (dtype == NULL || strcmp(dtype, "memory") != 0)
++			continue;
++		if (!dt_available(runtime, node))
++			continue;
++		prop = fdt_getprop(runtime, node, "reg", &plen);
++		if (prop == NULL || plen <= 0)
++			return -FDT_ERR_BADVALUE;
++		if ((size_t)plen % per_bank != 0)
++			return -FDT_ERR_BADVALUE;
++		for (i = 0; i < (size_t)plen / per_bank; i++) {
++			uint64_t base, sz, bend;
++			rc = dt_raw_reg(runtime, node, (int)i, &base, &sz);
++			if (rc < 0)
++				return rc;
++			if (sz == 0)
++				return -FDT_ERR_BADVALUE;
++			if (base > UINT64_MAX - sz)
++				return -FDT_ERR_BADVALUE;
++			bend = base + sz;
++			for (j = 0; j < nbank; j++) {
++				uint64_t bj = banks[j].base;
++				uint64_t ej = banks[j].base + banks[j].size;
++				if (dt_ovl(base, bend, bj, ej))
++					return -FDT_ERR_BADVALUE;
++			}
++			if (nbank >= HANDOFF_MAX_BANKS)
++				return -FDT_ERR_NOSPACE;
++			banks[nbank].base = base;
++			banks[nbank].size = sz;
++			nbank++;
++		}
++	}
++	if (nbank == 0)
++		return -FDT_ERR_NOTFOUND;
++
++	for (i = 0; i < nbank; i++) {
++		reg[i * 4 + 0] = cpu_to_fdt32((uint32_t)(banks[i].base >> 32));
++		reg[i * 4 + 1] = cpu_to_fdt32((uint32_t)(banks[i].base & 0xffffffffu));
++		reg[i * 4 + 2] = cpu_to_fdt32((uint32_t)(banks[i].size >> 32));
++		reg[i * 4 + 3] = cpu_to_fdt32((uint32_t)(banks[i].size & 0xffffffffu));
++	}
++
++	rc = fdt_open_into(payload, output, (int)capacity);
++	if (rc < 0)
++		return rc;
++
++	/* remove every root child with device_type == memory */
++	for (;;) {
++		int found = 0;
++		root = fdt_path_offset(output, "/");
++		if (root < 0)
++			return root;
++		for (child = fdt_first_subnode(output, root); child >= 0;
++		     child = fdt_next_subnode(output, child)) {
++			const char *dtype = dt_string(output, child, "device_type");
++			if (dtype != NULL && strcmp(dtype, "memory") == 0) {
++				rc = fdt_del_node(output, child);
++				if (rc < 0)
++					return rc;
++				found = 1;
++				break;
++			}
++		}
++		if (!found)
++			break;
++	}
++
++	root = fdt_path_offset(output, "/");
++	if (root < 0)
++		return root;
++	rc = fdt_add_subnode(output, root, "memory");
++	if (rc < 0)
++		return rc;
++	node = rc;
++	rc = fdt_setprop_string(output, node, "device_type", "memory");
++	if (rc < 0)
++		return rc;
++	rc = fdt_setprop(output, node, "reg", reg,
++			 (int)(nbank * 4 * sizeof(fdt32_t)));
++	if (rc < 0)
++		return rc;
++
++	/* drop stale chosen initrd bounds (ignore missing props only) */
++	{
++		int chosen = fdt_path_offset(output, "/chosen");
++		if (chosen >= 0) {
++			rc = fdt_delprop(output, chosen, "linux,initrd-start");
++			if (rc < 0 && rc != -FDT_ERR_NOTFOUND)
++				return rc;
++			chosen = fdt_path_offset(output, "/chosen");
++			if (chosen < 0)
++				return chosen;
++			rc = fdt_delprop(output, chosen, "linux,initrd-end");
++			if (rc < 0 && rc != -FDT_ERR_NOTFOUND)
++				return rc;
++		}
++	}
++
++	rc = dt_handoff_reservations(runtime, output);
++	if (rc < 0)
++		return rc;
++	rc = fdt_pack(output);
++	if (rc < 0)
++		return rc;
++
++	rc = dt_validate(output, capacity);
++	if (rc < 0)
++		return rc;
++
++	return 0;
++}
+diff --git a/src/dt/handoff_reservations.c b/src/dt/handoff_reservations.c
+new file mode 100644
+index 0000000..9004c88
+--- /dev/null
++++ b/src/dt/handoff_reservations.c
+@@ -0,0 +1,242 @@
++#include "dt.h"
++#include <string.h>
++#include <stdint.h>
++#include <stdbool.h>
++#include <stdio.h>
++
++#define SRC_CAP 128
++#define DST_CAP 256
++
++struct item {
++    uint64_t base, size;
++    bool nomap, reusable;
++};
++
++static int collect(const void *f, struct item *arr, size_t cap, size_t *count)
++{
++    size_t n = 0;
++    int nrsv = fdt_num_mem_rsv(f);
++    if (nrsv < 0)
++        return nrsv;
++    for (int i = 0; i < nrsv; i++) {
++        uint64_t a, s;
++        int r = fdt_get_mem_rsv(f, i, &a, &s);
++        if (r)
++            return r;
++        if (s == 0 || a + s < a)
++            return -FDT_ERR_BADVALUE;
++        if (n >= cap)
++            return -FDT_ERR_NOSPACE;
++        arr[n].base = a; arr[n].size = s;
++        arr[n].nomap = false; arr[n].reusable = false;
++        n++;
++    }
++
++    int root = fdt_path_offset(f, "/");
++    if (root < 0)
++        return root;
++    int rm = fdt_subnode_offset(f, root, "reserved-memory");
++    if (rm == -FDT_ERR_NOTFOUND) {
++        *count = n;
++        return 0;
++    }
++    if (rm < 0)
++        return rm;
++    if (!dt_available(f, rm)) {
++        *count = n;
++        return 0;
++    }
++
++    uint32_t ac, sc, rac, rsc;
++    int r = dt_u32(f, root, "#address-cells", &ac);
++    if (r)
++        return r;
++    r = dt_u32(f, root, "#size-cells", &sc);
++    if (r)
++        return r;
++    r = dt_u32(f, rm, "#address-cells", &rac);
++    if (r)
++        return r;
++    r = dt_u32(f, rm, "#size-cells", &rsc);
++    if (r)
++        return r;
++    if ((rac != 1 && rac != 2) || (rsc != 1 && rsc != 2))
++        return -FDT_ERR_BADVALUE;
++    if (rac != ac || rsc != sc)
++        return -FDT_ERR_BADVALUE;
++
++    int rl;
++    const void *rg = fdt_getprop(f, rm, "ranges", &rl);
++    if (!rg)
++        return rl;
++    if (rl != 0)
++        return -FDT_ERR_BADVALUE;
++
++    int cells = (int)(4 * (rac + rsc));
++    for (int ch = fdt_first_subnode(f, rm); ch >= 0;
++         ch = fdt_next_subnode(f, ch)) {
++        if (!dt_available(f, ch))
++            continue;
++        int len;
++        const void *reg = fdt_getprop(f, ch, "reg", &len);
++        if (!reg) {
++            if (len == -FDT_ERR_NOTFOUND)
++                continue;
++            return len;
++        }
++        if (len <= 0 || len % cells)
++            return -FDT_ERR_BADVALUE;
++        bool nomap = false, reusable = false;
++        r = dt_bool(f, ch, "no-map", &nomap);
++        if (r)
++            return r;
++        r = dt_bool(f, ch, "reusable", &reusable);
++        if (r)
++            return r;
++        if (nomap && reusable)
++            return -FDT_ERR_BADVALUE;
++        int nent = len / cells;
++        for (int k = 0; k < nent; k++) {
++            uint64_t b, s;
++            r = dt_raw_reg(f, ch, (unsigned)k, &b, &s);
++            if (r)
++                return r;
++            if (s == 0)
++                continue;
++            if (b + s < b)
++                return -FDT_ERR_BADVALUE;
++            if (n >= cap)
++                return -FDT_ERR_NOSPACE;
++            arr[n].base = b; arr[n].size = s;
++            arr[n].nomap = nomap; arr[n].reusable = reusable;
++            n++;
++        }
++    }
++    *count = n;
++    return 0;
++}
++
++static int append_gap(void *out, struct item *arr, size_t *count,
++                      uint64_t base, uint64_t size, bool nomap)
++{
++    if (*count >= DST_CAP)
++        return -FDT_ERR_NOSPACE;
++    if (size == 0 || base + size < base)
++        return -FDT_ERR_BADVALUE;
++
++    if (!nomap) {
++        int r = fdt_add_mem_rsv(out, base, size);
++        if (r)
++            return r;
++    } else {
++        int root = fdt_path_offset(out, "/");
++        if (root < 0)
++            return root;
++        int rm = fdt_subnode_offset(out, root, "reserved-memory");
++        if (rm == -FDT_ERR_NOTFOUND) {
++            rm = fdt_add_subnode(out, root, "reserved-memory");
++            if (rm < 0)
++                return rm;
++            int r = fdt_setprop_u32(out, rm, "#address-cells", 2);
++            if (r)
++                return r;
++            r = fdt_setprop_u32(out, rm, "#size-cells", 2);
++            if (r)
++                return r;
++            r = fdt_setprop_empty(out, rm, "ranges");
++            if (r)
++                return r;
++        } else {
++            if (rm < 0)
++                return rm;
++            if (!dt_available(out, rm))
++                return -FDT_ERR_BADSTATE;
++            uint32_t c;
++            int r = dt_u32(out, rm, "#address-cells", &c);
++            if (r || c != 2)
++                return r ? r : -FDT_ERR_BADVALUE;
++            r = dt_u32(out, rm, "#size-cells", &c);
++            if (r || c != 2)
++                return r ? r : -FDT_ERR_BADVALUE;
++            int rl;
++            const void *rg = fdt_getprop(out, rm, "ranges", &rl);
++            if (!rg)
++                return rl;
++            if (rl != 0)
++                return -FDT_ERR_BADVALUE;
++        }
++        char name[64];
++        snprintf(name, sizeof name, "kshim-firmware@%llx",
++                 (unsigned long long)base);
++        int ch = fdt_add_subnode(out, rm, name);
++        if (ch < 0)
++            return ch;
++        fdt64_t reg[2];
++        reg[0] = cpu_to_fdt64(base);
++        reg[1] = cpu_to_fdt64(size);
++        int r = fdt_setprop(out, ch, "reg", reg, sizeof reg);
++        if (r)
++            return r;
++        r = fdt_setprop_empty(out, ch, "no-map");
++        if (r)
++            return r;
++    }
++
++    arr[*count].base = base;
++    arr[*count].size = size;
++    arr[*count].nomap = nomap;
++    arr[*count].reusable = false;
++    (*count)++;
++    return 0;
++}
++
++int dt_handoff_reservations(const void *runtime, void *output)
++{
++    struct item src[SRC_CAP], dst[DST_CAP];
++    size_t nsrc = 0, ndst = 0;
++    int r = collect(runtime, src, SRC_CAP, &nsrc);
++    if (r)
++        return r;
++    r = collect(output, dst, DST_CAP, &ndst);
++    if (r)
++        return r;
++
++    for (int pass = 0; pass < 2; pass++) {
++        bool want = (pass == 0);
++        for (size_t i = 0; i < nsrc; i++) {
++            if (src[i].nomap != want)
++                continue;
++            uint64_t cursor = src[i].base;
++            uint64_t end = src[i].base + src[i].size;
++            while (cursor < end) {
++                uint64_t cover_end = cursor;
++                uint64_t next_start = end;
++                for (size_t j = 0; j < ndst; j++) {
++                    uint64_t db = dst[j].base;
++                    uint64_t de = dst[j].base + dst[j].size;
++                    if (de <= cursor || db >= end)
++                        continue;
++                    if (dst[j].reusable ||
++                        (src[i].nomap && !dst[j].nomap))
++                        return -FDT_ERR_BADVALUE;
++                    if (db <= cursor) {
++                        if (de > cover_end)
++                            cover_end = de;
++                    } else if (db < next_start) {
++                        next_start = db;
++                    }
++                }
++                if (cover_end > cursor) {
++                    cursor = cover_end < end ? cover_end : end;
++                    continue;
++                }
++                r = append_gap(output, dst, &ndst, cursor,
++                               next_start - cursor, src[i].nomap);
++                if (r)
++                    return r;
++                cursor = next_start;
++            }
++        }
++    }
++    return 0;
++}
+diff --git a/src/include/dt_handoff.h b/src/include/dt_handoff.h
+new file mode 100644
+index 0000000..90ab3d8
+--- /dev/null
++++ b/src/include/dt_handoff.h
+@@ -0,0 +1,24 @@
++#ifndef DT_HANDOFF_H
++#define DT_HANDOFF_H
++
++#include <stddef.h>
++
++/*
++ * Merge a runtime (source) device tree's RAM/memory description into a
++ * payload (target) device tree, producing a merged output FDT.
++ *
++ * runtime / payload inputs are immutable: the call MUST NOT modify them.
++ * output buffer contents are invalid on failure (do not use on non-zero rc).
++ *
++ * Destination requires root "#address-cells = 2" and "#size-cells = 2".
++ * The initial builtin-initramfs profile removes destination
++ * linux,initrd-start / linux,initrd-end properties.
++ * Any caller opt-in policy is applied externally, not by this function.
++ *
++ * Returns 0 on success, a negative FDT error code on failure.
++ */
++int dt_handoff_memory(const void *runtime, size_t runtime_size,
++                      const void *payload, size_t payload_size,
++                      void *output, size_t capacity);
++
++#endif /* DT_HANDOFF_H */
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 02f6144..74cd3d0 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -80,7 +80,7 @@ kshim_test(st_ftm4_test st_ftm4_test.c "${KSHIM_ROOT}/src/drivers/st_ftm4.c"
+     "${KSHIM_ROOT}/src/drivers/touch.c")
+ 
+ add_library(kshim_dt STATIC
+-    "${KSHIM_ROOT}/src/dt/dt.c" "${KSHIM_ROOT}/src/dt/spmi.c"
++    "${KSHIM_ROOT}/src/dt/dt.c" "${KSHIM_ROOT}/src/dt/handoff.c" "${KSHIM_ROOT}/src/dt/handoff_reservations.c" "${KSHIM_ROOT}/src/dt/spmi.c"
+     "${KSHIM_ROOT}/src/dt/gpio.c" "${KSHIM_ROOT}/src/dt/touch.c" "${KSHIM_ROOT}/src/dt/console.c"
+     "${KSHIM_ROOT}/src/dt/splash.c"
+     "${KSHIM_ROOT}/lib/libfdt/fdt.c" "${KSHIM_ROOT}/lib/libfdt/fdt_check.c"
+@@ -99,6 +99,10 @@ target_compile_definitions(dt_test PRIVATE "FIXTURES=\"${CMAKE_CURRENT_SOURCE_DI
+ target_link_libraries(dt_test PRIVATE kshim_dt)
+ kshim_test(crdk_poll_test crdk_poll_test.c)
+ target_link_libraries(crdk_poll_test PRIVATE crdk)
++kshim_test(dt_handoff_test dt_handoff_test.c)
++target_link_libraries(dt_handoff_test PRIVATE kshim_dt)
++kshim_test(dt_handoff_reservations_test dt_handoff_reservations_test.c)
++target_link_libraries(dt_handoff_reservations_test PRIVATE kshim_dt)
+ 
+ find_program(DTC_EXECUTABLE dtc REQUIRED)
+ add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/fixtures/kona-resources.dtb
+diff --git a/tests/dt_handoff_reservations_test.c b/tests/dt_handoff_reservations_test.c
+new file mode 100644
+index 0000000..8205f7b
+--- /dev/null
++++ b/tests/dt_handoff_reservations_test.c
+@@ -0,0 +1,162 @@
++#include <assert.h>
++#include <stdio.h>
++#include <stdint.h>
++#include <string.h>
++#include "dt.h"
++#include "dt_handoff.h"
++
++
++static uint64_t rt[8192], pl[8192], out[8192];
++
++static void init(void *f)
++{
++    assert(fdt_create_empty_tree(f, sizeof(rt)) == 0);
++    assert(fdt_setprop_u32(f, 0, "#address-cells", 2) == 0);
++    assert(fdt_setprop_u32(f, 0, "#size-cells", 2) == 0);
++}
++
++static void reg(void *f, int node, uint64_t base, uint64_t size)
++{
++    fdt64_t cells[2] = { cpu_to_fdt64(base), cpu_to_fdt64(size) };
++    assert(fdt_setprop(f, node, "reg", cells, sizeof(cells)) == 0);
++}
++
++static int reserve(void *f, const char *name, uint64_t base, uint64_t size, int nomap)
++{
++    int p = fdt_subnode_offset(f, 0, "reserved-memory");
++    if (p < 0) {
++        p = fdt_add_subnode(f, 0, "reserved-memory");
++        assert(p >= 0);
++        assert(fdt_setprop_u32(f, p, "#address-cells", 2) == 0);
++        assert(fdt_setprop_u32(f, p, "#size-cells", 2) == 0);
++        assert(fdt_setprop(f, p, "ranges", NULL, 0) == 0);
++    }
++    p = fdt_subnode_offset(f, 0, "reserved-memory");
++    assert(p >= 0);
++    int node = fdt_add_subnode(f, p, name);
++    assert(node >= 0);
++    reg(f, node, base, size);
++    if (nomap)
++        assert(fdt_setprop(f, node, "no-map", NULL, 0) == 0);
++    return node;
++}
++
++static void setup(void)
++{
++    init(rt);
++    init(pl);
++    int m = fdt_add_subnode(rt, 0, "memory");
++    assert(m >= 0);
++    assert(fdt_setprop_string(rt, m, "device_type", "memory") == 0);
++    reg(rt, m, 0x80000000, 0x40000000);
++}
++
++static void test1(void)
++{
++    setup();
++    int src = reserve(rt, "src", 0x90000000, 0x4000, 1);
++    assert(fdt_setprop_u32(rt, src, "phandle", 77) == 0);
++    reserve(rt, "zeros", 0, 0, 1);
++    int rm = fdt_subnode_offset(rt, 0, "reserved-memory");
++    int sz = fdt_add_subnode(rt, rm, "sizeonly");
++    assert(sz >= 0);
++    assert(fdt_setprop_u64(rt, sz, "size", 0x1000) == 0);
++    int d = reserve(rt, "disabled", 0x92000000, 0x1000, 1);
++    assert(fdt_setprop_string(rt, d, "status", "disabled") == 0);
++    assert(fdt_add_mem_rsv(rt, 0x91000000, 0x1000) == 0);
++    int ex = reserve(pl, "existing", 0x90001000, 0x1000, 1);
++    assert(fdt_setprop_u32(pl, ex, "phandle", 9) == 0);
++    assert(fdt_setprop_string(pl, ex, "compatible", "test") == 0);
++
++    struct dt_range ranges[16];
++    bool nomap[16];
++    size_t n = 0;
++    assert(dt_handoff_memory(rt, sizeof(rt), pl, sizeof(pl), out, sizeof(out)) == 0);
++    assert(dt_reservations(out, ranges, nomap, 16, &n) == 0);
++    assert(n == 4);
++
++    bool m0 = false, m1 = false, m2 = false, m3 = false;
++    for (size_t i = 0; i < n; i++) {
++        if (ranges[i].base == 0x90001000 && ranges[i].size == 0x1000) m0 = true;
++        if (ranges[i].base == 0x90000000 && ranges[i].size == 0x1000) m1 = true;
++        if (ranges[i].base == 0x90002000 && ranges[i].size == 0x2000) m2 = true;
++        if (ranges[i].base == 0x91000000 && ranges[i].size == 0x1000) m3 = true;
++        if (ranges[i].base == 0x90000000 || ranges[i].base == 0x90002000)
++            assert(nomap[i] == true);
++    }
++    assert(m0 && m1 && m2 && m3);
++
++    assert(fdt_num_mem_rsv(out) == 1);
++    uint64_t a = 0, s = 0;
++    assert(fdt_get_mem_rsv(out, 0, &a, &s) == 0);
++    assert(a == 0x91000000 && s == 0x1000);
++    int n9 = fdt_node_offset_by_phandle(out, 9);
++    assert(n9 >= 0);
++    const char *c = fdt_getprop(out, n9, "compatible", NULL);
++    assert(c != NULL && strcmp(c, "test") == 0);
++    assert(fdt_node_offset_by_phandle(out, 77) < 0);
++}
++
++static void test2(void)
++{
++    setup();
++    reserve(rt, "src", 0x90000000, 0x4000, 1);
++    reserve(pl, "tgt", 0x90001000, 0x1000, 0);
++    assert(dt_handoff_memory(rt, sizeof(rt), pl, sizeof(pl), out, sizeof(out)) < 0);
++}
++
++static void test3(void)
++{
++    setup();
++    int src = reserve(rt, "src", 0x91000000, 0x1000, 0);
++    assert(fdt_setprop_string(rt, src, "compatible", "src") == 0);
++    assert(fdt_setprop_u32(rt, src, "phandle", 55) == 0);
++    assert(dt_handoff_memory(rt, sizeof(rt), pl, sizeof(pl), out, sizeof(out)) == 0);
++    assert(fdt_num_mem_rsv(out) == 1);
++    uint64_t a = 0, s = 0;
++    assert(fdt_get_mem_rsv(out, 0, &a, &s) == 0);
++    assert(a == 0x91000000 && s == 0x1000);
++    assert(fdt_node_offset_by_phandle(out, 55) < 0);
++    for (int off = -1; (off = fdt_next_node(out, off, NULL)) >= 0; ) {
++        const char *cp = fdt_getprop(out, off, "compatible", NULL);
++        assert(cp == NULL || strcmp(cp, "src") != 0);
++    }
++    int rm = fdt_subnode_offset(out, 0, "reserved-memory");
++    if (rm >= 0) {
++        for (int ch = fdt_first_subnode(out, rm); ch >= 0; ch = fdt_next_subnode(out, ch))
++            assert(fdt_getprop(out, ch, "no-map", NULL) == NULL);
++    }
++}
++
++static void test4(void)
++{
++    setup();
++    assert(fdt_setprop_u32(rt, 0, "#address-cells", 1) == 0);
++    assert(fdt_setprop_u32(rt, 0, "#size-cells", 1) == 0);
++    int m = fdt_path_offset(rt, "/memory");
++    assert(m >= 0);
++    fdt32_t cells[2] = { cpu_to_fdt32(0x40000000), cpu_to_fdt32(0x10000000) };
++    assert(fdt_setprop(rt, m, "reg", cells, sizeof(cells)) == 0);
++    assert(dt_handoff_memory(rt, sizeof(rt), pl, sizeof(pl), out, sizeof(out)) == 0);
++    int mo = fdt_path_offset(out, "/memory");
++    assert(mo >= 0);
++    int len = 0;
++    assert(fdt_getprop(out, mo, "reg", &len) != NULL && len == 16);
++    uint64_t a = 0, s = 0;
++    assert(dt_raw_reg(out, mo, 0, &a, &s) == 0);
++    assert(a == 0x40000000 && s == 0x10000000);
++    const fdt32_t *ac = fdt_getprop(out, 0, "#address-cells", NULL);
++    const fdt32_t *sc = fdt_getprop(out, 0, "#size-cells", NULL);
++    assert(ac != NULL && fdt32_to_cpu(*ac) == 2);
++    assert(sc != NULL && fdt32_to_cpu(*sc) == 2);
++}
++
++int main(void)
++{
++    test1();
++    test2();
++    test3();
++    test4();
++    printf("dt_handoff_reservations_test PASS\n");
++    return 0;
++}
+diff --git a/tests/dt_handoff_test.c b/tests/dt_handoff_test.c
+new file mode 100644
+index 0000000..5fe8813
+--- /dev/null
++++ b/tests/dt_handoff_test.c
+@@ -0,0 +1,148 @@
++#include <assert.h>
++#include <stdint.h>
++#include <string.h>
++#include <stdio.h>
++#include <dt.h>
++#include <dt_handoff.h>
++
++static uint64_t g_out[2048];
++
++static void expect_neg(void *rt, size_t rtsz, void *pl, size_t plsz, size_t cap)
++{
++	static uint64_t srt[2048], spl[2048];
++	memcpy(srt, rt, rtsz);
++	memcpy(spl, pl, plsz);
++	int r = dt_handoff_memory(rt, rtsz, pl, plsz, g_out, cap);
++	assert(r < 0);
++	assert(memcmp(srt, rt, rtsz) == 0);
++	assert(memcmp(spl, pl, plsz) == 0);
++}
++
++int main(void)
++{
++	static uint64_t rt[2048], pl[2048], out[2048], snaprt[2048], snappl[2048];
++	fdt32_t reg8[8] = {
++		cpu_to_fdt32(0), cpu_to_fdt32(0x80000000u),
++		cpu_to_fdt32(0), cpu_to_fdt32(0x40000000u),
++		cpu_to_fdt32(1), cpu_to_fdt32(0),
++		cpu_to_fdt32(0), cpu_to_fdt32(0x40000000u)
++	};
++	fdt32_t reg16[4] = {0, 0, 0, 0};
++	int off, ch, n, len;
++
++	/* runtime tree: one /memory node, two banks */
++	assert(fdt_create_empty_tree(rt, sizeof rt) == 0);
++	assert(fdt_setprop_u32(rt, 0, "#address-cells", 2) == 0);
++	assert(fdt_setprop_u32(rt, 0, "#size-cells", 2) == 0);
++	off = fdt_add_subnode(rt, 0, "memory");
++	assert(off >= 0);
++	assert(fdt_setprop_string(rt, off, "device_type", "memory") == 0);
++	assert(fdt_setprop(rt, off, "reg", reg8, sizeof reg8) == 0);
++	off = fdt_add_subnode(rt, 0, "chosen");
++	assert(off >= 0);
++	assert(fdt_setprop_string(rt, off, "bootargs", "android-only") == 0);
++
++	/* payload tree */
++	assert(fdt_create_empty_tree(pl, sizeof pl) == 0);
++	assert(fdt_setprop_u32(pl, 0, "#address-cells", 2) == 0);
++	assert(fdt_setprop_u32(pl, 0, "#size-cells", 2) == 0);
++	assert(fdt_setprop_string(pl, 0, "model", "payload-model") == 0);
++	off = fdt_add_subnode(pl, 0, "memory");
++	assert(off >= 0);
++	assert(fdt_setprop_string(pl, off, "device_type", "memory") == 0);
++	assert(fdt_setprop(pl, off, "reg", reg16, sizeof reg16) == 0);
++	off = fdt_add_subnode(pl, 0, "memory@a0000000");
++	assert(off >= 0);
++	assert(fdt_setprop_string(pl, off, "device_type", "memory") == 0);
++	assert(fdt_setprop(pl, off, "reg", reg16, sizeof reg16) == 0);
++	ch = fdt_add_subnode(pl, 0, "chosen");
++	assert(ch >= 0);
++	assert(fdt_setprop_string(pl, ch, "bootargs", "linux-only") == 0);
++	assert(fdt_setprop_string(pl, ch, "stdout-path", "serial0") == 0);
++	assert(fdt_setprop_u32(pl, ch, "linux,initrd-start", 0) == 0);
++	assert(fdt_setprop_u32(pl, ch, "linux,initrd-end", 0) == 0);
++
++	/* positive case */
++	memcpy(snaprt, rt, sizeof rt);
++	memcpy(snappl, pl, sizeof pl);
++	assert(dt_handoff_memory(rt, sizeof rt, pl, sizeof pl, out, sizeof out) == 0);
++	assert(!dt_validate(out, sizeof out));
++	assert(memcmp(snaprt, rt, sizeof rt) == 0);
++	assert(memcmp(snappl, pl, sizeof pl) == 0);
++
++	n = 0;
++	fdt_for_each_subnode(off, out, 0) {
++		const fdt32_t *rg;
++		const char *dtv = fdt_getprop(out, off, "device_type", NULL);
++		if (dtv && !strcmp(dtv, "memory")) {
++			n++;
++			rg = fdt_getprop(out, off, "reg", &len);
++			assert(rg && len == (int)sizeof reg8);
++			assert(memcmp(rg, reg8, sizeof reg8) == 0);
++		}
++	}
++	assert(n == 1);
++
++	assert(!strcmp(fdt_getprop(out, 0, "model", NULL), "payload-model"));
++	ch = fdt_path_offset(out, "/chosen");
++	assert(ch >= 0);
++	assert(!strcmp(fdt_getprop(out, ch, "bootargs", NULL), "linux-only"));
++	assert(!strcmp(fdt_getprop(out, ch, "stdout-path", NULL), "serial0"));
++	assert(fdt_getprop(out, ch, "linux,initrd-start", &len) == NULL && len == -FDT_ERR_NOTFOUND);
++	assert(fdt_getprop(out, ch, "linux,initrd-end", &len) == NULL && len == -FDT_ERR_NOTFOUND);
++
++	/* negative: unsupported destination capacity */
++	expect_neg(rt, sizeof rt, pl, sizeof pl, 64);
++
++	/* negative: all-zero RAM reg */
++	{
++		fdt32_t zc[4] = {0, 0, 0, 0};
++		off = fdt_path_offset(rt, "/memory");
++		assert(off >= 0);
++		assert(fdt_setprop(rt, off, "reg", zc, sizeof zc) == 0);
++	}
++	expect_neg(rt, sizeof rt, pl, sizeof pl, sizeof g_out);
++	memcpy(rt, snaprt, sizeof rt);
++
++	/* negative: malformed (12-byte) RAM reg */
++	off = fdt_path_offset(rt, "/memory");
++	assert(off >= 0);
++	assert(fdt_setprop(rt, off, "reg", reg8, 12) == 0);
++	expect_neg(rt, sizeof rt, pl, sizeof pl, sizeof g_out);
++	memcpy(rt, snaprt, sizeof rt);
++
++	/* negative: RAM range overflow */
++	{
++		fdt32_t ovf[4] = {cpu_to_fdt32(0xffffffffu), cpu_to_fdt32(0xfffff000u),
++			cpu_to_fdt32(0), cpu_to_fdt32(0x2000u)};
++		off = fdt_path_offset(rt, "/memory");
++		assert(off >= 0);
++		assert(fdt_setprop(rt, off, "reg", ovf, sizeof ovf) == 0);
++	}
++	expect_neg(rt, sizeof rt, pl, sizeof pl, sizeof g_out);
++	memcpy(rt, snaprt, sizeof rt);
++
++	/* negative: overlapping banks */
++	{
++		fdt32_t ob[8];
++		memcpy(ob, reg8, sizeof ob);
++		ob[4] = cpu_to_fdt32(0);
++		ob[5] = cpu_to_fdt32(0x90000000u);
++		ob[6] = cpu_to_fdt32(0);
++		ob[7] = cpu_to_fdt32(0x40000000u);
++		off = fdt_path_offset(rt, "/memory");
++		assert(off >= 0);
++		assert(fdt_setprop(rt, off, "reg", ob, sizeof ob) == 0);
++	}
++	expect_neg(rt, sizeof rt, pl, sizeof pl, sizeof g_out);
++	memcpy(rt, snaprt, sizeof rt);
++
++	/* negative: unsupported root 1/1 */
++	assert(fdt_setprop_u32(pl, 0, "#address-cells", 1) == 0);
++	assert(fdt_setprop_u32(pl, 0, "#size-cells", 1) == 0);
++	expect_neg(rt, sizeof rt, pl, sizeof pl, sizeof g_out);
++	memcpy(rt, snaprt, sizeof rt);
++
++	printf("dt_handoff_test PASS\n");
++	return 0;
++}
+diff --git a/tests/linux_handoff_qemu.py b/tests/linux_handoff_qemu.py
+new file mode 100644
+index 0000000..e3085d1
+--- /dev/null
++++ b/tests/linux_handoff_qemu.py
+@@ -0,0 +1,170 @@
++#!/usr/bin/env python3
++"""QEMU-only Linux/embedded init handoff validation for the TB323FU kShim.
++
++Builds nothing. Drives an existing packer over a manifest_qemu.py A.bin
++fixture, boots the produced image under qemu-system-aarch64, and checks the
++kShim diagnostic handoff for two cases. No hardware, no publish, no cleanup.
++"""
++import argparse
++import hashlib
++import json
++import shutil
++import subprocess
++import sys
++from pathlib import Path
++
++
++def run(cmd, log=None, timeout=None, check=False, cwd=None):
++    cmd = [str(c) for c in cmd]
++    print("+", " ".join(cmd), flush=True)
++    try:
++        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
++                           timeout=timeout, cwd=cwd)
++    except subprocess.TimeoutExpired as e:
++        if log:
++            Path(log).write_bytes(e.stdout or b"")
++        raise
++    data = p.stdout or b""
++    if log:
++        Path(log).write_bytes(data)
++    if check and p.returncode != 0:
++        raise SystemExit("command failed (%d): %s" % (p.returncode, " ".join(cmd)))
++    return p.returncode, data
++
++
++def sha256(path):
++    h = hashlib.sha256()
++    with open(path, "rb") as f:
++        for chunk in iter(lambda: f.read(1 << 20), b""):
++            h.update(chunk)
++    return h.hexdigest()
++
++
++def main():
++    ap = argparse.ArgumentParser(description="QEMU Linux handoff validation")
++    ap.add_argument("--runtime", required=True, type=Path)
++    ap.add_argument("--kernel", required=True, type=Path)
++    ap.add_argument("--packer", required=True, type=Path)
++    ap.add_argument("--base", required=True, type=Path)
++    ap.add_argument("--out", required=True, type=Path)
++    args = ap.parse_args()
++
++    runtime = args.runtime.resolve()
++    kernel = args.kernel.resolve()
++    packer = args.packer.resolve()
++    base = args.base.resolve()
++    out = args.out.resolve()
++    out.mkdir(parents=True, exist_ok=True)
++
++    for p in (runtime, kernel, packer, base):
++        if not p.is_file():
++            raise SystemExit("missing input: %s" % p)
++    if runtime.stat().st_size != 4 * 1024 * 1024:
++        raise SystemExit("runtime must be exactly 4 MiB")
++
++    dtb = out / "qemu.dtb"
++    run(["qemu-system-aarch64", "-machine", "virt,gic-version=3,dumpdtb=" + str(dtb),
++         "-cpu", "cortex-a76", "-smp", "1",
++         "-m", "1024M", "-display", "none", "-monitor", "none",
++         "-serial", "none"],
++        log=out / "qemu-dumpdtb.log", timeout=30, check=True)
++
++    _rc, reg = run(["fdtget", "-t", "x", str(dtb), "/memory@40000000", "reg"])
++    if reg.decode().strip() != "0 40000000 0 40000000":
++        raise SystemExit("unexpected QEMU root RAM node: %r" % reg.decode().strip())
++
++    kernel_sha = sha256(kernel)
++    runtime_sha = sha256(runtime)
++    results = {}
++    failed = False
++
++    for case in ("inherit-ram", "reject-bad-target"):
++        dt = out / (case + ".dtb")
++        shutil.copyfile(dtb, dt)
++        run(["fdtput", "-t", "s", str(dt), "/chosen", "bootargs",
++             "console=ttyAMA0 earlycon rdinit=/init "
++             "kshim.diag_poweroff=1 loglevel=5"], check=True)
++        run(["fdtput", str(dt), "/chosen", "kshim,inherit-runtime-memory"], check=True)
++        run(["fdtput", "-t", "x", str(dt), "/memory@40000000", "reg",
++             "0", "0", "0", "0"], check=True)
++        run(["fdtput", "-t", "x", str(dt), "/chosen", "linux,initrd-start",
++             "dead0000"], check=True)
++        run(["fdtput", "-t", "x", str(dt), "/chosen", "linux,initrd-end",
++             "dead1000"], check=True)
++        if case == "reject-bad-target":
++            run(["fdtput", "-t", "x", str(dt), "/", "#address-cells", "1"], check=True)
++
++        cfg = out / (case + ".cfg")
++        cfg.write_text("\n".join([
++            "[Pack]",
++            "Shim=" + str(runtime),
++            "Output=" + case + ".bin",
++            "Default=Image-Linux",
++            "Timeout=1",
++            "[Image-Base]",
++            "Name=Fallback",
++            "Path=" + str(base),
++            "Type=Linux",
++            "BaseImage=true",
++            "[Image-Linux]",
++            "Name=Linux diagnostic",
++            "Path=" + str(kernel),
++            "Type=Linux",
++            "BaseImage=false",
++            "Align=21",
++            "DeviceTreeBlob=Image-DTB",
++            "[Image-DTB]",
++            "Name=Linux DT",
++            "Path=" + case + ".dtb",
++            "Type=DTB",
++            "BaseImage=false",
++            "[Manifest]",
++            "Type=Manifest",
++            "",
++        ]))
++
++        run([str(packer), str(cfg)], log=out / (case + "-pack.log"),
++            check=True, cwd=str(out))
++        image = out / (case + ".bin")
++        if not image.is_file():
++            raise SystemExit("packer did not produce %s" % image)
++
++        rc, data = run(["qemu-system-aarch64", "-machine", "virt,gic-version=3",
++            "-accel", "tcg", "-cpu", "cortex-a76", "-smp", "1", "-m", "1024M",
++            "-display", "none", "-monitor", "none", "-serial", "stdio",
++            "-no-reboot", "-kernel", str(image),
++            "-append", "console=ttyAMA0 rdinit=/wrong-source-init "
++                       "kshim.diag_poweroff=0"],
++            log=out / (case + ".log"), timeout=45)
++        text = data.decode("utf-8", "replace")
++
++        if case == "inherit-ram":
++            ok = (rc == 0
++                  and "TB323FU_DIAG_INIT_REACHED" in text
++                  and "KSHIM_DIAG_QEMU_PASS" in text
++                  and "rdinit=/init" in text
++                  and "/wrong-source-init" not in text)
++        else:
++            ok = (rc == 0
++                  and "PAYLOAD_A_PASS" in text
++                  and "KSHIM_DIAG_QEMU_PASS" not in text
++                  and "Memory handoff failed; booting base image" in text)
++
++        results[case] = {"status": "PASS" if ok else "FAIL", "returncode": rc}
++        print("PASS" if ok else "FAIL", case, flush=True)
++        if not ok:
++            failed = True
++
++    (out / "validation.json").write_text(json.dumps({
++        "cases": results,
++        "kernel_sha256": kernel_sha,
++        "runtime_sha256": runtime_sha,
++        "scope": "QEMU only; no TB323FU hardware validation",
++    }, indent=2) + "\n")
++
++    if failed:
++        raise SystemExit(1)
++
++
++if __name__ == "__main__":
++    main()
+-- 
+2.55.0.vfs.0.3
+

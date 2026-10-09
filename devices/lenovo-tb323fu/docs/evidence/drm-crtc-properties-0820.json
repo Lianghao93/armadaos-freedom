@@ -1,0 +1,88 @@
+{
+  "device": "/dev/dri/card1",
+  "dev_t": 57857,
+  "atomic_cap": {
+    "return": 0,
+    "errno": 0
+  },
+  "crtcs": [
+    {
+      "crtc_id": 106,
+      "properties": [
+        {
+          "prop_id": 25,
+          "name": "VRR_ENABLED",
+          "flags": 2,
+          "value": 0,
+          "count_values": 2,
+          "count_enums": 0,
+          "count_blobs": 0
+        },
+        {
+          "prop_id": 28,
+          "name": "CTM",
+          "flags": 16,
+          "value": 0,
+          "count_values": 0,
+          "count_enums": 0,
+          "count_blobs": 0
+        }
+      ]
+    },
+    {
+      "crtc_id": 107,
+      "properties": [
+        {
+          "prop_id": 25,
+          "name": "VRR_ENABLED",
+          "flags": 2,
+          "value": 0,
+          "count_values": 2,
+          "count_enums": 0,
+          "count_blobs": 0
+        },
+        {
+          "prop_id": 28,
+          "name": "CTM",
+          "flags": 16,
+          "value": 0,
+          "count_values": 0,
+          "count_enums": 0,
+          "count_blobs": 0
+        }
+      ]
+    },
+    {
+      "crtc_id": 108,
+      "properties": [
+        {
+          "prop_id": 25,
+          "name": "VRR_ENABLED",
+          "flags": 2,
+          "value": 0,
+          "count_values": 2,
+          "count_enums": 0,
+          "count_blobs": 0
+        },
+        {
+          "prop_id": 28,
+          "name": "CTM",
+          "flags": 16,
+          "value": 0,
+          "count_values": 0,
+          "count_enums": 0,
+          "count_blobs": 0
+        }
+      ]
+    }
+  ],
+  "property_presence": {
+    "DEGAMMA_LUT": false,
+    "DEGAMMA_LUT_SIZE": false,
+    "DPU_3D_LUT": false,
+    "DPU_3D_LUT_SIZE": false,
+    "GAMMA_LUT": false,
+    "CTM": true
+  },
+  "ok": true
+}

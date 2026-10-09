@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Joonhoe Kim
+# Started by tb323fu-helperd (Kernel.Check / Download, HelperUpdate.Check / Download), never by itself:
+# downloads the files the daemon listed in /run/tb323fu/kernel-fetch.list into
+# /var/cache/tb323fu-kernel (GitHub Releases through the REST API). The daemon
+# has no network access of its own and checks everything this leaves there
+# (SHA256SUMS, sizes, the kernel banner) before using it.
+[Unit]
+Description=Download a TB323FU kernel or helper release for tb323fu-helperd
+Documentation=https://github.com/joonhoekim/tb323fu-linux/blob/main/docs/helper.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=@LIBEXECDIR@/tb323fu-kernel-fetch /run/tb323fu/kernel-fetch.list
+TimeoutStartSec=35min
+DynamicUser=yes
+CacheDirectory=tb323fu-kernel
+CacheDirectoryMode=0700
+# optional: a GitHub token for a private repository or a higher rate limit
+# (/etc/credstore/tb323fu-github-token; systemd 254+, older ones ignore this line)
+ImportCredential=tb323fu-github-token
+UMask=0077
+# nothing else: no devices, no kernel knobs, no capabilities, IP only
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+SystemCallArchitectures=native
+SystemCallFilter=@system-service

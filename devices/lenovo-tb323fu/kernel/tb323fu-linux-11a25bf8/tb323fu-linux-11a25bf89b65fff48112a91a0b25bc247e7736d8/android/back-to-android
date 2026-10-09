@@ -1,0 +1,102 @@
+#!/bin/busybox sh
+# SPDX-License-Identifier: MIT
+# back-to-android: put the Android kernel back into boot_a from the running
+# Linux, then reboot into it. Installed on the Linux side as
+# /usr/local/sbin/back-to-android (also used by the emergency key combo).
+#
+# The Android image is kept in boot_b, which the tablet never boots (slot _b
+# is unbootable; virtual A/B). It is copied there once from Android.
+#
+#   back-to-android SHA256        # SHA-256 the copy must have; nothing is
+#                                 # written unless boot_b matches it
+#
+# Partitions are found by their GPT name only (PARTNAME in sysfs), never by
+# number: the same LUN holds the bootloaders. Every step is checked, and on
+# any doubt it stops without writing.
+
+want=$1
+[ ${#want} -eq 64 ] || { echo "usage: back-to-android <sha256 of the Android boot image>"; exit 2; }
+
+find_part() {
+	for u in /sys/class/block/*/uevent; do
+		grep -q "^PARTNAME=$1\$" "$u" || continue
+		d=$(grep '^DEVNAME=' "$u" | cut -d= -f2)
+		echo "/dev/$d"
+	done
+}
+
+a=$(find_part boot_a); b=$(find_part boot_b)
+[ "$(echo "$a" | wc -w)" = 1 ] && [ "$(echo "$b" | wc -w)" = 1 ] || { echo "boot_a/boot_b not unique: '$a' '$b'"; exit 1; }
+[ -b "$a" ] && [ -b "$b" ] || { echo "no block device for $a or $b"; exit 1; }
+[ "$(cat /sys/class/block/${a#/dev/}/size)" = "$(cat /sys/class/block/${b#/dev/}/size)" ] || { echo "boot_a and boot_b differ in size"; exit 1; }
+echo "boot_a=$a boot_b=$b"
+
+hb=$(sha256sum "$b" | cut -d' ' -f1)
+echo "boot_b sha256 $hb"
+[ "$hb" = "$want" ] || { echo "boot_b is not the expected image; not writing"; exit 1; }
+
+# Keep the Linux image we are leaving, so Android's "Switch to Linux"
+# (KernelSU module switch-to-linux) boots the same one back without staging:
+# /var/lib/tb323fu/linux-current.img + .sha256 on the Linux state root, which
+# Android mounts read-only. The state root is the one the initramfs reads the
+# boot selection from: the first present of baldur-root, baldur-root-sd, then
+# the tb323fu-* partitions in sorted order. From another root it is mounted
+# for the copy. Only from a running Linux root (not from the initramfs); a
+# failure here only warns -- going back to Android must not depend on it.
+# >>> state root (android/test-state-root.sh runs this part offline)
+state_root() { for u in /sys/class/block/*/uevent; do sed -n 's/^PARTNAME=//p' "$u"; done |
+	grep -E '^(baldur-root|baldur-root-sd|tb323fu-.+)$' | LC_ALL=C sort -u | head -n1; }
+# the partition / is mounted from
+cur_root() { mm=$(awk '$5 == "/" { m = $3 } END { print m }' /proc/self/mountinfo)
+	sed -n 's/^PARTNAME=//p' "/sys/dev/block/$mm/uevent" 2>/dev/null; }
+# <<< state root
+save_current() {
+	[ -f /etc/os-release ] || return 0
+	ha=$(sha256sum "$a" | cut -d' ' -f1)
+	[ "$ha" = "$want" ] && return 0	# boot_a already holds Android
+	st=$(state_root); m=
+	if [ -z "$st" ] || [ "$st" = "$(cur_root)" ]; then
+		[ -w /var/lib ] || return 0
+		s=/var/lib/tb323fu
+	else
+		m=/run/tb323fu/b2a-state
+		d=$(find_part "$st" | head -n1)
+		mkdir -p $m && mount -t ext4 "$d" $m 2>/dev/null ||
+			{ echo "warning: could not mount the state root $st ($d) to save the Linux image (going on)"; return 0; }
+		s=$m/var/lib/tb323fu
+	fi
+	if mkdir -p $s && dd if="$a" of=$s/linux-current.img.tmp bs=1M 2>/dev/null &&
+		[ "$(sha256sum $s/linux-current.img.tmp | cut -d' ' -f1)" = "$ha" ] &&
+		mv $s/linux-current.img.tmp $s/linux-current.img &&
+		echo "$ha" > $s/linux-current.img.sha256 && sync; then
+		echo "saved the running Linux image ($(echo $ha | cut -c1-16)) to $s${st:+ on $st}"
+	else
+		rm -f $s/linux-current.img.tmp
+		echo "warning: could not save the Linux image to $s (going on)"
+	fi
+	[ -n "$m" ] && umount $m
+	return 0
+}
+save_current
+
+dd if="$b" of="$a" bs=1M conv=fsync 2>&1 | tail -1
+sync
+echo 3 > /proc/sys/vm/drop_caches
+ha=$(sha256sum "$a" | cut -d' ' -f1)
+echo "boot_a sha256 $ha"
+[ "$ha" = "$want" ] || { echo "boot_a does not match after the copy -- do NOT reboot; use EDL"; exit 1; }
+
+echo "boot_a is Android again; rebooting"
+sync
+# A shell on the USB serial gadget ignores SIGTERM and blocks in tcsetattr() while the PC
+# does not read the port; "systemctl reboot --force" then waits 90 s for it.
+sid=$(cut -d' ' -f6 /proc/$$/stat)
+for d in /proc/[0-9]*; do
+	ls -l "$d/fd" 2>/dev/null | grep -q '/dev/ttyGS' || continue
+	[ "$(cut -d' ' -f6 "$d/stat" 2>/dev/null)" = "$sid" ] || kill -KILL "${d#/proc/}" 2>/dev/null
+done
+# busybox's reboot in the initramfs; systemd's in a root. Run by the helper
+# (a sandboxed service: ProtectSystem=strict) systemd's "reboot -f" cannot
+# write /run and gives up without rebooting (seen 2026-10-02) -- then ask the
+# service manager, and as the last resort the kernel.
+reboot -f || systemctl reboot --force || { sleep 2; echo b > /proc/sysrq-trigger; }

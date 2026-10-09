@@ -1,0 +1,86 @@
+# Mesa through the helper — design
+
+> **Design note, not implemented yet (2026-10-06).** Decisions taken with the maintainer on 2026-10-06 are in
+> section 2; the phases are in section 6. `docs/notes/` is not rendered on the project site.
+
+## 1. The problem
+
+The project's Mesa build is worth a lot on this GPU — Geekbench 7 OpenCL about 20k against 7.6k with Debian's
+Mesa, Geekbench 6 Vulkan about 26.9k against 18.3k ([performance](../performance.md)). Distributions will not
+carry it: Debian 13 gets no Mesa feature updates (backports 26.1.x), and its changes are not in upstream Mesa. The helper already delivers kernels to every root; it should deliver this Mesa too.
+
+What makes Mesa different from a kernel or the helper itself:
+
+- **The distribution owns Mesa's files** (`dpkg`/`pacman`/`rpm`); the channel must never overwrite them.
+- **Installing a second Vulkan driver is not enough to use it.** Measured on Debian 13: an extra ICD manifest in
+  `/etc/vulkan/icd.d`, under the distribution's file name or another, makes the loader enumerate the Adreno twice.
+  Vulkan loader 1.4.309 has no driver selection in its settings file (`additional_drivers` is newer). The
+  portable switch is the environment: `VK_DRIVER_FILES`, and for OpenCL `OCL_ICD_VENDORS` plus
+  `RUSTICL_ENABLE=freedreno`.
+- **ABI across roots.** Turnip needs only stable libraries (glibc, libdrm, xcb, wayland, zstd, expat, libstdc++).
+  rusticl links LLVM 19, libclang-cpp 19 and the SPIR-V/LLVM translator, whose SONAMEs differ between Debian,
+  Ubuntu, Arch and Fedora.
+- **No boot counter covers it**, and a broken GL driver would take the desktop down with it.
+
+## 2. Decisions (2026-10-06)
+
+| Question | Decision |
+|---|---|
+| Which drivers | Phase 1: Vulkan (Turnip) and OpenCL (rusticl). Phase 2: GL (freedreno gallium: EGL vendor, GBM backend), once the trial and revert path of phase 1 has been exercised |
+| How it is switched on | Both: a session-wide toggle (environment variables for desktop sessions and login shells) and a per-application wrapper `tb323fu-mesa run CMD` (testing, per-application comparisons) |
+| ABI | One self-contained build, made on Debian 13 (the oldest glibc of the supported roots), LLVM, clang and the SPIR-V translator linked statically, libclc embedded (`static-libclc=all`); NixOS uses its flake |
+| Where releases live | GitHub Releases of `tb323fu-linux`, tags `mesa-…`; the release list request asks for 100 entries so kernel releases do not fall out of the window |
+
+## 3. Layout on the device
+
+Everything the channel writes is under `/var/lib/tb323fu/mesa/` — writable on every root (SteamOS and Armada
+included) and inside the daemon's `ReadWritePaths`, so no transient unit is needed to install:
+
+```
+/var/lib/tb323fu/mesa/
+  versions/<version>/        unpacked release tree: lib/…, share/…, MANIFEST
+  current -> versions/<v>    the version in use
+  previous -> versions/<v>   kept for Rollback (one older version)
+  icd/turnip.json            Vulkan ICD manifest pointing into current/
+  icd/opencl/rusticl.icd     OpenCL vendor file pointing into current/
+  env.conf                   KEY=VALUE lines, empty when switched off
+  state                      key=value: enabled, trial, tries, max, failed, failed_reason, boot
+  staged/<tag>/              download area (tarball, SHA256SUMS, verified)
+```
+
+`helper/install.sh` (and the packages) link `/etc/environment.d/60-tb323fu-mesa.conf` and
+`/etc/profile.d/tb323fu-mesa.sh` to files under `/var/lib/tb323fu/mesa/`, once; afterwards the daemon only writes
+under `/var/lib`. Switching off empties `env.conf`; the next login uses the distribution's drivers.
+
+## 4. Trial, Keep and automatic revert
+
+Mirrors the kernel trial, with the environment as the thing that is reverted:
+
+1. Enabling a version (or installing a new one while enabled) writes `trial=<version> tries=0 max=2`.
+2. The daemon counts the start when it starts, once per boot (`boot=` holds the last counted
+   `/proc/sys/kernel/random/boot_id`; `tb323fu-helperd --mesa-boot-tick` does the same without serving). When
+   `tries` exceeds `max` it empties `env.conf` and records `failed=<version>`; `current` stays, so switching on
+   again tries the same version. The daemon starts before the display manager, so the login after the third
+   start without Keep already uses the distribution's drivers.
+3. **Keep** (settings app, `tb323fu-ctl mesa keep`) clears the trial. Phase 1 could confirm automatically after
+   a health check (`vulkaninfo`/`clinfo` against the new driver); phase 2 (GL) needs the explicit Keep, because
+   a broken compositor cannot press anything.
+4. **Rollback** swaps `current` and `previous`.
+
+## 5. Releases
+
+`tools/mesa-release.py` (like `helper-release.py`): stages a `DESTDIR` install of the Mesa build, writes
+`tb323fu-mesa-<version>-aarch64.tar.gz` with a `MANIFEST` (`format=1`, `version=`, `mesa_commit=`, `base=`
+(the upstream Mesa commit), `min_glibc=`, `drivers=vulkan,opencl`, then `file SHA MODE SIZE PATH` lines) and
+`SHA256SUMS`. The release body carries the measured results, the requirements and
+`<!-- tb323fu: min_helper=… -->` when needed; the build's sources are not published. Built on the Debian 13 tablet; no CI yet.
+
+## 6. Phases
+
+1. Self-contained build (static LLVM/clang/translator, embedded libclc), checked on Debian, Ubuntu, Arch, Fedora.
+2. `mesa-release.py`, a first `mesa-…` pre-release.
+3. Helper: core (`mesa.rs`: parse, pick, download, verify, install, enable, trial state), daemon D-Bus object
+   `…OpenDeviceHelper1.Mesa`, polkit action `mesa-install`, `tb323fu-ctl mesa …`, `tb323fu-mesa run`, the boot count,
+   `install.sh` links, tests with the fake API (`helper/tests/mesa-update-test.sh`).
+4. Settings app: a "Graphics drivers" group (version, toggle, Keep banner, Rollback).
+5. GL (phase 2 above).

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT -->
+<!-- Copyright (C) 2026 Joonhoe Kim -->
+<component type="desktop-application">
+  <id>io.github.joonhoekim.OpenDeviceHelper</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Open Device Helper</name>
+  <summary>Device settings for the Lenovo Legion Tab Gen 5 (TB323FU) on Linux</summary>
+  <description>
+    <p>A front-end for the tb323fu-helperd service: charge limit and bypass charging, battery and charger details,
+    the in-kernel idle refresh rate, GPU profile and limits, torch and LED ring, USB wake and developer mode,
+    the emergency key, switching back to Android, diagnostics export and version information.</p>
+  </description>
+  <launchable type="desktop-id">io.github.joonhoekim.OpenDeviceHelper.desktop</launchable>
+  <url type="homepage">https://github.com/joonhoekim/tb323fu-linux</url>
+  <developer id="io.github.joonhoekim">
+    <name>Joonhoe Kim</name>
+  </developer>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>touch</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.3.1" date="2026-10-04">
+      <description>
+        <p>The quick settings tile and the app's sidebar say "Device" instead of "Tablet". American spelling throughout.</p>
+      </description>
+    </release>
+    <release version="0.3.0" date="2026-10-04">
+      <description>
+        <p>The helper updates itself from the project's releases, with automatic rollback. The way back to Android works on systems without busybox.</p>
+      </description>
+    </release>
+    <release version="0.2.0" date="2026-10-03">
+      <description>
+        <p>Kernel updates from the project's releases and from a file, with automatic rollback; performance profiles with CPU and GPU limits, CPU boost and thermal profiles; panel heat protection; charging schedule; LED ring colors and breathing; vibration strength; wake on charger plug. Renamed to Open Device Helper.</p>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-10-01"/>
+  </releases>
+</component>

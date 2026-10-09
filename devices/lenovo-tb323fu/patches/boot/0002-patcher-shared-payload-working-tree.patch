@@ -1,0 +1,209 @@
+diff --git a/inc/pack.h b/inc/pack.h
+index 270a8a6..8be98bc 100644
+--- a/inc/pack.h
++++ b/inc/pack.h
+@@ -18,6 +18,7 @@ typedef enum {
+   PACK_IMAGE_FIELD_ENTRY_OFFSET     = BIT(5),
+   PACK_IMAGE_FIELD_DEVICE_TREE_BLOB = BIT(6),
+   PACK_IMAGE_FIELD_BASE_IMAGE_SET   = BIT(7), // BaseImage key was present
++  PACK_IMAGE_FIELD_PAYLOAD_FROM     = BIT(8), // PayloadFrom=<section>
+ } PackImageField;
+ 
+ // Metadata of an entry in the pack config.
+@@ -26,6 +27,7 @@ typedef struct {
+   char    *name;
+   char     path[PACK_PATH_SIZE];
+   char     dtbXref[CFG_NAME_LEN_MAX];
++  char     payloadFromXref[CFG_NAME_LEN_MAX];
+   uint64_t copyAddress;
+   uint64_t copySizeMax;
+   uint64_t entryOffset;
+diff --git a/src/pack.c b/src/pack.c
+index fe0d0be..b5ed17b 100644
+--- a/src/pack.c
++++ b/src/pack.c
+@@ -213,6 +213,24 @@ int PackImage(const PackConfig *config)
+       continue;
+ 
+     const PackImageConfig *image = &config->images[index];
++    if (image->fieldsPresent & PACK_IMAGE_FIELD_PAYLOAD_FROM) {
++      ManifestEntry *entry = write_manifest_entry(&manifestCursor, image->name);
++      if (entry == NULL)
++        goto cleanup;
++      entry->type        = MF_ENTRY_TYPE_LINUX;
++      entry->offset      = 0;
++      entry->size        = primaryInfo.payloadSize;
++      entry->entryOffset = (uint32_t)image->entryOffset;
++      entry->alignment   = baseImage->alignment;
++      entry->loadAddress = 0;
++      entry->copySizeMax = 0;
++      entry->flags       = MF_ENTRY_FLAG_EXECUTABLE;
++      if (image->fieldsPresent & PACK_IMAGE_FIELD_DEVICE_TREE_BLOB) {
++        entry->flags |= MF_ENTRY_FLAG_HAS_DEVICE_TREE_BLOB;
++        entry->deviceTreeBlobEntry = image->deviceTreeBlobEntry;
++      }
++      continue;
++    }
+     FileContent            extra = {.filePath = image->path};
+     if (!load_file(&extra))
+       goto cleanup;
+diff --git a/src/pack_config.c b/src/pack_config.c
+index 2f69e52..c809284 100644
+--- a/src/pack_config.c
++++ b/src/pack_config.c
+@@ -257,6 +257,15 @@ static int config_handler(
+         if (valid)
+           image->fieldsPresent |= PACK_IMAGE_FIELD_DEVICE_TREE_BLOB;
+       }
++      else if (
++          strcmp(name, "PayloadFrom") == 0 &&
++          !(image->fieldsPresent & PACK_IMAGE_FIELD_PAYLOAD_FROM) &&
++          value[0] != '\0') {
++        valid = copy_text(
++            image->payloadFromXref, sizeof(image->payloadFromXref), value);
++        if (valid)
++          image->fieldsPresent |= PACK_IMAGE_FIELD_PAYLOAD_FROM;
++      }
+     }
+   }
+ 
+@@ -304,9 +313,10 @@ static bool validate_config(
+   bool   hasDeviceTreeBlobReference = false;
+   for (size_t index = 0; index < config->imageCount; index++) {
+     PackImageConfig *image = &config->images[index];
++    bool isAlias = (image->fieldsPresent & PACK_IMAGE_FIELD_PAYLOAD_FROM) != 0;
+     uint32_t requiredFields = PACK_IMAGE_FIELD_TYPE;
+     if (image->name == NULL || !valid_name(image->name) ||
+-        image->path[0] == '\0' ||
++        (!isAlias && image->path[0] == '\0') ||
+         (image->fieldsPresent & requiredFields) != requiredFields) {
+       log_err("[%s] requires Name, Path and Type.", image->section);
+       return false;
+@@ -330,6 +340,27 @@ static bool validate_config(
+           "[%s] DTB section requires Align >= 3 (8-byte).", image->section);
+       return false;
+     }
++    if (isAlias) {
++      if (image->path[0] != '\0') {
++        log_err(
++            "[%s] PayloadFrom cannot be combined with Path.", image->section);
++        return false;
++      }
++      if (image->type != MF_ENTRY_TYPE_LINUX) {
++        log_err("[%s] PayloadFrom requires Type=Linux.", image->section);
++        return false;
++      }
++      if (image->fieldsPresent & PACK_IMAGE_FIELD_BASE_IMAGE) {
++        log_err("[%s] PayloadFrom cannot set BaseImage=true.", image->section);
++        return false;
++      }
++      if ((image->fieldsPresent & PACK_IMAGE_FIELD_COPY_ADDRESS) ||
++          (image->fieldsPresent & PACK_IMAGE_FIELD_COPY_SIZE_MAX)) {
++        log_err(
++            "[%s] PayloadFrom cannot set CopyTo/CopySizeMax.", image->section);
++        return false;
++      }
++    }
+     if (image->fieldsPresent & PACK_IMAGE_FIELD_BASE_IMAGE) {
+       if (image->type != MF_ENTRY_TYPE_LINUX) {
+         log_err("Base image [%s] must set Type=Linux.", image->section);
+@@ -420,6 +451,39 @@ static bool validate_config(
+     log_err("DeviceTreeBlob requires a [Manifest] section.");
+     return false;
+   }
++  const PackImageConfig *baseImage = &config->images[*baseImageIndex];
++  for (size_t index = 0; index < config->imageCount; index++) {
++    PackImageConfig *image = &config->images[index];
++    if (!(image->fieldsPresent & PACK_IMAGE_FIELD_PAYLOAD_FROM))
++      continue;
++    if (!config->manifest.present) {
++      log_err("[%s] PayloadFrom requires a [Manifest] section.", image->section);
++      return false;
++    }
++    if (index == *baseImageIndex ||
++        strcmp(image->payloadFromXref, baseImage->section) != 0) {
++      log_err(
++          "[%s] PayloadFrom [%s] must name the base image section.",
++          image->section, image->payloadFromXref);
++      return false;
++    }
++    if ((image->fieldsPresent & PACK_IMAGE_FIELD_ALIGNMENT) &&
++        image->alignment != baseImage->alignment) {
++      log_err(
++          "[%s] Align must match the base image alignment.", image->section);
++      return false;
++    }
++    image->alignment = baseImage->alignment;
++    if (image->fieldsPresent & PACK_IMAGE_FIELD_ENTRY_OFFSET) {
++      if (image->entryOffset != 4) {
++        log_err("[%s] EntryOffset must be 4.", image->section);
++        return false;
++      }
++    }
++    else {
++      image->entryOffset = 4;
++    }
++  }
+   for (size_t index = 0; index < config->imageCount; index++) {
+     PackImageConfig *image = &config->images[index];
+     if (!(image->fieldsPresent & PACK_IMAGE_FIELD_DEVICE_TREE_BLOB))
+diff --git a/src/unpack.c b/src/unpack.c
+index bad6bb8..c9dae44 100644
+--- a/src/unpack.c
++++ b/src/unpack.c
+@@ -55,6 +55,20 @@ static bool ranges_overlap(
+          secondOffset < firstOffset + firstSize;
+ }
+ 
++/* A non-base Linux entry that reuses the base payload region exactly. */
++static bool is_base_region_alias(
++    const ManifestEntry *entry, const ManifestEntry *baseEntry)
++{
++  uint32_t allowedFlags =
++      MF_ENTRY_FLAG_EXECUTABLE | MF_ENTRY_FLAG_HAS_DEVICE_TREE_BLOB;
++  return entry->type == MF_ENTRY_TYPE_LINUX && entry->offset == 0 &&
++         entry->size == baseEntry->size && entry->entryOffset == 4 &&
++         entry->alignment == baseEntry->alignment &&
++         entry->loadAddress == 0 && entry->copySizeMax == 0 &&
++         (entry->flags & MF_ENTRY_FLAG_EXECUTABLE) != 0 &&
++         (entry->flags & ~allowedFlags) == 0;
++}
++
+ static bool write_qc_aboot_header(uint8_t *output, uint64_t size)
+ {
+   if (size > UINT32_MAX)
+@@ -257,6 +271,8 @@ static bool load_packed(const char *path, PackedImage *packed)
+         return false;
+       continue;
+     }
++    if (is_base_region_alias(entry, baseEntry))
++      continue;
+     for (size_t previous = 1; previous < index; previous++) {
+       const ManifestEntry *other = packed->entries[previous];
+       if (ranges_overlap(
+@@ -332,6 +348,8 @@ static bool restore_files(const PackedImage *packed, const char *directory)
+ 
+   for (size_t index = 1; index < attachedShimIndex; index++) {
+     const ManifestEntry *entry    = packed->entries[index];
++    if (is_base_region_alias(entry, packed->entries[0]))
++      continue;
+     const char          *typeName = manifest_entry_type_name(entry->type);
+     char                 name[64];
+     snprintf(name, sizeof(name), "Image-%02zu-%s", index, typeName);
+@@ -371,6 +389,7 @@ static bool write_config(const PackedImage *packed, const char *directory)
+     return false;
+ 
+   const Manifest *manifest = packed->manifest;
++  const ManifestEntry *baseEntry = packed->entries[0];
+   fprintf(file, "[Pack]\nShim=Shim.bin\nOutput=RepackedKernel\n");
+   fprintf(
+       file, "Default=Image-%02u\nTimeout=%u\n\n", manifest->header.defaultEntry,
+@@ -385,6 +404,8 @@ static bool write_config(const PackedImage *packed, const char *directory)
+     }
+     if (index == 0)
+       fprintf(file, "Path=BaseImage\n");
++    else if (is_base_region_alias(entry, baseEntry))
++      fprintf(file, "PayloadFrom=Image-00\n");
+     else {
+       char name[64];
+       snprintf(name, sizeof(name), "Image-%02zu-%s", index, typeName);

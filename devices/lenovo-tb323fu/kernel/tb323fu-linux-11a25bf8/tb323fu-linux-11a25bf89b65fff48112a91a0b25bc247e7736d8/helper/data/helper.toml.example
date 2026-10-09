@@ -1,0 +1,84 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Joonhoe Kim
+# /etc/tb323fu/helper.toml -- tb323fu-helperd settings. The daemon writes this
+# file when a setting changes through D-Bus / tb323fu-ctl; every key is
+# optional (defaults shown). Apply edits with `tb323fu-ctl reload`.
+
+[battery]
+charge_limit = 80        # %; applied at every start (20..100)
+bypass = false           # hold the battery at its charge while on external power
+recharge_gap = 10        # charging resumes this many % below the limit (3..20; start threshold)
+full_by = ""             # "HH:MM": charge to 100 % in time for this local time, back to the limit 2 h later
+                         # (or when unplugged after it); estimated from the charge left and the charger power
+full_by_days = []        # ["mon", "tue", ...]; empty = every day
+
+[android]
+require_auth = false     # ask for authentication before "restart into Android"
+
+[torch]
+level = 96               # torch brightness 1..max_brightness (never the flash strobe)
+
+[ledring]
+mode = "charge"          # "charge" (amber charging, green full/held, red when low), "solid", "breathe" or "off"
+brightness = 40          # 0..255
+low_percent = 15
+color = "#3c78ff"        # color of solid and breathe
+speed = 4000             # breathing cycle, ms (1000..20000); breathing stops while the screen is off
+charge_override = true   # in solid/breathe, the charge colors take over while charging, full or held, or low
+notify = false           # the GNOME extension pulses the ring for desktop notifications
+
+[refresh]                # kernel msm.idle_refresh_*; omit to keep the kernel's values
+# policy = "auto"        # off | manual | auto
+# hz = 60                # rate of the manual policy
+# ms60 = 1000            # idle ms before 60 Hz (auto)
+# ms30 = 5000            # idle ms before 30 Hz (auto)
+
+[gpu]                          # the performance profile (CPU, GPU, Wi-Fi; the thermal profile when linked)
+follow_power_profiles = true   # use power-profiles-daemon's profile when it runs
+profile = "balanced"           # power-saver | balanced | performance; used when not following
+
+[gpu.floors]                   # GPU per profile = [min_mhz, max_mhz]
+power-saver = [160, 726]
+balanced = [160, 1200]
+performance = [461, 1200]
+
+[cpu]
+boost = true   # cpufreq boost: the fast cores up to 4.6 GHz (as Android); warmer under load
+
+[cpu.limits]   # per profile = [little_min, little_max, big_min, big_max] MHz; a missing profile uses
+               # the whole range (little 384..3628, big 768..4396; the top keeps boost reachable).
+               # Floors at most 1996 (little) and 2880 (big): higher only adds heat.
+# power-saver = [384, 2496, 768, 2880]
+
+[thermal]                      # board-temperature profile: moves the quiet-thermal steps (43..50 °C)
+profile = "default"            # quiet (-3 °C) | default | performance (+8 °C, never above 58 °C)
+follow_performance = false     # instead follow the performance profile: power-saver -> quiet,
+                               # balanced -> default, performance -> performance
+performance_bypass = true      # Bypass charging while performance runs on a charger
+panel_limit = true             # dim the panel to 70 % while it is at 55 °C or more (as Android)
+# Chip protection trips (95/105/120 °C) are never written. performance ends by itself
+# (back to default) when a battery reaches 45 °C or the board passes its top step by 2 °C.
+
+[wifi]
+low_latency_performance = false   # Wi-Fi power saving off in the performance profile (iw; a connection
+                                  # whose profile sets 802-11-wireless.powersave stays NetworkManager's)
+
+[haptics]
+strength = 100           # vibration strength 0..100 % (force-feedback gain of both motors, for every application)
+
+[usb]
+wake = false             # USB host wakeup from suspend (off by default on this board)
+# dev_mode = true        # USB gadget network + serial console; omit to keep the boot state
+# charger_wake = false   # plugging or unplugging a charger wakes the tablet; omit to keep the kernel's setting (on)
+
+[kernel]                 # kernel updates (docs/helper.md "Kernel updates")
+channel = "stable"       # "stable": the newest release; "testing": the newest release or pre-release
+                         # (a testing kernel is kept only when you press Keep)
+source = "github:joonhoekim/tb323fu-linux"   # GitHub Releases of this repository (a fork works the same way)
+api_url = "https://api.github.com"            # the GitHub REST API; another URL only for tests
+auto_check = true        # look once a day (never downloads by itself)
+helper_notify = true     # say when a newer helper is published (a helper-vX.Y.Z release; tb323fu-ctl helper update)
+require_signature = false   # also require SHA256SUMS.minisig, signed by one of public_keys (kernel and helper releases)
+public_keys = []            # minisign public keys (the base64 line), or /etc/tb323fu/keys/kernel-*.pub
+# A GitHub token (private repository, higher rate limit) goes into /etc/credstore/tb323fu-github-token,
+# not here: only the download unit reads it.

@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Joonhoe Kim
+[Unit]
+Description=TB323FU device helper (charge limit, torch, LED ring, idle refresh, GPU limits, ...)
+Documentation=https://github.com/joonhoekim/tb323fu-linux/blob/main/docs/helper.md
+After=systemd-udev-trigger.service systemd-pstore.service
+
+[Service]
+Type=dbus
+BusName=io.github.joonhoekim.OpenDeviceHelper1
+ExecStart=@LIBEXECDIR@/tb323fu-helperd
+Restart=on-failure
+RestartSec=2
+# Hardening. /sys: the device knobs; /etc/tb323fu (created by systemd):
+# settings; /var/lib: diagnostics bundles and back-to-android's copy of the
+# Linux boot image (it skips that copy when /var/lib is not writable).
+ProtectSystem=strict
+ConfigurationDirectory=tb323fu
+StateDirectory=tb323fu
+# /run/tb323fu: mount points for reading other roots and for writing the boot
+# selection on the state root when running from another root (multiboot)
+RuntimeDirectory=tb323fu
+ReadWritePaths=/var/lib /sys
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

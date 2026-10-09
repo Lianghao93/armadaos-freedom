@@ -37,6 +37,7 @@ case "$model" in
     "Retroid Pocket 6") profile=retroid-pocket-6 ;;
     "Retroid Pocket 6 TOP-DPAD") profile=retroid-pocket-6 ;;
     "Retroid Pocket Nova") profile=retroid-pocket-nova ;;
+    "Lenovo Legion Y700 Gen 5 (TB323FU)"|"Lenovo Legion Tab Y700 (TB323FU)") profile=lenovo-tb323fu ;;
     *) profile= ;;
 esac
 
@@ -96,7 +97,7 @@ case "${ARMADA_SOC_CLASS:-}" in
         : "${ARMADA_PRIME_CORES=7}"
         : "${ARMADA_IRQ_CORES=0-1}"
         ;;
-    SM8750)
+    SM8750|SM8850)
         : "${ARMADA_LITTLE_CORES=}"
         : "${ARMADA_BIG_CORES=0-7}"
         : "${ARMADA_PRIME_CORES=6-7}"

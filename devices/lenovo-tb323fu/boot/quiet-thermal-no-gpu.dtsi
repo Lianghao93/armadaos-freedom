@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Lenovo TB323FU (Y700) — quiet-thermal, no-GPU cooling maps
+ * -----------------------------------------------------------
+ * Device-tree overlay fragment applied on top of the stock custom DTB.
+ *
+ * Intent:
+ *   Keep the existing "quiet" CPU thermal policy intact, and keep the
+ *   GPU's thermal management independent of it, by removing only the
+ *   cooling-map entries that tie the quiet thermal zone to the GPU.
+ *
+ * Removed maps (as present in the custom DTB):
+ *   map2  -> GPU binding @ 44 C
+ *   map5  -> GPU binding @ 46 C
+ *   map8  -> GPU binding @ 48 C
+ *   map10 -> GPU binding @ 50 C
+ *
+ * Unchanged / preserved:
+ *   - quiet thermal zone and all remaining CPU cooling maps (map0, map1,
+ *     map3, map4, map6, map7, map9, ...).
+ *   - independent GPU thermal management (GPU still governed by its own
+ *     thermal zone / cooling device, just no longer driven by quiet-thermal).
+ *
+ * Status:
+ *   PENDING FIRST ACTUAL BOOT — this fragment has not yet been validated
+ *   on hardware. Do not treat as verified until a first real boot confirms
+ *   the cooling-map removals behave as intended.
+ */
+
+&{/thermal-zones/quiet-thermal/cooling-maps} {
+	/delete-node/ map2;   /* GPU binding @ 44 C */
+	/delete-node/ map5;   /* GPU binding @ 46 C */
+	/delete-node/ map8;   /* GPU binding @ 48 C */
+	/delete-node/ map10;  /* GPU binding @ 50 C */
+};
