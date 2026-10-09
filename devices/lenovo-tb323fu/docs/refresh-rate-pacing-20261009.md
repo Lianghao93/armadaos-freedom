@@ -81,3 +81,84 @@ Armada Control 候选五档过滤通过远程 Docker：40 项 node 测试（包�
 实际164仍约82，30秒Mango CSV与真实带HUD截图确认；合成GPU计时3480us。实际g_nNestedRefresh=0，g_nOutputRefresh=164000，内部targetFPS=164，已排除nested120。vblank日志rolling4.42ms、draw4.53ms、redzone1.65ms、offset6.07ms；28µs是wake相对前一次刷新边沿的相位，并非渲染仅剩28µs。现有trace显示合成启动比上一完成flip晚约6.34ms，正在对齐Mark传入stamp/调用now、schedule target/wake、实际Poll。新增诊断仅各64条、默认关闭、不改变调度，未作为生产补丁。
 
 当前内核CRTC106/107/108只有CTM和VRR_ENABLED，无DEGAMMA_LUT/GAMMA_LUT/DPU_3D_LUT，因此现有0017硬件颜色卸载不能在本轮直接用开关启用。无kernel/boot写入、无整机重启。本轮未改CPU/GPU频率、温控或游戏mods/配置；首次Steam重载后的FEX启动SIGSEGV仍单独记录，不认为已修。
+
+## 17:30—17:50：164 档仍未通过，明确保留失败证据
+
+相位延后 800 µs 的单项候选实测约 120.52 FPS，仍有大量双周期间隔，已关闭该候选开关，不作为维护补丁。
+
+新候选允许已经完成的非 FIFO 游戏 base 使用本轮空 timer 留出的绘制机会。22 项独立边界检查及完整 Gamescope 构建通过，运行 `/proc/247318/exe` SHA256 为 `2e53fd7c1c7da1223b2efd7d998ca6f326c53444036f8e27d685610a5175eb92`，整机 boot_id 仍为 `eedcf26f-e74c-4f81-86fc-e1b31b8226fb`。正常 HUD、原四面体色彩及无补帧的 Brotato 标题场景，30 秒 CSV 统一取 [3,28]：2988 帧 / 25 秒 = 119.52 FPS，间隔均值推算 119.519，P50 6.164 ms、P95 12.319 ms；1078 个间隔落在 12—20 ms。164 档没有通过，不能标记为全部五档完成。
+
+同窗 10.02 秒 trace 全部 CPU overrun 为零：物理 vblank 1643 次，均值 6.097569 ms，完成翻页 1359 次；物理 164 Hz 不等于游戏已经达到 164 FPS。日志首 128 次绘制判定中，49 个空 timer 机会有 40 个随后消费、9 个未消费，未复现 overlay-only timer 提前绘制。因此放弃先做 HUD 延后的猜测。
+
+只读 `/proc/247318/mem` 采样通过二进制 SHA 和 nm/objdump 偏移核对，2 秒 1800 行，与阶段日志对齐：失败时剩余 5,787,320 ns，前后采样 lastDraw 均为 5,679,025 ns，加原 350,000 ns 余量后的预算 6,029,025 ns 大于剩余时间。预算拒绝得到实证；lastDraw 包含从 timer 计划唤醒开始的等待，不能当成当前绘制工作本身。
+
+另一个跳周期样例：已消费目标 P=32918636820561，T=6097561，观测下一目标 Q=32918649014561。Q−T 比 P+T 早 1122 ns。现有 preemptive 计算把新物理相位网格与旧目标最低时间混用，严格 ceil 对这 1122 ns 也会加完整 T，静态计算精确符合 Q；目前缺少实际 Calc 分支日志，仍属待验证归因。
+
+下一候选分别开关验证：preemptive 延续已消费 timer 的同一预测周期、真实 Mark 继续按屏幕重新校相；绘制预算另外测量 paint_all 开始至实际提交端点的工作耗时，保留原整帧反馈不变。加入有界 Calc 和预算日志，先单项对照，再决定最终维护方案。本阶段不加入未经定位的 overlay 延后，不写内核或启动镜像、不重启整机。
+
+### 18:25 本轮补证：周期对照无效，实际工作仍超预算
+
+- r2 同一二进制三项对照（164 Hz、正常 HUD、原始 tetrahedral/nearest LUT）：仅周期锚点 3039/25=121.56 FPS；周期+工作预算 3083/25=123.32 FPS；仅工作预算 3131/25=125.24 FPS。三项均不通过 164 档，不能称五档修复完成。
+- 64 条 CalcNextWakeupTime 实际诊断里，26 次 preemptive 计算全部 target=prior+T，没有复现数学例子中的 ceil 额外跨期；该周期开关已关闭，不能把理论路径当作现场根因。
+- paint 工作时间实测 4.2→5.7 ms，预算拒绝仍与缺帧相符。GPU composite 的约 3.48 ms 是两秒均值，BOTTOM_OF_PIPE 起始排除了此前队列等待；不能把它与单帧完整工作时间直接相减。
+- 128 次实际 paint 中未复现 overlay-only 消耗机会：空机会 49、消费 40、预算拒绝 9。暂不引入 overlay 延后策略。
+- 后续只做 shader 等价优化组合对照及默认关闭、限定机型/164 档的 64 帧阶段计时，定位提交前／GPU 等待／DRM 提交；保持原有等待和同步。CPU/GPU 频率、温控、分辨率未改。
+
+### 18:55 等价 shader 组合对照（164 仍未通过）
+
+- 已验证 branchless tetrahedral 与透明像素／未混合 SDR 优化组合：3836 帧/25秒=153.44 FPS，均值6.517ms，P50 6.114ms、P95 12.025ms、P99 12.157ms。比前一组合有改善，但不能当成164通过。
+- GPU composite 查询为两秒平均3149us（325/328次）；原始 tetrahedral/nearest 的四次采样与颜色语义保留，8128个float32数学模型用例无差异。这不是GPU位级颜色验收。
+- 新的64帧阶段诊断初版错误使用ARMADA_DEVICE和164作为输出单位，未激活，所以没有有效阶段日志。已对照运行进程确认实际GAMESCOPE_INTERNAL_DEVICE_ID=lenovo-tb323fu，g_nOutputRefresh=164000mHz并修正。该空记录不可作为诊断或通过证据。
+
+### 19:45 正常 HUD 基线与定时器对照准备
+
+- 阶段诊断 r2 的 64 条记录全部有效：完整 paint 工作均值 4.022 ms，present 等待均值 3.812 ms，record/submit 均值 72.7 us，atomic 均值 42.0 us。日志位于 pending-flip wait 之前，不包含之后的日志/等待，不能直接当整个周期。
+- 关闭用户阶段日志后的 10 秒 trace 没有 CPU buffer overrun；显示端约 164 次/秒，只有局部两个双周期间隔。第一处存在约 1.69 ms 的 XWM 调度延迟。没有 hrtimer_expire 事件也可能是已过期 timer 同步置 ready，不能凭缺事件证明取消竞态。
+- 同一 branchless/透明/SDR 版本的 25 秒 Brotato 标题场景、正常 HUD：30=750/25=30.00 FPS；60=1492/25=59.68 FPS（一次125 ms长帧）；120=2986/25=119.44 FPS。90 的 CSV 已保留并送远程分析。五档最终验收仍未完成。
+- 164 档短时隐藏 HUD 对照：4084/25=163.36 FPS，P50 6.09745 ms、P95 6.246 ms；HUD 已恢复。这是定位对照，不是最终修复或正常 HUD 通过证明。
+- 新的默认关闭、精确 TB323FU 限定开关 y700_validate_timerfd_expiration，在 ScheduleMutex 内先读真实到期计数；EAGAIN 保留未来 timer/state。真实 Linux timerfd+epoll fixture 先取得旧 readiness、不读旧计数即 rearm 后验证 NotReady 与未来 timer 保留，正常到期一次 Ready、重复 NotReady、无效 FD Error；远程 -Wall -Wextra -Werror 编译和 fixture 通过。完整 binary 编译通过，SHA81fb52f9...404799，并已仅重载用户会话、核对 /proc/exe SHA 与不变 boot_id。实际 FPS 改善仍待 A/B，不作为已证根因。
+
+19:53 补证：90 档 2244/25=89.76 FPS，P50 11.1111 ms、P95 11.250 ms。timerfd 同 binary 正常 HUD 的 164 档 A/B，关闭3895/25=155.80，开启3893/25=155.72，无有意义改善；开关已关闭，不进入最终启用配置。下一版仅扩展默认关闭的有限帧编号/回调日志，不改变调度行为。
+
+20:01 场景区分：继续存档进入游戏内第3波商店，同 binary／正常HUD／164档25秒4083帧=163.32 FPS，P50 6.09787ms、P95 6.2099ms，整机未重启。标题场景同档仍155.8，不把商店通过等同所有场景通过。用户既有存档/模组文件未手工修改；正常继续游戏进入商店。
+
+### 20:16 旧 base 与 overlay 合成的关联证据
+
+- 日志版本0540e104...fee5bb正常HUD、关闭诊断日志的标题场景3960/25=158.40FPS，仍不通过164。日志记录窗口内256次base Present有8个重复ID，不能外推为全部3秒FPS。
+- 11108先后两次Present间隔6.105ms，第二次来自overlay-only重绘；新11110的done被主循环接受时已超过该target124us。done到callback仅146.8us，到新base Present175.9us，因此不把callback独立等整T当主要根因。已有成功late路径done到callback28.5us，不引入另一项callback改变。
+- 同窗trace样例95097：旧base重复Present=.969650提交，GS完成=.974161，target=.975277561；附近FEX唯一三提交组最后retire=.970618，早target约4.66ms；XWM在合成后等待pending flip，主循环95099 done=.975525626才接受。没有commitID与GPU序号/fence Signal的直接映射，不能宣称这组三提交已证明该游戏buffer的fence ready。
+- 静态顺序：main先处理done，再检查/import新Wayland资源；已知完成的import也可能在本轮done处理之后直接Signal。下一次候选仅针对已经在队列中尚未被主循环接受的nonFIFO新game commit、164档Normal timer且overlay-only时暂缓一次原旧base合成，并允许保留overlay dirty的late机会；用既有nIgnoredOverlayRepaints保证下一timer回到原paint，不改callback/limiter/频率/温控。另排除adaptive_sync_ignore_overlay=true以免其loopreset破坏fallback。默认关闭，未验证FPS收益，不作为完成成果。
+
+### 20:30—20:46：用户降低分辨率后的五档对照
+
+用户将《土豆兄弟》的游戏分辨率降低，并明确确认看到164帧，随后要求固化当前方案。只读 XRandR 查询确认游戏 XWayland CRTC 为1920×1200（164档合成的模拟时序163.868Hz）；实际内屏保持164000mHz，内部有效targetFPS=164。未手工修改游戏画质/模组/存档，保留正常四档HUD与色彩，未启用补帧。
+
+同一运行binary SHA0540e104f1d7f6709ae1e7120bb96e523635504c417559297af1147860fee5bb，菜单关闭的标题场景各30秒CSV，统一去掉首3秒和末2秒，25秒稳定窗：
+
+| 档位 | 游戏帧间隔推算FPS | P95帧间隔ms |
+|---|---:|---:|
+|30|29.9599|33.49422|
+|60|59.8799|16.81420|
+|90|89.9597|11.26372|
+|120|119.6793|8.473109|
+|164|163.4391|6.29956|
+
+164窗4086条游戏GPU-ready commit间隔，均值6.118488ms，P50 6.09615ms，P99 6.393717ms；6条为12—20ms，没有20ms以上长帧。这里记录游戏帧间隔，不把物理vblank次数当成游戏FPS，也不把它当GPU渲染耗时。首次两份20:20/20:23 CSV有模式切换/右侧菜单混入，不进入此表。
+
+结论：在1920×1200和本次标题场景，正常HUD下五档均接近对应值，120/164不再固定掉到60。原生3040×1904的标题场景此前约158.4，不能将降低分辨率后的通过写成原生分辨率或所有游戏场景已通过。原生分辨率第3波商店曾达163.32，同样要区分场景。主界面长期帧时间抖动、FEX初次启动SIGSEGV、HDR及外屏未随本轮完成验收。
+
+固化选择：0030重生为branchless tetrahedral/nearest +完全透明overlay fast path +受条件约束的SDR重复transfer省略；0031含late-base与实际paint work预算。只按精确lenovo-tb323fu型号在Lua启用late-base和work-budget。preemptive cycle及有界phase日志保持false；timerfd-read、frame-flow扩展日志、overlay-wait、native/trilinear、wakeup-floor不纳入这次最小生产源码。当前0031保留默认关闭的早期phase/cycle诊断，属于未启用代码，不称其提供性能收益。
+
+封装一致性核验发现原临时rendervulkan.cpp快照少了上游0007格式策略和0009可选实时队列处理。维护补丁0030应用到完整上游+Armada1—29后保留二者；最终RPM采用顺序重放的rendervulkan.cpp，以免仓库重建与临时源不一致。其余10份生产源与选定归档一致。需在最终RPM安装后复测，不能将此前binary的测试直接当最终RPM验证。
+
+21:00用户补充：原生分辨率选择最高性能档也能达到164FPS。只读XRandR随后确认3040×1904、模拟时序163.925Hz；性能档由用户切换，Codex未改变CPU/GPU策略。此前约158.4只代表当时性能状态/标题场景，不得归纳为原生分辨率固定上限。后台复测独立记录，首轮CSV因Steam改分辨率时重写Mango配置、去掉日志输出路径而没有产生新文件；该次不算新FPS证据，重新加载记录配置后再采样。
+
+### 21:18 固化交付与用户复测结论
+
+用户明确说明：原生分辨率在最高性能档也达到164FPS；随后要求不要继续采样，以其实际观察为结论。尊重该要求，停止继续FPS采样和本轮运行记录服务，不将退出游戏后的21:02稀疏CSV作为游戏原生帧率证据。不把此前低性能状态的158.4样本外推成分辨率固定上限。
+
+最终正常RPM远程构建退出码0，版本1:3.16.31^1-1.100912.fc44.armada，主包与libs同版本；包含源码补丁0029—0032，0032只是默认关闭的64次上限DRM诊断，Lua明确false。正常%conf/%build/%install与BRP均执行，本轮不生成可选debug子包。最终二进制SHA256 b2ea307952133339c2d733fc85f308cabf50c75e2ffd95a4ae596c8781045cd2；源码包追加0032声明后生成成功，与包内保留的诊断来源对应。源与包校验、构建日志保存在docs/evidence/refresh-final-20261009和NAS任务evidence/production-final-install-r3。
+
+设备RPM依赖预检和正式安装均成功，原100904主包/libs被100912正常替换。仅重载Steam/Gamescope用户会话：新PID366208的/proc/exe SHA与RPM包内一致，启动日志确认正确识别armada_lenovo_tb323fu_lcd；整机boot_id仍eedcf26f-e74c-4f81-86fc-e1b31b8226fb。按用户要求不对固化包继续收集新的FPS样本，之前1920×1200五档自测和用户原生最高档观察分开记录。没有新内核/boot写入或整机重启。
+
+实际固化：Lua自动启用late-base/work-budget，关闭cycle/phase/present diagnostics；透明overlay与SDR重复工作优化精确型号gate，四面体/nearest颜色路径保留。未启用timerfd-read、overlay-wait、native/trilinear或wakeup-floor。原生性能档由用户决定；本轮没有修改CPU/GPU频率或温控限制。FEX启动崩溃、主界面其它卡顿、HDR/外屏等既有事项并不随此轮宣称全部完成。

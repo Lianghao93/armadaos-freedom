@@ -1,0 +1,6 @@
+terra-gamescope-3.16.31^1-1.100912.fc44.armada.aarch64
+terra-gamescope-libs-3.16.31^1-1.100912.fc44.armada.aarch64
+b2ea307952133339c2d733fc85f308cabf50c75e2ffd95a4ae596c8781045cd2  /usr/bin/gamescope
+b2ea307952133339c2d733fc85f308cabf50c75e2ffd95a4ae596c8781045cd2  /proc/366208/exe
+79f512847391bb95a31af43285d75a55757ad36b305556fe1223acc0deb5c20a  /usr/share/gamescope/scripts/10-armada/lenovo.tb323fu.lcd.lua
+eedcf26f-e74c-4f81-86fc-e1b31b8226fb

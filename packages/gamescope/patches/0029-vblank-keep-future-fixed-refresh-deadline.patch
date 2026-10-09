@@ -1,0 +1,245 @@
+diff --git a/src/vblank_schedule.h b/src/vblank_schedule.h
+new file mode 100644
+index 0000000..eae8f3a
+--- /dev/null
++++ b/src/vblank_schedule.h
+@@ -0,0 +1,65 @@
++#pragma once
++
++#include <cstdint>
++
++namespace gamescope
++{
++    struct VBlankScheduleTime
++    {
++        // The expected time for the vblank we want to target.
++        uint64_t ulTargetVBlank = 0;
++        // The vblank offset by the redzone/scheduling calculation.
++        // This is when we want to wake-up by to meet that vblank time above.
++        uint64_t ulScheduledWakeupPoint = 0;
++    };
++
++    // Pure, fixed-refresh vblank schedule calculation.
++    //
++    // The caller must supply a positive interval. This does not attempt to
++    // defend against a zero/hypothetical interval; that is a caller contract.
++    //
++    // The physical vblank targets lie on a fixed phase grid anchored at
++    // ulLastVBlank, spaced by ulInterval. We always return the first grid point
++    // strictly in the future, rolled forward in O(1) even when the anchor is
++    // far in the past (eg. a headless session that never marks a vblank).
++    //
++    // If ulMinimumTarget is non-zero we must not schedule a target earlier than
++    // it (eg. a deadline we already committed to). We advance along the same
++    // phase grid by whole intervals (ceil) rather than snapping to an arbitrary
++    // floor, so we never drift off the physical vblank phase.
++    //
++    // The scheduled wakeup point is ulOffset before the target, clamped to be no
++    // earlier than ulNow. The target is independent of that clamping.
++    inline VBlankScheduleTime CalculateFixedVBlankSchedule( uint64_t ulLastVBlank, uint64_t ulNow, uint64_t ulInterval, uint64_t ulOffset, uint64_t ulMinimumTarget = 0 )
++    {
++        // First physical vblank target on our phase grid.
++        uint64_t ulTarget = ulLastVBlank + ulInterval;
++
++        // If we have already passed it, step forward in whole intervals in one
++        // shot. ( ulNow - ulTarget ) / ulInterval + 1 lands on the first grid
++        // point strictly after ulNow, including when ulTarget == ulNow.
++        if ( ulTarget <= ulNow )
++            ulTarget += ( ( ulNow - ulTarget ) / ulInterval + 1 ) * ulInterval;
++
++        // Respect a minimum target we must not walk back past, while keeping
++        // the result on the same phase grid (round up to the next grid point).
++        if ( ulTarget < ulMinimumTarget )
++        {
++            const uint64_t ulDelta = ulMinimumTarget - ulTarget;
++            ulTarget += ( ( ulDelta + ulInterval - 1 ) / ulInterval ) * ulInterval;
++        }
++
++        // Wake up ulOffset before the target, protecting the subtraction from
++        // underflowing when ulOffset >= ulTarget.
++        uint64_t ulScheduledWakeupPoint = ulTarget >= ulOffset ? ulTarget - ulOffset : 0;
++        if ( ulScheduledWakeupPoint < ulNow )
++            ulScheduledWakeupPoint = ulNow;
++
++        VBlankScheduleTime schedule =
++        {
++            .ulTargetVBlank = ulTarget,
++            .ulScheduledWakeupPoint = ulScheduledWakeupPoint,
++        };
++        return schedule;
++    }
++}
+diff --git a/src/vblankmanager.cpp b/src/vblankmanager.cpp
+index 3eb99ac..80ba825 100644
+--- a/src/vblankmanager.cpp
++++ b/src/vblankmanager.cpp
+@@ -196,6 +196,28 @@ namespace gamescope
+ 				VBlankDebugSpew( ulOffset, ulDrawTime, ulRedZone );
+ 		}
+ 
++		// Fixed-refresh + timerfd path: compute the schedule directly against
++		// the physical vblank phase grid instead of going through
++		// GetNextVBlank, which clamps to a single interval and can skip a
++		// still-future physical target.
++		//
++		// Nothing here runs for VRR or the nudge-thread path; those keep their
++		// existing behaviour below.
++		if ( !bVRR && UsingTimerFD() )
++		{
++			const uint64_t ulNow = get_time_in_nanos();
++
++			// When pre-emptively re-arming we must not schedule an earlier
++			// target than the one we already committed to. ArmNextVBlank holds
++			// m_ScheduleMutex while calling us, so reading the prior timerfd
++			// schedule here is safe.
++			const uint64_t ulMinimumTarget = bPreemptive
++				? m_TimerFDSchedule.ulTargetVBlank + ulRefreshInterval
++				: 0;
++
++			return CalculateFixedVBlankSchedule( GetLastVBlank(), ulNow, ulRefreshInterval, ulOffset, ulMinimumTarget );
++		}
++
+ 		const uint64_t ulScheduledWakeupPoint = GetNextVBlank( ulOffset );
+ 		const uint64_t ulTargetVBlank = ulScheduledWakeupPoint + ulOffset;
+ 
+diff --git a/src/vblankmanager.hpp b/src/vblankmanager.hpp
+index 41902c3..42a43d5 100644
+--- a/src/vblankmanager.hpp
++++ b/src/vblankmanager.hpp
+@@ -2,18 +2,10 @@
+ 
+ #include <optional>
+ #include "waitable.h"
++#include "vblank_schedule.h"
+ 
+ namespace gamescope
+ {
+-    struct VBlankScheduleTime
+-    {
+-        // The expected time for the vblank we want to target.
+-        uint64_t ulTargetVBlank = 0;
+-        // The vblank offset by the redzone/scheduling calculation.
+-        // This is when we want to wake-up by to meet that vblank time above.
+-        uint64_t ulScheduledWakeupPoint = 0;
+-    };
+-
+     struct VBlankTime
+     {
+         VBlankScheduleTime schedule;
+diff --git a/tests/test_fixed_vblank_schedule.cpp b/tests/test_fixed_vblank_schedule.cpp
+new file mode 100644
+index 0000000..4b39643
+--- /dev/null
++++ b/tests/test_fixed_vblank_schedule.cpp
+@@ -0,0 +1,111 @@
++// Standalone, standard-library-only test for CalculateFixedVBlankSchedule.
++//
++// Build (do not run here):
++//   c++ -std=c++20 -I src tests/test_fixed_vblank_schedule.cpp -o test_fixed_vblank_schedule
++//
++// Expected numeric target/wakeup pairs are hard-coded on purpose: this test
++// must not merely re-implement the production algorithm and then agree with
++// itself.
++
++#include <cstdint>
++#include <cstdio>
++
++#include "vblank_schedule.h"
++
++using gamescope::VBlankScheduleTime;
++using gamescope::CalculateFixedVBlankSchedule;
++
++static int g_nChecks = 0;
++static int g_nFailures = 0;
++
++static void Check( const char *pszName,
++                   uint64_t ulLastVBlank, uint64_t ulNow, uint64_t ulInterval,
++                   uint64_t ulOffset, uint64_t ulMinimumTarget,
++                   uint64_t ulExpectedTarget, uint64_t ulExpectedWakeup )
++{
++    const VBlankScheduleTime schedule =
++        CalculateFixedVBlankSchedule( ulLastVBlank, ulNow, ulInterval, ulOffset, ulMinimumTarget );
++
++    g_nChecks++;
++    if ( schedule.ulTargetVBlank != ulExpectedTarget || schedule.ulScheduledWakeupPoint != ulExpectedWakeup )
++    {
++        g_nFailures++;
++        std::fprintf( stderr,
++            "FAIL %-42s target=%llu wake=%llu (expected target=%llu wake=%llu)\n",
++            pszName,
++            (unsigned long long)schedule.ulTargetVBlank,
++            (unsigned long long)schedule.ulScheduledWakeupPoint,
++            (unsigned long long)ulExpectedTarget,
++            (unsigned long long)ulExpectedWakeup );
++    }
++
++    // Every schedule must wake in the future and target a strictly future vblank.
++    g_nChecks++;
++    if ( schedule.ulScheduledWakeupPoint < ulNow )
++    {
++        g_nFailures++;
++        std::fprintf( stderr, "FAIL %-42s invariant: wake (%llu) < now (%llu)\n",
++            pszName, (unsigned long long)schedule.ulScheduledWakeupPoint, (unsigned long long)ulNow );
++    }
++
++    g_nChecks++;
++    if ( schedule.ulTargetVBlank <= ulNow )
++    {
++        g_nFailures++;
++        std::fprintf( stderr, "FAIL %-42s invariant: target (%llu) <= now (%llu)\n",
++            pszName, (unsigned long long)schedule.ulTargetVBlank, (unsigned long long)ulNow );
++    }
++}
++
++int main()
++{
++    // --- Normal case: offset < interval, target still in the future. --------
++    Check( "normal offset<interval",             0,   500'000, 1'000'000,   200'000,         0, 1'000'000,   800'000 );
++
++    // --- offset == interval, callback lands just late: next deadline kept. --
++    Check( "offset=interval callback just late", 0, 1'000'050, 1'000'000, 1'000'000,         0, 2'000'000, 1'000'050 );
++
++    // --- Saturated offset == interval, callback 50ns after the actual anchor.
++    // Keeps the already-anchored next physical target; a wake-first path would
++    // wrongly push the target out to 3'000'000.
++    Check( "offset=interval earliest wake", 1'000'000, 1'000'050, 1'000'000, 1'000'000,         0, 2'000'000, 1'000'050 );
++
++    // --- Wake is late, but the target is still in the future. ---------------
++    Check( "late wake, future target",           0,   900'000, 1'000'000,   200'000,         0, 1'000'000,   900'000 );
++
++    // --- Target exactly == now must roll to the strict next interval. -------
++    Check( "target==now strict future, o=0",     0, 1'000'000, 1'000'000,         0,         0, 2'000'000, 2'000'000 );
++    Check( "target==now strict future, o>0",     0, 1'000'000, 1'000'000,   300'000,         0, 2'000'000, 1'700'000 );
++
++    // --- Zero offset: wake == target. ---------------------------------------
++    Check( "zero offset",                        0,   500'000, 1'000'000,         0,         0, 1'000'000, 1'000'000 );
++
++    // --- Far-past anchor rolls forward in O(1), landing on the phase grid. --
++    Check( "far past anchor O(1)",               0, 1'000'000'000'000, 1'000'000, 100,     0, 1'000'001'000'000, 1'000'000'999'900 );
++
++    // --- Repeated preemptive re-arms advance exactly 1T each time. ----------
++    Check( "preempt min=0    baseline",          0,   500'000, 1'000'000,   200'000,         0, 1'000'000,   800'000 );
++    Check( "preempt min=D0+T advance 1T",        0,   500'000, 1'000'000,   200'000, 2'000'000, 2'000'000, 1'800'000 );
++    Check( "preempt min=D1+T advance 1T",        0,   500'000, 1'000'000,   200'000, 3'000'000, 3'000'000, 2'800'000 );
++
++    // --- Fresh hardware anchor with min=0 ignores old predictions. ----------
++    Check( "fresh hw anchor min=0",        5'000'000, 5'100'000, 1'000'000,   200'000,         0, 6'000'000, 5'800'000 );
++
++    // --- Fractional intervals: ceiled on the phase grid, never floored. -----
++    // 16'666'667 / 2 rounds up to grid point 2T; min is exactly reachable.
++    Check( "fractional ceil preserve phase",     0,         1, 16'666'667,         0, 20'000'000, 33'333'334, 33'333'334 );
++    // Floor-to-min would give 50'000'000 (off-grid); phase-preserving gives 3T.
++    Check( "fractional ceil not static floor",   0,         1, 16'666'667,         0, 50'000'000, 50'000'001, 50'000'001 );
++    // Minimum exactly on the grid stays exactly on the grid.
++    Check( "min exactly on grid",                0,         1, 1'000'000,         0, 3'000'000,  3'000'000,  3'000'000 );
++
++    // --- Every supported refresh: 30/60/90/120/164 Hz. ----------------------
++    Check( "30Hz",                               0, 66'666'667, 33'333'333, 16'666'666,  0, 99'999'999, 83'333'333 );
++    Check( "60Hz",                               0, 33'333'333, 16'666'666,  8'333'333,  0, 49'999'998, 41'666'665 );
++    Check( "90Hz",                               0, 22'222'223, 11'111'111,  5'555'555,  0, 33'333'333, 27'777'778 );
++    Check( "120Hz",                              0, 16'666'667,  8'333'333,  4'166'666,  0, 24'999'999, 20'833'333 );
++    Check( "164Hz",                              0, 12'195'121,  6'097'560,  3'048'780,  0, 18'292'680, 15'243'900 );
++
++    std::printf( "%d checks, %d failures\n", g_nChecks, g_nFailures );
++    return g_nFailures == 0 ? 0 : 1;
++}
