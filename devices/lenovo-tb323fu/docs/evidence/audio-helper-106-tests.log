@@ -1,0 +1,442 @@
+
+== case protected_ok (scenario=protected_ok args=on) rc=0 ==
+-- protected_ok stdout --
+-- protected_ok stderr --
+-- protected_ok cmd.log --
+  card.query 1
+  pactl get-default-sink
+  pactl list short sinks
+  amixer -q -c 0 cset name=aw_dev_0_volume 21
+  amixer -q -c 0 cset name=aw_dev_1_volume 21
+PASS protected_ok rc
+PASS protected_ok aw_dev_0_volume
+PASS protected_ok aw_dev_1_volume
+PASS protected_ok set-default count
+PASS protected_ok list count
+PASS protected_ok sleep count
+PASS protected_ok all waits are 0.5
+
+== case empty (scenario=empty args=on) rc=0 ==
+-- empty stdout --
+-- empty stderr --
+-- empty cmd.log --
+  card.query 1
+  pactl get-default-sink
+  pactl list short sinks
+  pactl set-default-sink effect_input.speakers
+  amixer -q -c 0 cset name=aw_dev_0_volume 21
+  amixer -q -c 0 cset name=aw_dev_1_volume 21
+PASS empty rc
+PASS empty aw_dev_0_volume
+PASS empty aw_dev_1_volume
+PASS empty set-default count
+PASS empty list count
+PASS empty sleep count
+PASS empty set-default target
+PASS empty all waits are 0.5
+
+== case raw (scenario=raw args=on) rc=0 ==
+-- raw stdout --
+-- raw stderr --
+-- raw cmd.log --
+  card.query 1
+  pactl get-default-sink
+  pactl list short sinks
+  pactl set-default-sink effect_input.speakers
+  amixer -q -c 0 cset name=aw_dev_0_volume 21
+  amixer -q -c 0 cset name=aw_dev_1_volume 21
+PASS raw rc
+PASS raw aw_dev_0_volume
+PASS raw aw_dev_1_volume
+PASS raw set-default count
+PASS raw list count
+PASS raw sleep count
+PASS raw set-default target
+
+== case old (scenario=old args=on) rc=0 ==
+-- old stdout --
+-- old stderr --
+-- old cmd.log --
+  card.query 1
+  pactl get-default-sink
+  pactl list short sinks
+  pactl set-default-sink effect_input.speakers
+  amixer -q -c 0 cset name=aw_dev_0_volume 21
+  amixer -q -c 0 cset name=aw_dev_1_volume 21
+PASS old rc
+PASS old aw_dev_0_volume
+PASS old aw_dev_1_volume
+PASS old set-default count
+PASS old list count
+PASS old sleep count
+PASS old set-default target
+
+== case headphone (scenario=headphone args=on) rc=0 ==
+-- headphone stdout --
+-- headphone stderr --
+-- headphone cmd.log --
+  card.query 1
+  pactl get-default-sink
+  pactl list short sinks
+  amixer -q -c 0 cset name=aw_dev_0_volume 21
+  amixer -q -c 0 cset name=aw_dev_1_volume 21
+PASS headphone rc
+PASS headphone aw_dev_0_volume
+PASS headphone aw_dev_1_volume
+PASS headphone set-default count
+PASS headphone list count
+PASS headphone sleep count
+
+== case bluetooth (scenario=bluetooth args=on) rc=0 ==
+-- bluetooth stdout --
+-- bluetooth stderr --
+-- bluetooth cmd.log --
+  card.query 1
+  pactl get-default-sink
+  pactl list short sinks
+  amixer -q -c 0 cset name=aw_dev_0_volume 21
+  amixer -q -c 0 cset name=aw_dev_1_volume 21
+PASS bluetooth rc
+PASS bluetooth aw_dev_0_volume
+PASS bluetooth aw_dev_1_volume
+PASS bluetooth set-default count
+PASS bluetooth list count
+PASS bluetooth sleep count
+
+== case protected_missing (scenario=protected_missing args=on) rc=1 ==
+-- protected_missing stdout --
+-- protected_missing stderr --
+  no effect_input.speakers -- staying at 159
+  restoring safe attenuation 159
+-- protected_missing cmd.log --
+  card.query 1
+  pactl get-default-sink
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  amixer -q -c 0 cset name=aw_dev_0_volume 159
+  amixer -q -c 0 cset name=aw_dev_1_volume 159
+PASS protected_missing rc
+PASS protected_missing aw_dev_0_volume
+PASS protected_missing aw_dev_1_volume
+PASS protected_missing set-default count
+PASS protected_missing list count
+PASS protected_missing sleep count
+PASS protected_missing never opens to 21
+PASS protected_missing all waits are 0.5
+
+== case near_name (scenario=near_name args=on) rc=1 ==
+-- near_name stdout --
+-- near_name stderr --
+  no effect_input.speakers -- staying at 159
+  restoring safe attenuation 159
+-- near_name cmd.log --
+  card.query 1
+  pactl get-default-sink
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  amixer -q -c 0 cset name=aw_dev_0_volume 159
+  amixer -q -c 0 cset name=aw_dev_1_volume 159
+PASS near_name rc
+PASS near_name aw_dev_0_volume
+PASS near_name aw_dev_1_volume
+PASS near_name set-default count
+PASS near_name list count
+PASS near_name sleep count
+PASS near_name never opens to 21
+PASS near_name all waits are 0.5
+
+== case list_rc_nonzero (scenario=list_rc_nonzero args=on) rc=1 ==
+-- list_rc_nonzero stdout --
+-- list_rc_nonzero stderr --
+  no effect_input.speakers -- staying at 159
+  restoring safe attenuation 159
+-- list_rc_nonzero cmd.log --
+  card.query 1
+  pactl get-default-sink
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  amixer -q -c 0 cset name=aw_dev_0_volume 159
+  amixer -q -c 0 cset name=aw_dev_1_volume 159
+PASS list_rc_nonzero rc
+PASS list_rc_nonzero aw_dev_0_volume
+PASS list_rc_nonzero aw_dev_1_volume
+PASS list_rc_nonzero set-default count
+PASS list_rc_nonzero list count
+PASS list_rc_nonzero sleep count
+PASS list_rc_nonzero never opens to 21
+PASS list_rc_nonzero all waits are 0.5
+
+== case get_rc_nonzero (scenario=get_rc_nonzero args=on) rc=1 ==
+-- get_rc_nonzero stdout --
+-- get_rc_nonzero stderr --
+  cannot read default sink
+  restoring safe attenuation 159
+-- get_rc_nonzero cmd.log --
+  card.query 1
+  pactl get-default-sink
+  amixer -q -c 0 cset name=aw_dev_0_volume 159
+  amixer -q -c 0 cset name=aw_dev_1_volume 159
+PASS get_rc_nonzero rc
+PASS get_rc_nonzero aw_dev_0_volume
+PASS get_rc_nonzero aw_dev_1_volume
+PASS get_rc_nonzero set-default count
+PASS get_rc_nonzero never opens to 21
+
+== case set_fail (scenario=set_fail args=on) rc=1 ==
+-- set_fail stdout --
+-- set_fail stderr --
+  cannot set effect_input.speakers as default
+  restoring safe attenuation 159
+-- set_fail cmd.log --
+  card.query 1
+  pactl get-default-sink
+  pactl list short sinks
+  pactl set-default-sink effect_input.speakers
+  amixer -q -c 0 cset name=aw_dev_0_volume 159
+  amixer -q -c 0 cset name=aw_dev_1_volume 159
+PASS set_fail rc
+PASS set_fail aw_dev_0_volume
+PASS set_fail aw_dev_1_volume
+PASS set_fail set-default count
+PASS set_fail never opens to 21
+
+== case delayed_3rd (scenario=delayed_3rd args=on) rc=0 ==
+-- delayed_3rd stdout --
+-- delayed_3rd stderr --
+-- delayed_3rd cmd.log --
+  card.query 1
+  pactl get-default-sink
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  sleep 0.5
+  pactl list short sinks
+  amixer -q -c 0 cset name=aw_dev_0_volume 21
+  amixer -q -c 0 cset name=aw_dev_1_volume 21
+PASS delayed_3rd rc
+PASS delayed_3rd aw_dev_0_volume
+PASS delayed_3rd aw_dev_1_volume
+PASS delayed_3rd set-default count
+PASS delayed_3rd list count
+PASS delayed_3rd sleep count
+PASS delayed_3rd all waits are 0.5
+
+== case off_all_fail (scenario=off_all_fail args=off) rc=0 ==
+-- off_all_fail stdout --
+-- off_all_fail stderr --
+-- off_all_fail cmd.log --
+  card.query 1
+  amixer -q -c 0 cset name=aw_dev_0_volume 159
+  amixer -q -c 0 cset name=aw_dev_1_volume 159
+PASS off_all_fail rc
+PASS off_all_fail aw_dev_0_volume
+PASS off_all_fail aw_dev_1_volume
+PASS off_all_fail set-default count
+PASS off_all_fail pactl total calls
+PASS off_all_fail never opens to 21
+
+== case card_delayed_3rd (scenario=card_delayed_3rd args=on) rc=0 ==
+-- card_delayed_3rd stdout --
+-- card_delayed_3rd stderr --
+-- card_delayed_3rd cmd.log --
+  card.query 1
+  sleep 0.5
+  card.query 2
+  sleep 0.5
+  card.query 3
+  pactl get-default-sink
+  pactl list short sinks
+  amixer -q -c 0 cset name=aw_dev_0_volume 21
+  amixer -q -c 0 cset name=aw_dev_1_volume 21
+PASS card_delayed_3rd rc
+PASS card_delayed_3rd aw_dev_0_volume
+PASS card_delayed_3rd aw_dev_1_volume
+PASS card_delayed_3rd set-default count
+PASS card_delayed_3rd list count
+PASS card_delayed_3rd sleep count
+PASS card_delayed_3rd card probes
+PASS card_delayed_3rd all waits are 0.5
+
+== case card_missing (scenario=card_missing args=on) rc=1 ==
+-- card_missing stdout --
+-- card_missing stderr --
+  no TB323FU sound card
+-- card_missing cmd.log --
+  card.query 1
+  sleep 0.5
+  card.query 2
+  sleep 0.5
+  card.query 3
+  sleep 0.5
+  card.query 4
+  sleep 0.5
+  card.query 5
+  sleep 0.5
+  card.query 6
+  sleep 0.5
+  card.query 7
+  sleep 0.5
+  card.query 8
+  sleep 0.5
+  card.query 9
+  sleep 0.5
+  card.query 10
+  sleep 0.5
+  card.query 11
+  sleep 0.5
+  card.query 12
+  sleep 0.5
+  card.query 13
+  sleep 0.5
+  card.query 14
+  sleep 0.5
+  card.query 15
+  sleep 0.5
+  card.query 16
+  sleep 0.5
+  card.query 17
+  sleep 0.5
+  card.query 18
+  sleep 0.5
+  card.query 19
+  sleep 0.5
+  card.query 20
+  sleep 0.5
+  card.query 21
+PASS card_missing rc
+PASS card_missing amixer calls
+PASS card_missing card probes
+PASS card_missing waits
+PASS card_missing never opens to 21
+PASS card_missing all waits are 0.5
+
+== case card_sleep_fail (scenario=card_sleep_fail args=on) rc=1 ==
+-- card_sleep_fail stdout --
+-- card_sleep_fail stderr --
+  sleep failed
+-- card_sleep_fail cmd.log --
+  card.query 1
+  sleep 0.5
+PASS card_sleep_fail rc
+PASS card_sleep_fail amixer calls
+PASS card_sleep_fail waits
+PASS card_sleep_fail never opens to 21
+
+==== summary: 106 checks, 0 failures ====

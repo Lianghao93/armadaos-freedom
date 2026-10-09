@@ -1,0 +1,9 @@
+LINE=303
+-			phy_id = ar->pdev->cap.band[WMI_HOST_WLAN_2GHZ_CAP].phy_id;
++			phy_id = ar->pdev->cap.band[NL80211_BAND_2GHZ].phy_id;
+LINE=313
+-	if (supported_bands & WMI_HOST_WLAN_5GHZ_CAP && !ar->supports_6ghz) {
++	if (supported_bands & WMI_HOST_WLAN_5GHZ_CAP && (!ar->supports_6ghz || ab->hw_params->single_pdev_only)) {
+LINE=315
+-			phy_id = ar->pdev->cap.band[WMI_HOST_WLAN_5GHZ_CAP].phy_id;
++			phy_id = ar->pdev->cap.band[NL80211_BAND_5GHZ].phy_id;

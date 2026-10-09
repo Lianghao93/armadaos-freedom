@@ -1,0 +1,30 @@
+6+0 records in
+6+0 records out
+24576 bytes (25 kB, 24 KiB) copied, 0.000597969 s, 41.1 MB/s
+5+0 records in
+5+0 records out
+20480 bytes (20 kB, 20 KiB) copied, 0.000356563 s, 57.4 MB/s
+24+0 records in
+24+0 records out
+100663296 bytes (101 MB, 96 MiB) copied, 0.0397199 s, 2.5 GB/s
+6+0 records in
+6+0 records out
+24576 bytes (25 kB, 24 KiB) copied, 0.000743698 s, 33.0 MB/s
+5+0 records in
+5+0 records out
+20480 bytes (20 kB, 20 KiB) copied, 0.000427135 s, 47.9 MB/s
+TIME=2026-10-09T00:37:43Z
+BOOT_ID=cbcc2dee-d72e-4ef6-86cc-93b0a4d588c2
+ROOT_GUID=3093bd33-1e0b-56f8-427c-e4b919d19b82
+TARGET=/dev/sdf12
+PARENT=/dev/sdf (host=0 lun=4)
+CANDIDATE=/var/home/armada/.cache/y700-debug-90781b49/boot-quiet-no-gpu.img
+CAND_SHA=ca4203253b9ffeebf72374b8ef87d16b42e575c2528c2d240a4cf65868830bda
+PRE_SHA=dd442b230a7a48f71e848758d8e461f0f85278eafe0b480d99d4b79651892c1d
+POST_SHA=ca4203253b9ffeebf72374b8ef87d16b42e575c2528c2d240a4cf65868830bda
+GPT_PRIMARY_BEFORE=ab0f894d153a405f9206d9ac46f6cf4f4ad2a1de8b7d60848172629a5e479eb3
+GPT_PRIMARY_AFTER=ab0f894d153a405f9206d9ac46f6cf4f4ad2a1de8b7d60848172629a5e479eb3
+GPT_BACKUP_BEFORE=aee3569c076119820e1322d991fa973ee2940e76c47ccc7a39d6e27dd3d081a0
+GPT_BACKUP_AFTER=aee3569c076119820e1322d991fa973ee2940e76c47ccc7a39d6e27dd3d081a0
+WRITE_RC=0
+FINAL_VERIFIED=1

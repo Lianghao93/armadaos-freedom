@@ -8,10 +8,14 @@ ArmadaOS 上游完整 main 历史从 `armada-os/armada` 复制，初始基线 `8
 
 - `system_files/usr/lib/armada/devices/lenovo-tb323fu.conf` 与 device-env：识别设备，声明 SM8850 的 6+2 CPU 拓扑、屏幕方向和旋转 shader。设备实际使用的账号配置不入库。
 - `rootfs/`：双 USB 路由脚本和 udev 规则。已在长边充电、短边 G9 手柄组合上复测恢复；其他插拔顺序和休眠仍待测。这些文件先作为设备 overlay 保存，尚未自动并入全机型镜像。
-- `diagnostics/`、`tests/`：有大小上限的运行记录、逐帧与同步分析，以及现有 USB/记录器回归测试。服务器 Docker 中通过 18 项测试；这不等于完整镜像和游戏稳定性验收。
-- `boot/quiet-thermal-no-gpu.dtsi`：仅移除 quiet 温区 44/46/48/50°C 的四个 GPU cooling-map，保留 CPU 绑定和独立 GPU 结温保护。TF 和机身 DTB 离线语义差异均只有这四项。**待用户决定后更新启动镜像并首次实机验证**。
-- `patches/boot/`：已用打包器的本地提交和共享 PayloadFrom 变更；kShimC 本地四个提交的历史。完整成功 kShimC 源与后续研究工作树正在核对，不能把全部最新 WIP 称为已部署版本。
+- `diagnostics/`、`tests/`：有大小上限的运行记录、逐帧与同步分析，以及现有 USB/记录器回归测试。服务器 Docker 中通过 18 项 USB/记录器测试；这不等于完整镜像和游戏稳定性验收。
+- `boot/quiet-thermal-no-gpu.dtsi`：仅移除 quiet 温区 44/46/48/50°C 的四个 GPU cooling-map，保留 CPU 绑定和独立 GPU 结温保护。TF 和机身 DTB 离线语义差异均只有这四项。2026-10-09 经用户批准写入并重启：完整回读一致，现场 quiet 温区仅剩七个 CPU 绑定，Steam/MangoHud 已恢复。
+- `patches/boot/`：已用打包器的本地提交和共享 PayloadFrom 变更；kShimC 本地四个提交的历史。成功构建目录源码已经回收；后续研究工作树另行保存，完整子模块重建和二进制复现仍待完成。
 - `docs/`：温控、充电限制及帧时间诊断证据。设备原有 80% 充电上限由充电固件沿用，Linux 调整入口尚未实现。
+
+- 音频保护 filter/WirePlumber 生命周期、Decky 临时目录和 Wi-Fi 扫描/5GHz 修复已收录 `rootfs/` 与 `kernel/runtime-fixes/`，详见各部署说明；源码入库不等于镜像自动安装。
+- MangoHud 三处已部署采集改动已作为正式 `Patch9` 接入现有 spec；服务器补丁应用后与已部署源逐字匹配，CPU/GPU 功耗和 VRAM 温度仍无真实接口。
+- Prime CPU 编号按实际 policy2 的 `related_cpus=2 3` 修正为 `2-3`。本轮只修正仓库元数据；未刷新设备 Control 服务或调整运行中的核分配/频率。
 
 ## 当前关键问题
 
