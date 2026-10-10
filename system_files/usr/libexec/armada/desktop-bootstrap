@@ -41,6 +41,13 @@ armada_lib_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../lib/armada" && 
 source "${armada_lib_dir}/desktop-bootstrap-lib"
 armada_desktop_bootstrap_state "${config_dir}"
 
+# Device-specific libinput calibration is per-user policy and must be
+# re-applied on every desktop login, so it runs before the completed-marker
+# early exit below. A failure is logged but never blocks the desktop session.
+armada_configure_desktop_touchscreen || \
+    systemd-cat -t armada-desktop-bootstrap -p warning \
+        <<<"failed to apply desktop touchscreen calibration" 2>/dev/null || true
+
 [[ "${rotation_complete}" != 1 || "${scale_complete}" != 1 || "${dual_complete}" != 1 ]] || exit 0
 mkdir -p "${config_dir}"
 

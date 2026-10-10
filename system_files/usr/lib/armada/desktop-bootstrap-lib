@@ -72,3 +72,50 @@ armada_desktop_bootstrap_state() {
         dual_complete=1
     fi
 }
+
+# Apply a desktop-only libinput calibration matrix to the primary touchscreen.
+# An empty matrix is a successful no-op so uncalibrated devices keep their
+# udev-provided values. The matrix is persisted in kcminputrc exactly like
+# setup-dual-screen keys devices; the live KWin property is set only after
+# persistence succeeds.
+armada_configure_desktop_touchscreen() {
+    local matrix="${ARMADA_DESKTOP_TOUCHSCREEN_CALIBRATION:-}"
+    [[ -n "${matrix}" ]] || return 0
+
+    local name="${ARMADA_PRIMARY_TOUCHSCREEN:-}"
+    [[ -n "${name}" ]] || return 1
+
+    local input_root="${ARMADA_INPUT_SYSFS_DIR:-/sys/class/input}"
+    local dev vendor_hex product_hex event event_name
+    local found=0
+    for dev in "${input_root}"/input*; do
+        [[ -r "${dev}/name" ]] || continue
+        [[ "$(<"${dev}/name")" == "${name}" ]] || continue
+        vendor_hex="$(<"${dev}/id/vendor")" || continue
+        product_hex="$(<"${dev}/id/product")" || continue
+        event_name=
+        for event in "${dev}"/event*; do
+            [[ -e "${event}" ]] || continue
+            event_name="${event##*/}"
+            break
+        done
+        [[ -n "${event_name}" ]] || continue
+        found=1
+        break
+    done
+    [[ "${found}" == 1 ]] || return 1
+
+    local vendor=$((16#${vendor_hex}))
+    local product=$((16#${product_hex}))
+
+    kwriteconfig6 --file kcminputrc --group Libinput \
+        --group "${vendor}" --group "${product}" --group "${name}" \
+        --key CalibrationMatrix "${matrix}" || return 1
+
+    gdbus call --session --dest org.kde.KWin \
+        --object-path "/org/kde/KWin/InputDevice/${event_name}" \
+        --method org.freedesktop.DBus.Properties.Set \
+        org.kde.KWin.InputDevice calibrationMatrix "<'${matrix}'>" || return 1
+
+    return 0
+}

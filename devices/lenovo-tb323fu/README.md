@@ -19,6 +19,8 @@ ArmadaOS 上游完整 main 历史从 `armada-os/armada` 复制，初始基线 `8
 
 - Gamescope 型号匹配：新增 TB323FU 专用 Lua 和0028，空 EDID 时仍走既有匹配。三项服务器自测通过；已在设备加载型号配置，现代 Steam 收到30/60/90/120/164，active CRTC短时确认164Hz。其它四档逐档切换、侧栏及游戏验收待测；这不代表帧时间问题已解决。
 
+- 桌面触摸校准持久化：TB323FU profile 声明单位校准矩阵，`desktop-bootstrap` 每次桌面登录按机型自动应用（持久化进用户 `kcminputrc` + KWin live 属性）。现场已接受身份矩阵（能打开、位置准确）；固件 WDT 静默/黑屏恢复仍是独立问题，本次未做内核或永久固件修复。详见 [desktop-touch-20261010.md](docs/desktop-touch-20261010.md)。
+
 ## 当前关键问题
 
 120Hz 扫描本身稳定（平均 8.333344ms）。持续 UI 操作的翻页显示经常跨 2/3 个扫描周期；原始逐帧间隔在约 16.7/25ms 间波动。原始 GPU 计时确认 Gamescope 合成约 10.7ms，超过 8.33ms 的单帧预算。
