@@ -99,3 +99,66 @@ test("the input object and its arrays are never mutated", () => {
   assert.strictEqual(input.active_display_info.supported_refresh_rates, refresh);
   assert.strictEqual(input.active_display_info.supported_frame_rates, fps);
 });
+
+// --- 165 Hz native-mode candidate behavior (test-first; implementation not
+// updated yet). A tier must appear in BOTH advertised lists. New 165 kernels
+// yield five tiers ending in 165; old 164 kernels still yield five tiers
+// ending in 164, and 165 is never invented from the FPS list alone.
+
+test("new 165 native kernel narrows the picker to five tiers ending in 165", () => {
+  const input = internalState({
+    supported_refresh_rates: [30, 60, 90, 120, 165],
+    supported_frame_rates: [10, 12, 20, 24, 30, 40, 50, 60, 82, 90, 120, 165],
+  });
+  assert.deepEqual(filterY700FrameRates(DEVICE, input).active_display_info.supported_frame_rates, [30, 60, 90, 120, 165]);
+});
+
+test("old 164 native kernel keeps five tiers ending in 164 for rollback", () => {
+  const input = internalState({
+    supported_refresh_rates: [164, 30, 120, 60, 90],
+    supported_frame_rates: [164, 90, 60, 30, 120],
+  });
+  assert.deepEqual(filterY700FrameRates(DEVICE, input).active_display_info.supported_frame_rates, [30, 60, 90, 120, 164]);
+});
+
+test("a 165 declared only by the FPS list is not invented over the 164 panel", () => {
+  const input = internalState({
+    supported_refresh_rates: [30, 60, 90, 120, 164],
+    supported_frame_rates: [10, 12, 20, 24, 30, 40, 50, 60, 82, 90, 120, 164, 165],
+  });
+  assert.deepEqual(filterY700FrameRates(DEVICE, input).active_display_info.supported_frame_rates, [30, 60, 90, 120, 164]);
+});
+
+test("both 164 and 165 advertised in both lists choose 165 and exclude 164", () => {
+  const input = internalState({
+    supported_refresh_rates: [30, 60, 90, 120, 164, 165],
+    supported_frame_rates: [10, 12, 20, 24, 30, 40, 50, 60, 82, 90, 120, 164, 165],
+  });
+  const refresh = input.active_display_info.supported_refresh_rates;
+  const result = filterY700FrameRates(DEVICE, input);
+  assert.deepEqual(result.active_display_info.supported_frame_rates, [30, 60, 90, 120, 165]);
+  assert.equal(result.active_display_info.supported_frame_rates.includes(164), false);
+  assert.strictEqual(result.active_display_info.supported_refresh_rates, refresh);
+});
+
+test("a 165-ready fixture is returned unchanged on inexact device and external panel", () => {
+  const inexact = internalState({
+    supported_refresh_rates: [30, 60, 90, 120, 165],
+    supported_frame_rates: [10, 12, 20, 24, 30, 40, 50, 60, 82, 90, 120, 165],
+  });
+  assert.strictEqual(filterY700FrameRates("lenovo-tb323fu-other", inexact), inexact);
+
+  const external = internalState({
+    is_external: true,
+    supported_refresh_rates: [30, 60, 90, 120, 165],
+    supported_frame_rates: [10, 12, 20, 24, 30, 40, 50, 60, 82, 90, 120, 165],
+  });
+  assert.strictEqual(filterY700FrameRates(DEVICE, external), external);
+
+  const otherConnector = internalState({
+    connector_name: "DP-1",
+    supported_refresh_rates: [30, 60, 90, 120, 165],
+    supported_frame_rates: [10, 12, 20, 24, 30, 40, 50, 60, 82, 90, 120, 165],
+  });
+  assert.strictEqual(filterY700FrameRates(DEVICE, otherConnector), otherConnector);
+});

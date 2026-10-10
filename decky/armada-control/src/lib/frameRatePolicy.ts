@@ -1,13 +1,13 @@
 // Steam derives additional divisor frame-rate items from a display's refresh
 // rate, so its native picker can list more FPS entries than this device's owner
-// wants. Keep only the five tiers below and delete the rest; nothing else is
-// touched.
+// wants. Keep only five tiers — the four base rates below plus one native high
+// tier — and delete the rest; nothing else is touched.
 
 export const Y700_DEVICE_ID = "lenovo-tb323fu";
 export const Y700_INTERNAL_CONNECTOR = "DSI-1";
 
 // Ordered by preference; the output keeps this order, not the input's.
-const Y700_FPS_CHOICES = [30, 60, 90, 120, 164];
+const Y700_BASE_FPS_CHOICES = [30, 60, 90, 120];
 
 interface DisplayInfo {
   connector_name?: string;
@@ -36,7 +36,9 @@ export function filterY700FrameRates(deviceId: string, state: GamescopeState): G
   if (!Array.isArray(advertisedRefresh) || !Array.isArray(advertisedFps)) return state;
   const refresh = new Set(advertisedRefresh);
   const fps = new Set(advertisedFps);
-  const next = Y700_FPS_CHOICES.filter((rate) => refresh.has(rate) && fps.has(rate));
+  const highTier = refresh.has(165) && fps.has(165) ? 165 : 164;
+  const choices = [...Y700_BASE_FPS_CHOICES, highTier];
+  const next = choices.filter((rate) => refresh.has(rate) && fps.has(rate));
   if (!next.length) return state;
   return {
     ...state,

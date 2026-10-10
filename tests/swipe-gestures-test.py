@@ -159,6 +159,41 @@ class SwipeGesturesTest(unittest.TestCase):
                 control.action_set_swipe_gestures_enabled({"enabled": True})
         self.assertEqual(self.config.read_text(), "enabled=0\n")
 
+    def test_suspend_with_enabled_preference_restores_live_and_keeps_saved(self):
+        self.config.write_text("enabled=1\n")
+        saved = self.config.read_bytes()
+        self.assertEqual(control.action_suspend_swipe_gestures({"suspended": True}), {"suspended": True})
+        self.assertFalse(self.live)
+        self.assertEqual(control.action_suspend_swipe_gestures({"suspended": False}), {"suspended": False})
+        self.assertTrue(self.live)
+        self.assertEqual(self.config.read_bytes(), saved)
+
+    def test_suspend_with_disabled_preference_stays_disabled_without_runtime(self):
+        self.config.write_text("enabled=0\n")
+        self.live = False
+        saved = self.config.read_bytes()
+        self.assertEqual(control.action_suspend_swipe_gestures({"suspended": True}), {"suspended": True})
+        self.assertEqual(control.action_suspend_swipe_gestures({"suspended": False}), {"suspended": False})
+        self.assertEqual(self.commands, [])
+        self.assertFalse(self.live)
+        self.assertEqual(self.config.read_bytes(), saved)
+
+    def test_invalid_suspend_values_do_not_mutate(self):
+        for value in (None, 0, 1, "true", [], {}):
+            with self.assertRaises(ValueError):
+                control.action_suspend_swipe_gestures({"suspended": value})
+        self.assertEqual(self.commands, [])
+        self.assertTrue(self.live)
+        self.assertFalse(self.config.exists())
+
+    def test_plugin_suspend_passes_bool_and_returns_response(self):
+        with patch.object(plugin_system, "call", return_value={"suspended": True}) as mock_call:
+            self.assertTrue(plugin_system.suspend_swipe_gestures(True))
+            mock_call.assert_called_once_with("suspend_swipe_gestures", suspended=True)
+        with patch.object(plugin_system, "call", return_value={"suspended": False}) as mock_call:
+            self.assertFalse(plugin_system.suspend_swipe_gestures(False))
+            mock_call.assert_called_once_with("suspend_swipe_gestures", suspended=False)
+
 
 if __name__ == "__main__":
     unittest.main()

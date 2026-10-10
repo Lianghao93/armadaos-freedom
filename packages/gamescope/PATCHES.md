@@ -75,3 +75,13 @@ to a commit, or `armada` if it's original; a URL source with no `notes` is verba
 - `patches/0032-drm-tb323fu-bounded-present-diagnostics.patch`
   source: armadaos-y705
   Default-off, exact-model/internal/fixed164Hz bounded DRM-stage diagnostic. Retained to make the packaged source match the built binary; the Y700 Lua explicitly keeps it false. This does not provide an FPS improvement and is not the untested overlay-wait experiment.
+
+- `patches/0033-wlserver-only-take-an-edge-swipe-that-starts-at-the-edge.patch`
+  source: https://github.com/armada-os/armada/blob/310c011470319aa40d264a10db855a7056842db5/packages/gamescope/patches/0028-wlserver-only-take-an-edge-swipe-that-starts-at-the-edge.patch
+  PR: https://github.com/armada-os/armada/pull/665
+  Original 0028 renumbered to 0033 only; body unchanged. Scope: an edge swipe must start at the edge.
+
+- `patches/0034-edid-clamp-synthetic-pixel-clock-above-the-dtd-limit.patch`
+  source: https://github.com/enij90/armada-tb321fu/commit/8d4b5530ab8afbc41d35e6577fa91e77ee872c3a
+  notes: Rebased to the PR665 + Y705 tree; the two production hunks are only relocated, and the Y700 mode-list test expectation is adapted. EDID DTD metadata clamps pixel clocks above 655.35 MHz while preserving geometry; the actual scanout modes remain the kernel modes. This does NOT fix physical 165 Hz, change panel clocks, or fix the 90 Hz physical corruption. No new tests or physical fixes are claimed.
+  The patch header's "not executed" statement dates from artifact generation. The unchanged patch was subsequently built in the ARM64 RPM; 17 related tests / 113 assertions passed. This sync verifies it against that RPM's source package and reuses the recorded build results. See the TB323FU status record for device acceptance and remaining issues.
