@@ -1,0 +1,12 @@
+[Unit]
+Description=double-Home to Steam Quick Access Menu helper (TB323FU + GameSir G9 2026)
+After=inputplumber.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/libexec/armada/armada-g9-double-home.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
