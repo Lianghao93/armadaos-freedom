@@ -1,106 +1,145 @@
-> 本仓库是 Y700 Gen 5 / TB323FU 的私有平板适配维护副本，仓库名为 armadaos-y705。
-> 当前成果、待解决问题与构建状态见 [设备维护入口](devices/lenovo-tb323fu/README.md)。下面保留 ArmadaOS 上游说明。
 <p align="center">
-  <a href="https://armadaos.dev/">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset=".github/assets/armada-mark-white.svg">
-      <img src=".github/assets/armada-mark-black.svg" alt="Armada" width="112">
-    </picture>
-  </a>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/armada-mark-white.svg">
+    <img src=".github/assets/armada-mark-black.svg" alt="Armada" width="112">
+  </picture>
 </p>
 
-<h1 align="center">Armada</h1>
+<h1 align="center">ArmadaOS Freedom</h1>
 
-<p align="center"><strong>SteamOS-like Linux for ARM handhelds</strong></p>
+<p align="center"><strong>SteamOS-like Linux for ARM tablets</strong></p>
 
 <p align="center">
-  Armada brings Steam, FEX, Proton, and a full Linux desktop to supported ARM64 gaming handhelds.
+  A tablet-focused fork of <a href="https://github.com/armada-os/armada">ArmadaOS</a>,
+  bringing Steam Gaming Mode, FEX, Proton, and KDE Plasma to ARM64 tablets,
+  with kShimC multi-boot.
 </p>
 
 <p align="center">
-  <a href="https://github.com/armada-os/armada/actions/workflows/build.yml"><img alt="Build status" src="https://github.com/armada-os/armada/actions/workflows/build.yml/badge.svg?branch=main"></a>
-  <a href="https://armadaos.dev/"><img alt="Documentation" src="https://img.shields.io/badge/docs-armadaos.dev-18181a?style=flat"></a>
+  <a href="https://github.com/armada-os/armada"><img alt="Based on ArmadaOS" src="https://img.shields.io/badge/based_on-ArmadaOS-18181a?style=flat"></a>
+  <a href="devices/lenovo-tb323fu/README.md"><img alt="Tablet adaptation" src="https://img.shields.io/badge/device-Legion_Tab_Gen_5-285580?style=flat"></a>
   <a href="LICENSE.md"><img alt="GPL-2.0-or-later license" src="https://img.shields.io/badge/license-GPL--2.0--or--later-18181a?style=flat"></a>
-  <a href="https://discord.gg/HdmdSxTD5S"><img alt="Discord community" src="https://img.shields.io/badge/chat-Discord-5865F2?style=flat&amp;logo=discord&amp;logoColor=white"></a>
 </p>
 
 <p align="center">
-  <a href="https://armadaos.dev/getting-started/flashing-to-an-sd-card/"><strong>Install Armada</strong></a>
+  <a href="devices/lenovo-tb323fu/README.md"><strong>Device support &amp; status</strong></a>
   ·
-  <a href="https://armadaos.dev/devices/supported-devices/">Supported devices</a>
+  <a href="#kshimc-multi-boot">Boot menu</a>
   ·
-  <a href="https://armadaos.dev/">Documentation</a>
+  <a href="devices/lenovo-tb323fu/docs/SOURCES.md">Sources</a>
   ·
-  <a href="https://armadaos.dev/troubleshooting/known-issues/">Known issues</a>
+  <a href="https://armadaos.dev/">Upstream documentation</a>
 </p>
 
-> [!WARNING]
-> Armada is prototype software under active development. Installation requires
-> bootloader changes that can brick a device, corrupt partitions, or cause data
-> loss. Check the current [supported-device list](https://armadaos.dev/devices/supported-devices/),
-> back up your data, and read the complete [installation guide](https://armadaos.dev/getting-started/flashing-to-an-sd-card/)
-> before proceeding.
+## About ArmadaOS Freedom
 
-## About Armada
+ArmadaOS Freedom is a community-maintained tablet branch based on
+[ArmadaOS](https://github.com/armada-os/armada). It retains the upstream gaming
+and desktop foundation while adapting boot, display, power, peripherals, and
+Armada Control to tablet hardware. Current device work focuses on the
+**Lenovo Legion Tab Gen 5 / Y700 (TB323FU, SM8850P)**.
 
-Armada is a gaming-focused Linux distribution built on
-[Fedora bootc](https://github.com/bootc-dev/bootc) with device support derived
-from [ROCKNIX](https://github.com/ROCKNIX). It combines a console-first Steam
-experience with a full KDE Plasma desktop while remaining an open, image-based
-operating system.
+本项目是基于 ArmadaOS、面向 ARM 平板的适配分支，当前主要维护 Y700 五代。
+使用 kShimC 启动器选择 Android、机身 ArmadaOS 或 TF 卡 ArmadaOS。
+设备适配状态和已知问题见[设备维护入口](devices/lenovo-tb323fu/README.md)。
 
-Highlights include:
+Highlights of the current adaptation:
 
-- ARM64 Steam with FEX translation and Proton compatibility
-- Gaming Mode and a full KDE Plasma Desktop Mode
-- Over-the-air operating system updates
-- SD-card boot with optional internal-storage installation
-- Handheld-focused power, fan, controller, and calibration controls
-- Per-game compatibility settings through Armada Control
+- Steam Gaming Mode and KDE Plasma, with FEX and Proton from ArmadaOS.
+- kShimC multi-boot with separate internal-storage and TF-card Linux entries.
+- Device-matched 30 / 60 / 90 / 120 / 165 Hz display modes.
+- Dual-USB routing, audio, 5 GHz Wi-Fi, battery and temperature reporting.
+- G9 2026 controller mapping, RGB control, and double-Home quick access.
+- Tablet-aware Armada Control, including hiding fan controls on fanless devices.
+
+This is an adaptation source tree, not yet a complete, reproducibly built and
+fully validated tablet image release. Kernel/boot integration with the upstream
+image build and OTA update path is still in progress. Current limitations,
+including display and game stability issues, are tracked in the
+[device documentation](devices/lenovo-tb323fu/README.md#已知限制).
+
+## kShimC multi-boot
+
+The tablet boot path uses **kShimC**, packaged with the boot payloads in the
+Android boot image. It keeps the factory boot chain and presents a menu for:
+
+- Android.
+- ArmadaOS installed in internal storage.
+- ArmadaOS installed on a TF / microSD card.
+- Advanced boot: Linux diagnostics, Recovery, Fastboot, and 9008 / EDL.
+- Language selection, restart, and shutdown.
+
+This fork no longer ships the custom ROCKNIX ABL firmware, flashing scripts, or
+automatic ABL updater. The factory bootloader remains part of the device boot
+chain; kShimC provides the system-selection menu.
+
+The Linux kernel and device tree are boot payloads; Linux then mounts the root
+filesystem selected by the internal-storage or TF-card entry. These are two
+separate installation targets. The menu does not imply direct SD/UFS filesystem
+support in kShimC.
+
+<p align="center">
+  <img src=".github/assets/kshimc-star-chart-zh.png" alt="KShimC launcher — STAR_CHART theme, Simplified Chinese menu" width="100%">
+</p>
+
+*STAR_CHART menu rendered from the current implementation; this is a software
+preview, not a photograph of the tablet.*
+
+<details>
+<summary>English menu preview</summary>
+
+![KShimC launcher — English menu](.github/assets/kshimc-star-chart-en.png)
+
+</details>
+
+Menu sources and build inputs are under
+[`devices/lenovo-tb323fu/boot/`](devices/lenovo-tb323fu/boot/).
+See the [build recipe](devices/lenovo-tb323fu/boot/star-chart-build/README.md)
+for pinned dependencies and device-specific payload requirements. Advanced boot
+actions have not all been individually validated on hardware.
 
 ## Documentation
 
-The [Armada documentation](https://armadaos.dev/) is the source of truth for
-device support, installation, updates, current limitations, and recovery. Use
-the guides there rather than instructions copied from older releases or posts.
-
 | I want to… | Guide |
 |---|---|
-| Install Armada | [Flash to an SD card](https://armadaos.dev/getting-started/flashing-to-an-sd-card/) |
-| Check my handheld | [Supported devices](https://armadaos.dev/devices/supported-devices/) |
-| Learn the interface | [Using Armada](https://armadaos.dev/using-armada/) |
-| Update an installation | [Updating](https://armadaos.dev/getting-started/updating/) |
-| Find help | [FAQ](https://armadaos.dev/troubleshooting/frequently-asked-questions/) · [Known issues](https://armadaos.dev/troubleshooting/known-issues/) |
-| Report a bug | [Github Issues](https://github.com/armada-os/armada/issues)
+| Check tablet support and known issues | [TB323FU device documentation](devices/lenovo-tb323fu/README.md) |
+| Inspect the boot build | [kShimC build recipe](devices/lenovo-tb323fu/boot/star-chart-build/README.md) |
+| Check component origins and versions | [Sources and provenance](devices/lenovo-tb323fu/docs/SOURCES.md) |
+| Learn the upstream system | [Using ArmadaOS](https://armadaos.dev/using-armada/) |
+| Report a tablet-branch issue | [Freedom issues](https://github.com/mydanyi/armadaos-freedom/issues) |
+
+Upstream installation instructions describe upstream-supported devices. Use the
+model-specific documentation here for the tablet boot path; do not treat a
+generic upstream image or bootloader package as a TB323FU installation package.
 
 ## Development
 
-This repository assembles the Armada bootc image and its flashable disk images,
-along with the upstream-derived packages it ships (see
-[`packages/`](packages/README.md)). The development recipes require
+The repository retains the upstream bootc image and package build foundation,
+plus tablet sources and overlays under [`devices/`](devices/). These overlays
+are not all integrated into the generic image recipes yet. Package development
+is documented in [`packages/`](packages/README.md); upstream recipes use
 [just](https://just.systems/) and [Podman](https://podman.io/):
 
 ```console
 $ just check     # Run the test suite and check recipe formatting
-$ just packages  # Build the packages the image consumes (slow from cold)
-$ just build     # Build the local bootc container image
-$ just --list    # Show disk-image, VM, and other development recipes
+$ just packages  # Build the packages the image consumes
+$ just build     # Build the bootc container; not a ready-to-flash tablet image
+$ just --list    # List development recipes
 ```
 
-Each package builds as a stage in `packages/Containerfile` and is published
-under a tag derived from its own sources, so an unchanged package is never
-rebuilt. `just build` uses a locally built package when you have one and the
-published image otherwise, so you only build what you are changing.
-
-Issues and pull requests are welcome. For installation or device support, check
-the [troubleshooting documentation](https://armadaos.dev/troubleshooting/frequently-asked-questions/)
-or ask in the [Armada Discord community](https://discord.gg/HdmdSxTD5S).
+For device work, follow the relevant overlay/build instructions and preserve
+model-based matching. Reports, device logs, credentials, backups, and local
+build outputs are kept outside the repository.
 
 ## Credits
 
-See the [project credits](https://armadaos.dev/project/credits/) for the upstream
-projects and contributors that make Armada possible. The Armada logo was
-created by [Rax](https://github.com/Raxcoms).
+Based on [ArmadaOS](https://github.com/armada-os/armada), whose foundation uses
+[Fedora bootc](https://github.com/bootc-dev/bootc) and device support derived from
+[ROCKNIX](https://github.com/ROCKNIX). See the
+[upstream credits](https://armadaos.dev/project/credits/) and our
+[component sources](devices/lenovo-tb323fu/docs/SOURCES.md) for contributors,
+boot projects, kernel sources, and pinned versions. The Armada logo was created
+by [Rax](https://github.com/Raxcoms).
 
 ## License
 
