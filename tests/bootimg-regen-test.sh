@@ -179,8 +179,8 @@ fi
 mapfile -t sync_stops < <(sed -n 's/^ExecStop=//p' "$sync_unit")
 assert_eq "sync bootimg ordering" "${sync_stops[0]:-}" \
     "/usr/libexec/armada/armada-bootimg-update"
-assert_eq "sync ABL ordering" "${sync_stops[1]:-}" \
-    "-/usr/libexec/armada/armada-abl-finalize"
+[[ "${#sync_stops[@]}" -eq 1 ]] ||
+    fail "sync unit: unexpected extra ExecStop entries: ${sync_stops[*]:-none}"
 
 # OSTree already sets 5m for slow media, and it applies to each ExecStop, so the
 # drop-in must never set a smaller value: that would shorten the regen's window.
@@ -192,9 +192,7 @@ mapfile -t finalize_stops < <(sed -n 's/^ExecStop=//p' "$dropin")
 assert_eq "finalize bootimg ordering" "${finalize_stops[0]:-}" \
     "/usr/libexec/armada/armada-bootimg-finalize"
 [[ "${#finalize_stops[@]}" -eq 1 ]] ||
-    fail "finalize drop-in: ABL must run only from the shutdown sync unit"
-[[ -x "$ROOT/system_files/usr/libexec/armada/armada-abl-finalize" ]] ||
-    fail "finalize ABL helper is not executable"
+    fail "finalize drop-in: expected exactly one ExecStop"
 
 # --- initramfs ostree fallback ----------------------------------------------
 

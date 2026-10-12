@@ -6,7 +6,6 @@ import {
   getBottomScreenActive,
   getConfig,
   getSleepLogsEnabled,
-  setAblAutoEnabled as applyAblAutoEnabled,
   setBottomScreenBrightness as applyBottomScreenBrightness,
   setBottomScreenEnabled as applyBottomScreenEnabled,
   setChargingFanPwm as applyChargingFanPwm,
@@ -116,18 +115,6 @@ export function Settings({ config, setConfig }: {
       setConfig((current) => (current ? { ...current, controllerType: previous } : current));
     }
   };
-  const setAblAutoEnabled = async (enabled: boolean) => {
-    if (enabled === !!config.ablAutoEnabled) {
-      return;
-    }
-    setConfig((current) => (current ? { ...current, ablAutoEnabled: enabled } : current));
-    try {
-      const applied = await applyAblAutoEnabled(enabled);
-      setConfig((current) => (current ? { ...current, ablAutoEnabled: applied } : current));
-    } catch (error) {
-      setConfig((current) => (current ? { ...current, ablAutoEnabled: !enabled } : current));
-    }
-  };
   const setSwipeGesturesEnabled = async (enabled: boolean) => {
     if (swipeGesturesSaving) return;
     setSwipeGesturesSaving(true);
@@ -215,7 +202,6 @@ export function Settings({ config, setConfig }: {
         />
         <ToggleRow label={t("settings.enableSsh")} value={!!config.sshEnabled} onChange={setSshEnabled} />
         <Field label={t("settings.osVersion")} description={config.osVersion || t("common.unknown")} />
-        <Field label={t("settings.ablVersion")} description={config.ablVersion || t("common.unknown")} />
       </PanelSection>
       <PanelSection title={t("settings.experimental")}>
         {config.bottomScreenSupported && (
@@ -262,12 +248,6 @@ export function Settings({ config, setConfig }: {
           description={config.mtpEnabled ? t("settings.enabledUntilShutdown") : undefined}
           value={!!config.mtpEnabled}
           onChange={setMtpEnabled}
-        />
-        <ToggleRow
-          label={t("settings.automaticAblUpdates")}
-          description={t("settings.updatesDuringShutdown")}
-          value={!!config.ablAutoEnabled}
-          onChange={setAblAutoEnabled}
         />
       </PanelSection>
       <PanelSection title={t("settings.diagnostics")}>

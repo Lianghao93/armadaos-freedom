@@ -1,15 +1,10 @@
 #!/bin/bash
-# Post-BIB: stage ROCKNIX ABL files and compress.
+# Post-BIB: prepare the SD image and compress.
 
 set -euxo pipefail
 
 RAW_IMAGE="${1:-output/raw/disk.raw}"
-source "$(dirname "${BASH_SOURCE[0]}")/../abl/release.env"
 OUT="${OUT:-output/armada-$(TZ='America/New_York' date +%Y%m%d).img.gz}"
-REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-ABL_RELEASES="${REPO_ROOT}/abl/releases.tsv"
-ABL_CATALOG_TOOL="${REPO_ROOT}/system_files/usr/lib/armada/abl-version"
-ABL_SRC="${REPO_ROOT}/abl"
 
 if [[ ! -f "${RAW_IMAGE}" ]]; then
     echo "ERROR: raw image not found at ${RAW_IMAGE}"
@@ -34,44 +29,13 @@ fi
 mkdir -p "${WORK}/mnt"
 sudo mount "${ESP}" "${WORK}/mnt"
 
-sudo mkdir -p "${WORK}/mnt/rocknix_abl"
-# One image serves all devices, so stage a self-contained folder per SoC.
-# vfat has no Unix ownership, so `cp -a` would error on chown under set -e.
-sudo cp "${REPO_ROOT}/abl/README" "${WORK}/mnt/rocknix_abl/README"
-for soc in SM8250 SM8550 SM8650 SM8750; do
-    approved=$(ARMADA_ABL_RELEASES="${ABL_RELEASES}" \
-        python3 "${ABL_CATALOG_TOOL}" --lookup "${ARMADA_ABL_VERSION}" "${soc}") || {
-        echo "ERROR: missing approved ${ARMADA_ABL_VERSION} ${soc} payload" >&2
-        exit 1
-    }
-    read -r approved_size approved_hash <<<"${approved}"
-    payload="${ABL_SRC}/abl_signed-${soc}.elf"
-    [[ $(stat -c %s "${payload}") == "${approved_size}" ]] || {
-        echo "ERROR: ${soc} payload size does not match the approved release" >&2
-        exit 1
-    }
-    [[ $(sha256sum "${payload}" | cut -d ' ' -f 1) == "${approved_hash}" ]] || {
-        echo "ERROR: ${soc} payload hash does not match the approved release" >&2
-        exit 1
-    }
-    d="${WORK}/mnt/rocknix_abl/${soc}"
-    sudo mkdir -p "$d"
-    sudo cp "${payload}" "$d/"
-    printf '%s  abl_signed-%s.elf\n' "${approved_hash}" "${soc}" \
-        | sudo tee "$d/abl_signed-${soc}.elf.sha256" >/dev/null
-    for s in flash_abl backup_abl restore_backup_abl; do
-        sed "s/%DEVICE%/${soc}/g" "${REPO_ROOT}/abl/${s}.sh.template" \
-            | sudo tee "$d/${s}.sh" >/dev/null
-    done
-    sudo chmod 0755 "$d"/*.sh
-done
-
 # Disable GRUB so ABL falls through to /KERNEL.
 if [ -d "${WORK}/mnt/EFI" ]; then sudo mv "${WORK}/mnt/EFI" "${WORK}/mnt/EFI.disabled"; fi
 sudo sync
 sudo umount "${WORK}/mnt"
 
-# Android shows this label when copying the ABL
+# The ESP carries the ARMADA label; internal installs are migrated to it by
+# armada-esp-rename.
 sudo fatlabel "${ESP}" ARMADA
 
 # MBR, not GPT: a fixed-size GPT image flashed to a larger card strands the backup
