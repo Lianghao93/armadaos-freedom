@@ -22,6 +22,15 @@ DESKTOP_MODE_LABELS = {
     "mobile": "Plasma Mobile",
     "desktop": "Plasma Desktop"
 }
+FAN_MODE_COMMAND = [
+    "/usr/bin/busctl",
+    "--system",
+    "get-property",
+    "org.armada.Power",
+    "/org/armada/Power",
+    "org.armada.Power1",
+    "FanMode",
+]
 
 
 def run_cmd(cmd, timeout=5, capture=True):
@@ -59,6 +68,19 @@ def device_env():
             except ValueError:
                 env[key] = value
     return env
+
+
+def fan_supported():
+    # powerd always exposes FanMode; only "managed" indicates an available
+    # controllable PWM fan. "unavailable" (or a failed query) means no control.
+    proc = run_cmd(FAN_MODE_COMMAND, timeout=2)
+    if proc is None or proc.returncode != 0:
+        return False
+    try:
+        value = shlex.split(proc.stdout or "")
+    except ValueError:
+        return False
+    return value == ["s", "managed"]
 
 
 def ssh_enabled():

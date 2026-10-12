@@ -177,6 +177,60 @@ assert plugin_system.sleep_modes() == [
     {"data": "fake", "label": "Fake"},
 ]
 
+# fan_supported() probes the single powerd FanMode property via busctl; the
+# mock keeps the test off real hardware.
+FAN_BUSCTL = [
+    "/usr/bin/busctl",
+    "--system",
+    "get-property",
+    "org.armada.Power",
+    "/org/armada/Power",
+    "org.armada.Power1",
+    "FanMode",
+]
+fan_calls = []
+
+
+class FanResult:
+    def __init__(self, returncode, stdout=""):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+fan_result = [FanResult(0, 's "managed"\n')]
+
+
+def fake_fan_run_cmd(cmd, timeout=5, capture=True):
+    fan_calls.append((cmd, timeout))
+    return fan_result[0]
+
+
+plugin_system.run_cmd = fake_fan_run_cmd
+
+# Managed fan: one bounded busctl call, exact argument vector.
+assert plugin_system.fan_supported() is True
+assert fan_calls == [(FAN_BUSCTL, 2)]
+
+# Fanless device: powerd reports the FanMode property as unavailable.
+fan_result[0] = FanResult(0, 's "unavailable"\n')
+assert plugin_system.fan_supported() is False
+
+# Nonzero exit and a failed launch both mean "no support", not an error.
+fan_result[0] = FanResult(1, 's "managed"\n')
+assert plugin_system.fan_supported() is False
+fan_result[0] = None
+assert plugin_system.fan_supported() is False
+
+# Malformed payloads (garbage line, lone signature, unterminated quote, empty)
+# are treated as no support rather than true.
+for payload in ('error: not found\n', "s", 's "managed', ""):
+    fan_result[0] = FanResult(0, payload)
+    assert plugin_system.fan_supported() is False
+
+# Every probe is exactly one busctl call with the two-second bound.
+assert len(fan_calls) == 8
+assert all(call == (FAN_BUSCTL, 2) for call in fan_calls)
+
 control.SLEEP_CONFIG.write_text("future_sleep_setting=keep\n")
 control.NM_IGNORE_SLEEP.touch()
 assert control.action_set_sleep_mode({"value": "s2idle"}) == {"value": "s2idle"}

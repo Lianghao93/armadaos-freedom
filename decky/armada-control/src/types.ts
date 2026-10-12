@@ -154,6 +154,7 @@ export interface Config {
   bottomScreenActive: boolean;
   bottomScreenBrightness: number;
   chargingFanPwm: number;
+  fanSupported: boolean;
   sshEnabled: boolean;
   swipeGesturesEnabled: boolean;
   mtpEnabled: boolean;

@@ -55,7 +55,9 @@ export function Power({ config, setConfig }: { config: Config; setConfig: Dispat
         <SelectEdit value={profile} options={profiles} onChange={setProfile} />
       </PanelSection>
       <PanelSection title={t("power.profileSettings")}>
-        <SelectEdit label={t("power.fanCurve")} value={p.fan_curve} options={fanCurves} onChange={(v) => setProfileValue("fan_curve", v)} />
+        {config.fanSupported ? (
+          <SelectEdit label={t("power.fanCurve")} value={p.fan_curve} options={fanCurves} onChange={(v) => setProfileValue("fan_curve", v)} />
+        ) : null}
         {(config.perf?.governors?.length ?? 0) > 0 ? (
           <SelectEdit
             label={t("power.cpuGovernor")}

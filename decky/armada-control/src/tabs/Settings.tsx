@@ -239,7 +239,7 @@ export function Settings({ config, setConfig }: {
           </>
         )}
         {/* SM8250 only sees charger changes on resume */}
-        {config.cpuDeviceClass !== "SM8250" && (
+        {config.fanSupported && config.cpuDeviceClass !== "SM8250" && (
           <SliderEdit
             label={t("settings.chargingFanSpeed")}
             value={pwmToPercent(config.chargingFanPwm)}

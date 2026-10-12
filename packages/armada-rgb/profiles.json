@@ -45,6 +45,19 @@
       }
     },
     {
+      "models": [
+        "Lenovo Legion Tab Y700 5th Gen",
+        "Lenovo Legion Y700 Gen 5 (TB323FU)",
+        "Lenovo Legion Tab Y700 (TB323FU)"
+      ],
+      "backend": {
+        "type": "gcmhid",
+        "vendor": "3537",
+        "product": "1136",
+        "strips": [1, 2]
+      }
+    },
+    {
       "models": ["AYANEO Pocket MICRO 2"],
       "backend": {
         "type": "serial",
