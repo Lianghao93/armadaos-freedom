@@ -1,5 +1,7 @@
 #pragma once
+#ifndef BIT
 #define BIT(x)          (0x1ULL << x)
+#endif
 // Generates bits from position y to position (x-1). Note: x must be greater than y.
 #define GENBITS(x, y)   (((1ULL << ((x) - (y) + 1)) - 1) << (y))
 

@@ -1,0 +1,52 @@
+{
+  "runtime_sha256": "8f49609199586e27fccf07e5feff966e95e733ba05987b0c35f607153092c13e",
+  "case_count": 9,
+  "dtb_scope": "Content-marker and RAM-region byte-pattern checks over the DTB slot (bounded scan within the BE total-size prefix, plus ARM64 header magic) for the QEMU 256M fixture; not a byte-for-byte DTB identity check. Separate host tests verify semantic FDT properties.",
+  "tests": [
+    {
+      "case": "default",
+      "expected": "PAYLOAD_A_PASS",
+      "passed": true
+    },
+    {
+      "case": "select-linux",
+      "expected": "PAYLOAD_B_PASS",
+      "passed": true
+    },
+    {
+      "case": "copy-freeexec",
+      "expected": "PAYLOAD_B_PASS",
+      "passed": true
+    },
+    {
+      "case": "payload-dtb",
+      "expected": "PAYLOAD_D_PASS",
+      "passed": true
+    },
+    {
+      "case": "short-dtb-entry",
+      "expected": "PAYLOAD_A_PASS",
+      "passed": true
+    },
+    {
+      "case": "bad-dtb-structure",
+      "expected": "PAYLOAD_A_PASS",
+      "passed": true
+    },
+    {
+      "case": "distinct-base-dtb",
+      "expected": "PAYLOAD_E_PASS",
+      "passed": true
+    },
+    {
+      "case": "distinct-alt-dtb",
+      "expected": "PAYLOAD_D_PASS",
+      "passed": true
+    },
+    {
+      "case": "freeexec-dtb",
+      "expected": "PAYLOAD_D_PASS",
+      "passed": true
+    }
+  ]
+}

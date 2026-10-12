@@ -5,6 +5,7 @@
 #include <string.h>
 #include <qcom_dt.h>
 #include <qcom_keys_fdt.h>
+#include <dt.h>
 
 #ifndef FIXTURE_PATH
 #error "FIXTURE_PATH must be defined"
@@ -64,6 +65,33 @@ static void test_positive(void)
     assert(QCOM_KEY_IS_SPMI_TOKEN(down->Base) && QCOM_KEY_SPMI_TOKEN_ADDRESS(down->Base) == 0x1300);
     assert(QCOM_KEY_SPMI_TOKEN_SID(down->Base) == 0 && down->RegisterOffset == 0x10 && down->Mask == 64);
     free(r);
+    free(fdt);
+}
+static void test_indexed_descriptors_match(void)
+{
+    void *fdt = load_fixture();
+    QcomKeyDescriptor baseline[QCOM_KEYS_MAX], indexed[QCOM_KEYS_MAX];
+    QcomKeyFdtAdapter adapter;
+    size_t baseline_count = 0, indexed_count = 0;
+
+    assert(QcomKeysBuildFromDeviceTree(fdt, baseline, QCOM_KEYS_MAX,
+                                     &baseline_count) == 0);
+    assert(QcomKeyFdtAdapterInit(&adapter, fdt) == 0);
+    dt_parent_index_begin(fdt);
+    int status = QcomKeysBuildFromFdt(&adapter.Ops, indexed, QCOM_KEYS_MAX,
+                                    &indexed_count);
+    dt_parent_index_end();
+    assert(status == 0 && baseline_count == 3 && indexed_count == baseline_count);
+    for (size_t i = 0; i < baseline_count; i++) {
+        assert(indexed[i].Base == baseline[i].Base);
+        assert(indexed[i].RegisterOffset == baseline[i].RegisterOffset);
+        assert(indexed[i].Mask == baseline[i].Mask);
+        assert(indexed[i].Code == baseline[i].Code);
+        assert(indexed[i].Action == baseline[i].Action);
+        assert(indexed[i].Source == baseline[i].Source);
+        assert(indexed[i].ActiveLow == baseline[i].ActiveLow);
+        assert(indexed[i].DebounceSamples == baseline[i].DebounceSamples);
+    }
     free(fdt);
 }
 static void test_negative_disabled(void)
@@ -178,6 +206,7 @@ static void test_layout_cases(void)
 int main(void)
 {
     test_positive();
+    test_indexed_descriptors_match();
     test_negative_disabled();
     test_negative_regnames();
     test_negative_pmic_reg();

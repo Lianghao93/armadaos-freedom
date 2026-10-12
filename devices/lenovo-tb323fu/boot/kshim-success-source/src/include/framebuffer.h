@@ -34,6 +34,14 @@ typedef enum kshim_fb_status {
     KSHIM_FB_ERR_BUFFER_TOO_SMALL = -5,
 } kshim_fb_status_t;
 
+/* Rotation of UI pixels into the native scanout, counterclockwise. */
+typedef enum kshim_fb_rotation {
+    KSHIM_FB_ROTATION_0 = 0,
+    KSHIM_FB_ROTATION_CCW_90 = 90,
+    KSHIM_FB_ROTATION_180 = 180,
+    KSHIM_FB_ROTATION_CCW_270 = 270,
+} kshim_fb_rotation_t;
+
 typedef struct kshim_framebuffer_config {
     /* Physical or virtual address of the first byte of the first row. */
     uintptr_t render_address;
@@ -163,6 +171,16 @@ int kshim_fb_blit_argb8888(
     uint32_t height,
     const uint32_t *source,
     size_t source_stride_bytes);
+
+/* Blit a logical dirty rectangle directly into native scanout. For CCW 90,
+ * logical dimensions are (physical height, physical width), and (x,y) maps
+ * to (y, physical height-1-x). Native dimensions, stride and padding stay
+ * unchanged. No full-frame surface or rotation scratch buffer is needed. */
+int kshim_fb_blit_argb8888_rotated(
+    kshim_framebuffer_t *framebuffer,
+    int32_t x, int32_t y, uint32_t width, uint32_t height,
+    const uint32_t *source, size_t source_stride_bytes,
+    kshim_fb_rotation_t rotation);
 
 /* Make framebuffer writes visible before handing the surface to a display. */
 void kshim_fb_sync(void);

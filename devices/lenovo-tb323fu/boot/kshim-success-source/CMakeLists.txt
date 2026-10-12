@@ -150,17 +150,22 @@ set(SRC_FILES
     src/dt/simplefb.c
     lib/libfdt/fdt_overlay.c
 
-    src/core/main.c src/core/platform.c src/core/uefi_boot.c src/core/picoport.c
+    src/core/main.c src/core/platform.c src/core/uefi_boot.c src/core/picoport.c src/core/boot_metrics.c
+    src/core/menu_locale.c
     src/dt/dt.c src/dt/handoff.c src/dt/handoff_reservations.c src/dt/console.c src/dt/resources.c src/dt/probe.c
     src/dt/tb323fu_ramoops.c src/dt/tb323fu_ramoops_export.c
-    src/drivers/console.c src/drivers/pl011.c src/drivers/keys.c
+    src/drivers/console.c src/drivers/pl011.c src/drivers/keys.c src/drivers/qcom_reboot.c
     src/arch/arm64/exception.c src/arch/arm64/relocation.c src/arch/arm64/mmu.c
-    src/arch/arm64/psci.c src/arch/arm64/timer.c src/arch/arm64/smp.c src/arch/arm64/smp_selftest.c src/arch/arm64/gicv3.c
-    src/arch/arm64/startup.S src/arch/arm64/mpstartup.S src/arch/arm64/arm64.S
+    src/arch/arm64/psci.c src/arch/arm64/timer.c src/arch/arm64/gicv3.c
+    src/arch/arm64/startup.S src/arch/arm64/arm64.S
     src/arch/arm64/psci.S src/arch/arm64/timer.S src/arch/arm64/smc.S src/arch/arm64/gicv3.S
     lib/libfdt/fdt.c lib/libfdt/fdt_check.c lib/libfdt/fdt_ro.c lib/libfdt/fdt_addresses.c
     lib/libfdt/fdt_rw.c lib/libfdt/fdt_sw.c lib/libfdt/fdt_wip.c lib/libfdt/fdt_empty_tree.c lib/libfdt/fdt_strerror.c)
 
+if(CONFIG_KSHIM_SMP)
+    list(APPEND SRC_FILES src/arch/arm64/smp.c
+        src/arch/arm64/smp_selftest.c src/arch/arm64/mpstartup.S)
+endif()
 if(CONFIG_QCOM_KEYS OR CONFIG_QCOM_SPMI)
     list(APPEND SRC_FILES src/dt/spmi.c)
 endif()
@@ -183,7 +188,16 @@ if(CONFIG_KSHIM_TOUCH OR CONFIG_KSHIM_LVGL)
     list(APPEND SRC_FILES src/drivers/touch.c)
 endif()
 if(CONFIG_KSHIM_LVGL)
-    list(APPEND SRC_FILES src/ui/glass_renderer.c src/ui/lvgl_port.c src/ui/lvgl_os.c)
+    list(APPEND SRC_FILES src/ui/backdrop.c src/ui/font.c src/ui/lvgl_port.c src/ui/lvgl_os.c)
+    if(CONFIG_KSHIM_MENU_STYLE_STAR_CHART)
+        set(KSHIM_UI_FONT_BLOB "${CMAKE_SOURCE_DIR}/src/ui/fonts/lxgw_wenkai_menu.ksf")
+    else()
+        set(KSHIM_UI_FONT_BLOB "${CMAKE_SOURCE_DIR}/src/ui/fonts/noto_sans_cjk_sc.ksf")
+    endif()
+    configure_file(src/ui/fonts/ui_font_blob.S.in ${CMAKE_BINARY_DIR}/ui_font_blob.S @ONLY)
+    set_source_files_properties(${CMAKE_BINARY_DIR}/ui_font_blob.S PROPERTIES
+        OBJECT_DEPENDS "${KSHIM_UI_FONT_BLOB}")
+    list(APPEND SRC_FILES ${CMAKE_BINARY_DIR}/ui_font_blob.S)
 endif()
 set(CRDK_SPMI ${CONFIG_QCOM_SPMI} CACHE BOOL "" FORCE)
 set(CRDK_GPIO ${CONFIG_QCOM_KEYS} CACHE BOOL "" FORCE)
@@ -198,23 +212,11 @@ set(LV_CONF_BUILD_DISABLE_EXAMPLES ON CACHE BOOL "" FORCE)
 set(LV_CONF_BUILD_DISABLE_DEMOS ON CACHE BOOL "" FORCE)
 set(LV_CONF_PATH "${CMAKE_SOURCE_DIR}/src/include/lv_conf.h" CACHE FILEPATH "" FORCE)
 add_subdirectory(third_party/lvgl EXCLUDE_FROM_ALL)
-target_sources(lvgl PRIVATE
-    src/ui/fonts/kshim_font_cjk_14.c
-    src/ui/fonts/kshim_font_cjk_20.c
-    src/ui/fonts/kshim_font_cjk_28.c
-    src/ui/fonts/kshim_font_cjk_48.c)
 include(${CMAKE_SOURCE_DIR}/ports/lvgl/CMakeLists.txt)
 kshim_enable_lvgl_smp_adapter(lvgl "${CMAKE_SOURCE_DIR}/third_party/lvgl")
 target_link_libraries(lvgl PRIVATE c)
 
-add_library(kshim_glass STATIC
-    third_party/liquid-glass/ui_glass_optics.c
-    third_party/liquid-glass/ui_glass_motion.c
-    third_party/liquid-glass/liquid_glass_motion.c
-    third_party/liquid-glass/liquid_glass_compositor_core.c)
-target_include_directories(kshim_glass PUBLIC third_party/liquid-glass)
-target_link_libraries(kshim_glass PRIVATE c)
-set(KSHIM_UI_LIBRARIES lvgl kshim_glass)
+set(KSHIM_UI_LIBRARIES lvgl)
 endif()
 add_subdirectory(ports/crdk)
 target_link_libraries(crdk PRIVATE c)

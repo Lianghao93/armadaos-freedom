@@ -9,6 +9,7 @@
 #define PSCI_FN64_CPU_ON           UINT32_C(0xc4000003)
 #define PSCI_FN64_AFFINITY_INFO    UINT32_C(0xc4000004)
 #define PSCI_FN_SYSTEM_OFF         UINT32_C(0x84000008)
+#define PSCI_FN_SYSTEM_RESET       UINT32_C(0x84000009)
 #define PSCI_FN_FEATURES           UINT32_C(0x8400000a)
 
 typedef struct {
@@ -185,9 +186,19 @@ int64_t kshim_psci_affinity_info(uint64_t target_mpidr, uint32_t level)
     return kshim_psci_call(PSCI_FN64_AFFINITY_INFO, target_mpidr, level, 0U);
 }
 
+int64_t kshim_psci_request_system_off(void)
+{
+    return kshim_psci_call(PSCI_FN_SYSTEM_OFF, 0U, 0U, 0U);
+}
+
+int64_t kshim_psci_request_system_reset(void)
+{
+    return kshim_psci_call(PSCI_FN_SYSTEM_RESET, 0U, 0U, 0U);
+}
+
 void kshim_psci_system_off(void)
 {
-    (void)kshim_psci_call(PSCI_FN_SYSTEM_OFF, 0U, 0U, 0U);
+    (void)kshim_psci_request_system_off();
     for (;;) {
 #if defined(__aarch64__)
         __asm__ volatile("wfe" ::: "memory");

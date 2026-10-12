@@ -3,11 +3,20 @@ project(kshim_host_tests C ASM)
 enable_testing()
 
 get_filename_component(KSHIM_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+set(KSHIM_TEST_MENU_STYLE "FLAT" CACHE STRING "Boot menu preset used by host UI tests")
+set(KSHIM_TEST_MENU_STYLES FLAT CLASSIC CARDS TERMINAL MINIMAL HIGH_CONTRAST
+    FLUENT MATERIAL3 SURFACE CUPERTINO GLASS AURORA SOFT_UI BENTO NEON NORD
+    MATERIAL2 MATERIAL2_DARK FLUENT2 FLUENT2_DARK FLUENT_DARK SURFACE_DARK HARMONYOS CLOVER IOS_HIG
+    METRO ONE_UI ADWAITA HOLO LVGL_DEFAULT STAR_CHART)
+set_property(CACHE KSHIM_TEST_MENU_STYLE PROPERTY STRINGS ${KSHIM_TEST_MENU_STYLES})
+if(NOT KSHIM_TEST_MENU_STYLE IN_LIST KSHIM_TEST_MENU_STYLES)
+    message(FATAL_ERROR "Unknown KSHIM_TEST_MENU_STYLE: ${KSHIM_TEST_MENU_STYLE}")
+endif()
 option(KSHIM_TEST_SANITIZERS "Use address and undefined behavior sanitizers" ON)
-option(KSHIM_TEST_DARK "Build the dark menu theme" ON)
-add_compile_definitions(KSHIM_HOST_TEST=1 CONFIG_QCOM_SPMI=1 KSHIM_STANDALONE=1
-    CONFIG_KSHIM_UI_DARK=$<BOOL:${KSHIM_TEST_DARK}>
-    CONFIG_KSHIM_LVGL_BUFFER_BYTES=262144)
+option(KSHIM_TEST_STANDALONE "Use standalone LVGL heap for host tests" ON)
+add_compile_definitions(KSHIM_HOST_TEST=1 CONFIG_QCOM_SPMI=1
+    KSHIM_STANDALONE=$<BOOL:${KSHIM_TEST_STANDALONE}>
+    CONFIG_KSHIM_LVGL_BUFFER_BYTES=243712)
 if(KSHIM_TEST_SANITIZERS)
     add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
     add_link_options(-fsanitize=address,undefined)
@@ -15,26 +24,31 @@ endif()
 add_compile_options(-g -O1 -ffunction-sections -fdata-sections)
 add_link_options(-Wl,--gc-sections)
 
+if(KSHIM_TEST_MENU_STYLE STREQUAL "LVGL_DEFAULT")
+    add_compile_definitions(CONFIG_KSHIM_MENU_STYLE_LVGL_DEFAULT=1)
+endif()
+
 set(LV_CONF_PATH "${KSHIM_ROOT}/src/include/lv_conf.h" CACHE FILEPATH "" FORCE)
 set(LV_CONF_BUILD_DISABLE_THORVG_INTERNAL ON CACHE BOOL "" FORCE)
 set(LV_CONF_BUILD_DISABLE_EXAMPLES ON CACHE BOOL "" FORCE)
 set(LV_CONF_BUILD_DISABLE_DEMOS ON CACHE BOOL "" FORCE)
 add_subdirectory("${KSHIM_ROOT}/third_party/lvgl" lvgl)
-target_sources(lvgl PRIVATE
-    "${KSHIM_ROOT}/src/ui/fonts/kshim_font_cjk_14.c"
-    "${KSHIM_ROOT}/src/ui/fonts/kshim_font_cjk_20.c"
-    "${KSHIM_ROOT}/src/ui/fonts/kshim_font_cjk_28.c"
-    "${KSHIM_ROOT}/src/ui/fonts/kshim_font_cjk_48.c")
 add_subdirectory("${KSHIM_ROOT}/ports/crdk" crdk)
-add_library(kshim_glass STATIC
-    "${KSHIM_ROOT}/src/ui/glass_renderer.c"
-    "${KSHIM_ROOT}/third_party/liquid-glass/ui_glass_optics.c"
-    "${KSHIM_ROOT}/third_party/liquid-glass/ui_glass_motion.c"
-    "${KSHIM_ROOT}/third_party/liquid-glass/liquid_glass_motion.c"
-    "${KSHIM_ROOT}/third_party/liquid-glass/liquid_glass_compositor_core.c")
-target_include_directories(kshim_glass PUBLIC
-    "${KSHIM_ROOT}/third_party/liquid-glass" "${KSHIM_ROOT}/src/include")
+if(KSHIM_TEST_MENU_STYLE STREQUAL "STAR_CHART")
+    set(KSHIM_UI_FONT_BLOB "${KSHIM_ROOT}/src/ui/fonts/lxgw_wenkai_menu.ksf")
+else()
+    set(KSHIM_UI_FONT_BLOB "${KSHIM_ROOT}/src/ui/fonts/noto_sans_cjk_sc.ksf")
+endif()
+configure_file("${KSHIM_ROOT}/src/ui/fonts/ui_font_blob.S.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/ui_font_blob.S" @ONLY)
+set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/ui_font_blob.S"
+    PROPERTIES OBJECT_DEPENDS "${KSHIM_UI_FONT_BLOB}")
+add_library(kshim_backdrop STATIC "${KSHIM_ROOT}/src/ui/backdrop.c"
+    "${KSHIM_ROOT}/src/ui/font.c" "${CMAKE_CURRENT_BINARY_DIR}/ui_font_blob.S")
+target_include_directories(kshim_backdrop PUBLIC "${KSHIM_ROOT}/src/include")
+target_link_libraries(kshim_backdrop PUBLIC lvgl)
 
+# 创建带断言和严格告警的主机测试目标。
 function(kshim_test Target)
     add_executable(${Target} ${ARGN})
     target_compile_options(${Target} PRIVATE -Wall -Wextra -Werror -UNDEBUG)
@@ -43,46 +57,36 @@ function(kshim_test Target)
     add_test(NAME ${Target} COMMAND ${Target})
 endfunction()
 
-kshim_test(qualcomm_test qualcomm_test.c
-    "${KSHIM_ROOT}/src/drivers/keys.c"
-    "${KSHIM_ROOT}/src/dt/keys.c"
-)
+kshim_test(qualcomm_test qualcomm_test.c "${KSHIM_ROOT}/src/drivers/keys.c" "${KSHIM_ROOT}/src/dt/keys.c")
 target_include_directories(qualcomm_test PRIVATE "${KSHIM_ROOT}/lib/libfdt/include")
-
 kshim_test(spmi_test spmi_test.c "${KSHIM_ROOT}/src/drivers/qcom_keys.c")
 target_link_libraries(spmi_test PRIVATE crdk_spmi)
-
 kshim_test(framebuffer_test framebuffer_test.c "${KSHIM_ROOT}/src/ui/framebuffer.c")
-kshim_test(lvgl_test lvgl_test.c "${KSHIM_ROOT}/src/ui/lvgl_port.c"
-    "${KSHIM_ROOT}/src/ui/framebuffer.c" "${KSHIM_ROOT}/src/drivers/keys.c")
-target_link_libraries(lvgl_test PRIVATE lvgl kshim_glass m)
-target_sources(lvgl_test PRIVATE "${KSHIM_ROOT}/src/drivers/touch.c")
 
-kshim_test(lvgl_hdk_test lvgl_test.c "${KSHIM_ROOT}/src/ui/lvgl_port.c"
-    "${KSHIM_ROOT}/src/ui/framebuffer.c" "${KSHIM_ROOT}/src/drivers/keys.c")
-target_compile_definitions(lvgl_hdk_test PRIVATE CONFIG_KSHIM_UEFI_TEST_MENU=1
-    "CONFIG_KSHIM_MENU_ENTRY1=\"UEFI A\"" "CONFIG_KSHIM_MENU_ENTRY2=\"UEFI B\"")
-target_link_libraries(lvgl_hdk_test PRIVATE lvgl kshim_glass m)
-target_sources(lvgl_hdk_test PRIVATE "${KSHIM_ROOT}/src/drivers/touch.c")
-
-add_executable(glass_preview_test glass_preview_test.c
-    "${KSHIM_ROOT}/src/ui/lvgl_port.c" "${KSHIM_ROOT}/src/ui/framebuffer.c"
-    "${KSHIM_ROOT}/src/drivers/keys.c")
-target_include_directories(glass_preview_test PRIVATE "${KSHIM_ROOT}/src/include")
-target_compile_definitions(glass_preview_test PRIVATE CONFIG_KSHIM_UEFI_TEST_MENU=1
-    "CONFIG_KSHIM_MENU_ENTRY1=\"UEFI A\"" "CONFIG_KSHIM_MENU_ENTRY2=\"UEFI B\"")
-target_link_libraries(glass_preview_test PRIVATE lvgl kshim_glass m)
+set(KSHIM_TEST_UI_SOURCES "${KSHIM_ROOT}/src/ui/lvgl_port.c"
+    "${KSHIM_ROOT}/src/ui/framebuffer.c" "${KSHIM_ROOT}/src/drivers/keys.c"
+    "${KSHIM_ROOT}/src/core/boot_metrics.c" "${KSHIM_ROOT}/src/core/menu_locale.c")
+kshim_test(lvgl_test lvgl_test.c ${KSHIM_TEST_UI_SOURCES} "${KSHIM_ROOT}/src/drivers/touch.c")
+kshim_test(lvgl_hdk_test lvgl_test.c ${KSHIM_TEST_UI_SOURCES} "${KSHIM_ROOT}/src/drivers/touch.c")
+kshim_test(menu_style_render_test menu_style_render_test.c ${KSHIM_TEST_UI_SOURCES})
+kshim_test(menu_modern_test menu_modern_test.c ${KSHIM_TEST_UI_SOURCES})
+add_executable(ui_preview_test ui_preview_test.c ${KSHIM_TEST_UI_SOURCES})
+target_include_directories(ui_preview_test PRIVATE "${KSHIM_ROOT}/src/include")
+foreach(target lvgl_test lvgl_hdk_test menu_style_render_test menu_modern_test ui_preview_test)
+    target_link_libraries(${target} PRIVATE lvgl kshim_backdrop m)
+    target_compile_definitions(${target} PRIVATE CONFIG_KSHIM_MENU_STYLE_${KSHIM_TEST_MENU_STYLE}=1)
+endforeach()
+foreach(target lvgl_hdk_test ui_preview_test)
+    target_compile_definitions(${target} PRIVATE CONFIG_KSHIM_UEFI_TEST_MENU=1
+        "CONFIG_KSHIM_MENU_ENTRY1=\"UEFI A\"" "CONFIG_KSHIM_MENU_ENTRY2=\"UEFI B\"")
+endforeach()
 
 kshim_test(qcom_bus_test qcom_bus_test.c)
-kshim_test(qcom_touch_platform_test qcom_touch_platform_test.c
-   )
-kshim_test(hdk8250_touch_platform_test hdk8250_touch_platform_test.c
-   )
+kshim_test(qcom_touch_platform_test qcom_touch_platform_test.c)
+kshim_test(hdk8250_touch_platform_test hdk8250_touch_platform_test.c)
 kshim_test(touch_test touch_test.c "${KSHIM_ROOT}/src/drivers/touch.c")
-kshim_test(st_ftm5_test st_ftm5_test.c "${KSHIM_ROOT}/src/drivers/st_ftm5.c"
-    "${KSHIM_ROOT}/src/drivers/touch.c")
-kshim_test(st_ftm4_test st_ftm4_test.c "${KSHIM_ROOT}/src/drivers/st_ftm4.c"
-    "${KSHIM_ROOT}/src/drivers/touch.c")
+kshim_test(st_ftm5_test st_ftm5_test.c "${KSHIM_ROOT}/src/drivers/st_ftm5.c" "${KSHIM_ROOT}/src/drivers/touch.c")
+kshim_test(st_ftm4_test st_ftm4_test.c "${KSHIM_ROOT}/src/drivers/st_ftm4.c" "${KSHIM_ROOT}/src/drivers/touch.c")
 
 add_library(kshim_dt STATIC
     "${KSHIM_ROOT}/src/dt/memory_overlay.c"
@@ -102,7 +106,6 @@ foreach(target qualcomm_test qcom_bus_test qcom_touch_platform_test hdk8250_touc
     target_link_libraries(${target} PRIVATE kshim_dt)
 endforeach()
 add_link_options(-Wl,--gc-sections)
-
 kshim_test(dt_test dt_test.c "${KSHIM_ROOT}/src/dt/keys.c" "${KSHIM_ROOT}/src/drivers/keys.c")
 target_compile_definitions(dt_test PRIVATE "FIXTURES=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures\"")
 target_link_libraries(dt_test PRIVATE kshim_dt)
@@ -125,6 +128,39 @@ target_compile_definitions(dt_test PRIVATE "GENERATED_FIXTURES=\"${CMAKE_CURRENT
 kshim_test(mmu_test mmu_test.c "${KSHIM_ROOT}/src/arch/arm64/mmu.c")
 target_include_directories(mmu_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(mmu_test PRIVATE kshim_dt)
+
+set(KSHIM_TEST_MENU_SCALE_Q8 "0" CACHE STRING "Theme design scale; 0=automatic")
+option(KSHIM_TEST_MENU_REDUCED_EFFECTS "Reduce theme drawing effects" OFF)
+foreach(target lvgl_test lvgl_hdk_test menu_style_render_test menu_modern_test ui_preview_test)
+    target_compile_definitions(${target} PRIVATE
+        CONFIG_KSHIM_MENU_SCALE_Q8=${KSHIM_TEST_MENU_SCALE_Q8}
+        CONFIG_KSHIM_MENU_REDUCED_EFFECTS=$<BOOL:${KSHIM_TEST_MENU_REDUCED_EFFECTS}>)
+endforeach()
+kshim_test(menu_design_contract_test menu_design_contract_test.c)
+target_compile_definitions(menu_design_contract_test PRIVATE
+    CONFIG_KSHIM_MENU_STYLE_${KSHIM_TEST_MENU_STYLE}=1
+    "EXPECTED_STYLE=\"${KSHIM_TEST_MENU_STYLE}\"")
+
+if(KSHIM_TEST_MENU_STYLE MATCHES "^(METRO|ONE_UI|ADWAITA|HOLO)$")
+    kshim_test(menu_new_themes_lvgl_test menu_new_themes_lvgl_test.c ${KSHIM_TEST_UI_SOURCES})
+    target_link_libraries(menu_new_themes_lvgl_test PRIVATE lvgl kshim_backdrop m)
+    target_compile_definitions(menu_new_themes_lvgl_test PRIVATE
+        CONFIG_KSHIM_MENU_STYLE_${KSHIM_TEST_MENU_STYLE}=1
+        CONFIG_KSHIM_MENU_SCALE_Q8=${KSHIM_TEST_MENU_SCALE_Q8}
+        CONFIG_KSHIM_MENU_REDUCED_EFFECTS=$<BOOL:${KSHIM_TEST_MENU_REDUCED_EFFECTS}>)
+endif()
+
+if(KSHIM_TEST_MENU_STYLE STREQUAL "ONE_UI")
+    kshim_test(menu_one_ui_identity_test menu_one_ui_identity_test.c)
+    target_compile_definitions(menu_one_ui_identity_test PRIVATE CONFIG_KSHIM_MENU_STYLE_ONE_UI=1)
+endif()
+if(KSHIM_TEST_MENU_STYLE STREQUAL "LVGL_DEFAULT")
+    kshim_test(menu_native_theme_test menu_native_theme_test.c ${KSHIM_TEST_UI_SOURCES})
+    target_link_libraries(menu_native_theme_test PRIVATE lvgl kshim_backdrop m)
+    target_compile_definitions(menu_native_theme_test PRIVATE
+        CONFIG_KSHIM_MENU_SCALE_Q8=${KSHIM_TEST_MENU_SCALE_Q8}
+        CONFIG_KSHIM_MENU_REDUCED_EFFECTS=$<BOOL:${KSHIM_TEST_MENU_REDUCED_EFFECTS}>)
+endif()
 # TB323FU key resource regression fixture.
 set(TB323FU_KEYS_DTS "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tb323fu-keys.dts")
 set(TB323FU_KEYS_DTB "${CMAKE_CURRENT_BINARY_DIR}/fixtures/tb323fu-keys.dtb")
@@ -210,3 +246,86 @@ target_link_libraries(sspp_v13_test PRIVATE crdk)
 kshim_test(reserved_placeholder_test reserved_placeholder_test.c "${KSHIM_ROOT}/src/arch/arm64/mmu.c")
 target_include_directories(reserved_placeholder_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(reserved_placeholder_test PRIVATE kshim_dt)
+
+kshim_test(psci_power_test psci_power_test.c "${KSHIM_ROOT}/src/arch/arm64/psci.c")
+target_link_libraries(psci_power_test PRIVATE kshim_dt)
+
+# Compile the real platform loop with scripted peripherals in both profiles.
+kshim_test(platform_menu_test platform_menu_test.c)
+kshim_test(platform_menu_no_power_test platform_menu_test.c)
+target_compile_definitions(platform_menu_no_power_test PRIVATE CONFIG_KSHIM_MENU_POWER_ACTIONS=0)
+foreach(target platform_menu_test platform_menu_no_power_test)
+    target_include_directories(${target} BEFORE PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include" "${KSHIM_ROOT}/lib/libfdt/include")
+    target_link_libraries(${target} PRIVATE crdk)
+    target_sources(${target} PRIVATE "${KSHIM_ROOT}/src/core/menu_locale.c")
+endforeach()
+
+# TB323FU uses its own theme and locale without changing the generic suite.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(TB323FU_GENERATED "${CMAKE_CURRENT_BINARY_DIR}/tb323fu-generated")
+set(ENGLISH_GENERATED "${CMAKE_CURRENT_BINARY_DIR}/english-generated")
+file(MAKE_DIRECTORY "${ENGLISH_GENERATED}")
+file(WRITE "${ENGLISH_GENERATED}/.config" "# CONFIG_KSHIM_MENU_CHINESE is not set\nCONFIG_KSHIM_LVGL_BUFFER_BYTES=243712\n")
+foreach(profile TB323FU ENGLISH)
+    if(profile STREQUAL "TB323FU")
+        set(profile_config "${KSHIM_ROOT}/configs/tb323fu_defconfig")
+    else()
+        set(profile_config "${ENGLISH_GENERATED}/.config")
+    endif()
+    execute_process(COMMAND ${CMAKE_COMMAND} -E env
+        "srctree=${KSHIM_ROOT}/src" "ARCH=aarch64" "HOST_ARCH=${CMAKE_HOST_SYSTEM_PROCESSOR}"
+        "HOST_INFO=host-test" "BUILD_TIME=test" "VERSION=0.0.1"
+        ${Python3_EXECUTABLE} "${KSHIM_ROOT}/tools/configure_kconfig.py"
+        --root "${KSHIM_ROOT}" --config "${profile_config}"
+        --header "${${profile}_GENERATED}/config.h"
+        --cmake "${${profile}_GENERATED}/config.cmake"
+        RESULT_VARIABLE profile_status)
+    if(NOT profile_status EQUAL 0)
+        message(FATAL_ERROR "Failed to generate ${profile} test config")
+    endif()
+endforeach()
+kshim_test(tb323fu_menu_test tb323fu_menu_test.c ${KSHIM_TEST_UI_SOURCES})
+add_executable(tb323fu_ui_preview ui_preview_test.c ${KSHIM_TEST_UI_SOURCES})
+target_include_directories(tb323fu_ui_preview PRIVATE "${KSHIM_ROOT}/src/include")
+foreach(target tb323fu_menu_test tb323fu_ui_preview)
+    target_link_libraries(${target} PRIVATE lvgl kshim_backdrop kshim_dt m)
+    target_include_directories(${target} BEFORE PRIVATE "${TB323FU_GENERATED}")
+endforeach()
+
+kshim_test(menu_text_chinese_test menu_text_config_test.c)
+target_sources(menu_text_chinese_test PRIVATE "${KSHIM_ROOT}/src/core/menu_locale.c")
+target_include_directories(menu_text_chinese_test BEFORE PRIVATE "${TB323FU_GENERATED}")
+target_compile_definitions(menu_text_chinese_test PRIVATE KSHIM_TEST_EXPECT_CHINESE=1)
+kshim_test(menu_text_english_test menu_text_config_test.c)
+target_sources(menu_text_english_test PRIVATE "${KSHIM_ROOT}/src/core/menu_locale.c")
+target_include_directories(menu_text_english_test BEFORE PRIVATE "${ENGLISH_GENERATED}")
+target_compile_definitions(menu_text_english_test PRIVATE KSHIM_TEST_EXPECT_CHINESE=0)
+kshim_test(framebuffer_rotation_test framebuffer_rotation_test.c "${KSHIM_ROOT}/src/ui/framebuffer.c")
+kshim_test(boot_metrics_test boot_metrics_test.c "${KSHIM_ROOT}/src/core/boot_metrics.c")
+target_compile_definitions(boot_metrics_test PRIVATE CONFIG_KSHIM_BOOT_TIMING=1)
+target_link_libraries(boot_metrics_test PRIVATE kshim_dt)
+kshim_test(boot_metrics_disabled_test boot_metrics_test.c "${KSHIM_ROOT}/src/core/boot_metrics.c")
+target_link_libraries(boot_metrics_disabled_test PRIVATE kshim_dt)
+kshim_test(qcom_reboot_test qcom_reboot_test.c "${KSHIM_ROOT}/src/drivers/qcom_reboot.c")
+target_compile_definitions(qcom_reboot_test PRIVATE CONFIG_KSHIM_QCOM_REBOOT=1)
+target_link_libraries(qcom_reboot_test PRIVATE kshim_dt crdk_spmi)
+kshim_test(platform_advanced_menu_test platform_menu_test.c)
+target_compile_definitions(platform_advanced_menu_test PRIVATE CONFIG_KSHIM_MENU_ADVANCED_ACTIONS=1 CONFIG_KSHIM_QCOM_REBOOT=1 CONFIG_KSHIM_MENU_CHINESE=1)
+target_include_directories(platform_advanced_menu_test BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include" "${KSHIM_ROOT}/lib/libfdt/include")
+target_link_libraries(platform_advanced_menu_test PRIVATE crdk)
+target_sources(platform_advanced_menu_test PRIVATE "${KSHIM_ROOT}/src/core/menu_locale.c")
+
+# Runtime menu language switch profile: same real platform loop, scripted peripherals.
+kshim_test(platform_language_menu_test platform_menu_test.c)
+target_compile_definitions(platform_language_menu_test PRIVATE
+    CONFIG_KSHIM_MENU_LANGUAGE_SWITCH=1
+    CONFIG_KSHIM_MENU_CHINESE=1
+    CONFIG_KSHIM_MENU_ADVANCED_ACTIONS=1
+    CONFIG_KSHIM_QCOM_REBOOT=1)
+target_include_directories(platform_language_menu_test BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include" "${KSHIM_ROOT}/lib/libfdt/include")
+target_link_libraries(platform_language_menu_test PRIVATE crdk)
+target_sources(platform_language_menu_test PRIVATE "${KSHIM_ROOT}/src/core/menu_locale.c")
+
+kshim_test(menu_locale_test menu_locale_test.c "${KSHIM_ROOT}/src/core/menu_locale.c")
+target_compile_definitions(menu_locale_test PRIVATE CONFIG_KSHIM_MENU_LANGUAGE_SWITCH=1 CONFIG_KSHIM_MENU_CHINESE=1)

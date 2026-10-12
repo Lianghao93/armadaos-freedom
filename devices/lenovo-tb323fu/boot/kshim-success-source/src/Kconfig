@@ -1,5 +1,19 @@
 mainmenu "kShimC $(VERSION) Configuration"
 
+config KSHIM_BOOT_TIMING
+    bool "Record boot stages in the selected Linux device tree"
+    default n
+
+config KSHIM_QCOM_REBOOT
+    bool "DT-selected Qualcomm recovery, bootloader and EDL targets"
+    depends on QCOM_SPMI
+    default n
+
+config KSHIM_MENU_ADVANCED_ACTIONS
+    bool "Group diagnostic and recovery targets in an advanced menu"
+    depends on KSHIM_QCOM_REBOOT
+    default n
+
 menu "Architecture"
     source "$srctree/arch/Kconfig"
 endmenu
@@ -54,6 +68,38 @@ menu "Multicore"
 endmenu
 
 menu "Framebuffer and UI"
+    config KSHIM_MENU_BASE_ANDROID
+        bool "Describe the original base image as Android"
+        default n
+        help
+            Board profiles with an Android base image may opt into Android
+            wording. This does not change the image selection or boot path.
+
+    config KSHIM_MENU_ENTRY_DETAILS
+        bool "Show entry descriptions and separate navigation hints"
+        default n
+        help
+            Keep the selected entry description in the right pane and show
+            navigation hints in a separate footer on supported split layouts.
+
+    config KSHIM_MENU_CHINESE
+        bool "Use Simplified Chinese menu text"
+        default n
+        help
+            Translate menu controls into Simplified Chinese. Entry names
+            remain supplied by the manifest.
+
+    config KSHIM_MENU_LANGUAGE_SWITCH
+        bool "Runtime Chinese / English menu"
+        default n
+
+    config KSHIM_MENU_POWER_ACTIONS
+        bool "Enable firmware restart and power-off menu actions"
+        default n
+        help
+            Add firmware restart and power-off actions to the boot menu.
+            These actions do not require secondary CPU workers.
+
     config KSHIM_QEMU_PLATFORM
         bool "Enable QEMU test memory and framebuffer"
         default y
@@ -102,16 +148,72 @@ menu "Framebuffer and UI"
             LVGL renders color pixels and converts them to this target format.
 
     config KSHIM_LVGL
-        bool "Enable LVGL liquid glass menu"
+        bool "Enable LVGL boot menu"
         default y
         help
-            Build the pinned LVGL menu. The Qualcomm Volume Up, Volume Down,
-            and Power actions are mapped to up, down, and confirm respectively.
+            Build the pinned LVGL boot menu with a selectable visual style.
+            The default FLAT style retains the animated acrylic panel.
+            Qualcomm Volume Up, Volume Down, and Power map to up, down,
+            and confirm respectively. See docs/menu-styles.md.
 
-    config KSHIM_UI_DARK
-        bool "Dark menu theme"
-        default y
+    choice KSHIM_MENU_STYLE
+        prompt "Boot menu style"
         depends on KSHIM_LVGL
+        default KSHIM_MENU_STYLE_FLAT
+        help
+            Select the device boot menu appearance, not host menuconfig colors.
+            Input and boot actions are shared. Only FLAT uses animated textures.
+            Modern styles do not enable LVGL's built-in default theme.
+
+        config KSHIM_MENU_STYLE_FLAT
+            bool "FLAT - original dark acrylic"
+        config KSHIM_MENU_STYLE_CLASSIC
+            bool "CLASSIC - existing framed firmware menu"
+        config KSHIM_MENU_STYLE_CARDS
+            bool "CARDS - existing light rounded cards"
+        config KSHIM_MENU_STYLE_TERMINAL
+            bool "TERMINAL - existing green terminal look"
+        config KSHIM_MENU_STYLE_MINIMAL
+            bool "MINIMAL - existing quiet monochrome"
+        config KSHIM_MENU_STYLE_HIGH_CONTRAST
+            bool "HIGH_CONTRAST - existing black and white"
+
+        source "$srctree/ui/styles/Kconfig"
+    endchoice
+
+    config KSHIM_UI_SCRATCH_BASE
+        hex "UI scratch memory base (fallback)"
+        default 0x0
+        depends on KSHIM_LVGL
+
+    config KSHIM_UI_SCRATCH_SIZE
+        hex "UI scratch memory size (fallback)"
+        default 0x0
+        depends on KSHIM_LVGL
+        help
+            RAM outside the runtime slot for the inflated Noto Sans CJK font
+            (about 840 KiB) and, for FLAT only, two background textures.
+            Qualcomm boards use the display reservation past scanout.
+            Without scratch the menu uses the existing Latin fallback font.
+
+    config KSHIM_MENU_ENTRY_DURATION_MS
+        int "Menu entrance animation duration (milliseconds)"
+        range 0 2000
+        default 360
+        depends on KSHIM_LVGL
+        help
+            Zero presents the complete menu on its first frame. Other values
+            fade and slide the panel into view over the selected duration.
+
+    config KSHIM_UI_ROTATION_CCW
+        int "UI pixel rotation into native scanout (degrees counterclockwise)"
+        range 0 270
+        default 0
+        depends on KSHIM_LVGL
+        help
+            Use 0, 90, 180 or 270. Only the boot menu rotates; the hardware
+            framebuffer dimensions, stride and Linux handoff stay native.
+            At 90 degrees, logical (x,y) maps to native (y,height-1-x).
 
     config KSHIM_LVGL_BUFFER_BYTES
         int "LVGL partial render buffer size"
@@ -119,8 +221,8 @@ menu "Framebuffer and UI"
         default 16384
         depends on KSHIM_LVGL
         help
-            Bytes per partial color render buffer. It must hold at least
-            one framebuffer row. Board profiles use 256 KiB buffers.
+            Bytes per partial color render buffer. Must hold one logical UI
+            row after rotation. Board profiles use 256 KiB buffers.
 
 endmenu
 
@@ -135,16 +237,13 @@ menu "Generic"
     config KSHIM_MENU_ENTRY1
         string "First menu entry"
         default "Boot"
-
     config KSHIM_MENU_ENTRY2
         string "Second menu entry"
         default "Recovery"
-
     config KSHIM_UEFI_LOAD_ADDRESS
         hex "UEFI FD destination/entry address"
         default 0xFFC00000
         depends on KSHIM_UEFI_TEST_MENU
-
     config KSHIM_UEFI_MAX_SIZE
         hex "UEFI FD reserved size"
         default 0x400000
@@ -156,44 +255,25 @@ menu "Generic"
         help
             Enable or disable the boot banner.
             If disabled, no banner will be displayed during boot.
-
     config BANNER
         string "Boot Banner"
-        # prompt "Boot Banner"
         default "kShimC v$(VERSION) $(HOST_INFO) $(BUILD_TIME) \n"
-        help 
-            A banner message displayed during boot.
         depends on ENABLE_BANNER
 
     choice
         bool
         prompt "Debug Level"
         default DEBUG_LEVEL_VERBOSE
-
         config DEBUG_LEVEL_NONE
             bool "None"
-            help
-                No debug messages will be printed.
-
         config DEBUG_LEVEL_ERROR
             bool "Error"
-            help
-                Only error messages will be printed.
-
         config DEBUG_LEVEL_WARNING
             bool "Warning"
-            help
-                Warning and error messages will be printed.
-
         config DEBUG_LEVEL_INFO
             bool "Info"
-            help
-                Info, warning, and error messages will be printed.
-
         config DEBUG_LEVEL_VERBOSE
             bool "Verbose"
-            help
-                All debug messages will be printed, including verbose messages.
     endchoice
 
     config ASSERT_HALT

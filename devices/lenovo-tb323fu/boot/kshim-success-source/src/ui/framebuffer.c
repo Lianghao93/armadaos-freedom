@@ -582,6 +582,38 @@ kshim_fb_status_t kshim_fb_draw_mono_bitmap(kshim_framebuffer_t *framebuffer,
     return KSHIM_FB_OK;
 }
 
+static uint32_t kshim_fb_argb_value(kshim_fb_format_t format, const uint8_t *pixel)
+{
+    uint32_t blue = pixel[0], green = pixel[1], red = pixel[2];
+    uint32_t value;
+    switch (format) {
+    case KSHIM_FB_FORMAT_ARGB8888:
+        return blue | green << 8U | red << 16U | (uint32_t)pixel[3] << 24U;
+    case KSHIM_FB_FORMAT_XRGB8888:
+        return blue | green << 8U | red << 16U | UINT32_C(0xff000000);
+    case KSHIM_FB_FORMAT_ABGR8888:
+        return red | green << 8U | blue << 16U | (uint32_t)pixel[3] << 24U;
+    case KSHIM_FB_FORMAT_XBGR8888:
+        return red | green << 8U | blue << 16U | UINT32_C(0xff000000);
+    case KSHIM_FB_FORMAT_RGB565:
+        return ((red >> 3U) << 11U) | ((green >> 2U) << 5U) | (blue >> 3U);
+    default:
+        value = (77U * red + 150U * green + 29U * blue + 128U) >> 8U;
+        return format == KSHIM_FB_FORMAT_GRAY8 ? value : value >= 128U;
+    }
+}
+
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+/* LVGL owns a byte array. Load a word without aliasing that declared type;
+ * callers have checked alignment, so the compiler can keep one word load. */
+static uint32_t kshim_fb_load_argb_aligned(const uint8_t *pixel)
+{
+    uint32_t value;
+    __builtin_memcpy(&value, __builtin_assume_aligned(pixel, 4), sizeof(value));
+    return value;
+}
+#endif
+
 int kshim_fb_blit_argb8888(kshim_framebuffer_t *framebuffer,
                            int32_t x, int32_t y, uint32_t width, uint32_t height,
                            const uint32_t *source, size_t source_stride_bytes)
@@ -626,7 +658,7 @@ int kshim_fb_blit_argb8888(kshim_framebuffer_t *framebuffer,
             volatile uint32_t *destination = (volatile uint32_t *)target;
             const uint32_t *colors = (const uint32_t *)source_row;
             uint32_t alpha = framebuffer->format == KSHIM_FB_FORMAT_XRGB8888 ?
-                             UINT32_C(0xff000000) : 0;
+                              UINT32_C(0xff000000) : 0;
             for (uint32_t column = 0; column < last_x - first_x; ++column)
                 destination[column] = colors[column] | alpha;
             continue;
@@ -636,31 +668,111 @@ int kshim_fb_blit_argb8888(kshim_framebuffer_t *framebuffer,
 #endif
         for (uint32_t column = first_x; column < last_x; ++column) {
             const uint8_t *pixel = source_row + (size_t)(column - first_x) * 4U;
-            uint32_t blue = pixel[0], green = pixel[1], red = pixel[2];
-            uint32_t value;
-            switch (framebuffer->format) {
-            case KSHIM_FB_FORMAT_ARGB8888:
-                value = blue | green << 8U | red << 16U | (uint32_t)pixel[3] << 24U;
-                break;
-            case KSHIM_FB_FORMAT_XRGB8888:
-                value = blue | green << 8U | red << 16U | UINT32_C(0xff000000);
-                break;
-            case KSHIM_FB_FORMAT_ABGR8888:
-                value = red | green << 8U | blue << 16U | (uint32_t)pixel[3] << 24U;
-                break;
-            case KSHIM_FB_FORMAT_XBGR8888:
-                value = red | green << 8U | blue << 16U | UINT32_C(0xff000000);
-                break;
-            case KSHIM_FB_FORMAT_RGB565:
-                value = ((red >> 3U) << 11U) | ((green >> 2U) << 5U) | (blue >> 3U);
-                break;
-            default:
-                value = (77U * red + 150U * green + 29U * blue + 128U) >> 8U;
-                if (kshim_fb_is_mono(framebuffer))
-                    value = value >= 128U;
-                break;
+            kshim_fb_write_value(framebuffer, column, row,
+                                 kshim_fb_argb_value(framebuffer->format, pixel));
+        }
+    }
+    return KSHIM_FB_OK;
+}
+
+int kshim_fb_blit_argb8888_rotated(kshim_framebuffer_t *framebuffer,
+                                   int32_t x, int32_t y, uint32_t width, uint32_t height,
+                                   const uint32_t *source, size_t source_stride_bytes,
+                                   kshim_fb_rotation_t rotation)
+{
+    size_t row_bytes, source_size;
+    uint32_t first_x, last_x, first_y, last_y;
+    uint32_t native_x1, native_x2, native_y1, native_y2;
+    if (rotation == KSHIM_FB_ROTATION_0)
+        return kshim_fb_blit_argb8888(framebuffer, x, y, width, height,
+                                     source, source_stride_bytes);
+    if (rotation != KSHIM_FB_ROTATION_CCW_90 && rotation != KSHIM_FB_ROTATION_180 &&
+        rotation != KSHIM_FB_ROTATION_CCW_270)
+        return KSHIM_FB_ERR_INVALID_ARGUMENT;
+    kshim_fb_status_t status = kshim_fb_validate(framebuffer);
+    if (status != KSHIM_FB_OK)
+        return status;
+    if (width == 0 || height == 0)
+        return KSHIM_FB_OK;
+    if (source == NULL)
+        return KSHIM_FB_ERR_INVALID_ARGUMENT;
+    if (kshim_fb_mul_overflow_size(width, sizeof(*source), &row_bytes))
+        return KSHIM_FB_ERR_OVERFLOW;
+    if (source_stride_bytes < row_bytes)
+        return KSHIM_FB_ERR_INVALID_ARGUMENT;
+    if (kshim_fb_mul_overflow_size(height - 1U, source_stride_bytes, &source_size) ||
+        row_bytes > SIZE_MAX - source_size)
+        return KSHIM_FB_ERR_OVERFLOW;
+    source_size += row_bytes;
+    if (kshim_fb_address_overflow((uintptr_t)source, source_size))
+        return KSHIM_FB_ERR_OVERFLOW;
+    const bool swap_axes = rotation != KSHIM_FB_ROTATION_180;
+    const uint32_t logical_width = swap_axes ? framebuffer->height : framebuffer->width;
+    const uint32_t logical_height = swap_axes ? framebuffer->width : framebuffer->height;
+    if (!kshim_fb_clip_span(x, width, logical_width, &first_x, &last_x) ||
+        !kshim_fb_clip_span(y, height, logical_height, &first_y, &last_y))
+        return KSHIM_FB_OK;
+    if ((uintptr_t)source <= framebuffer->render_address + framebuffer->frame_size - 1U &&
+        framebuffer->render_address <= (uintptr_t)source + source_size - 1U)
+        return KSHIM_FB_ERR_INVALID_ARGUMENT;
+
+    if (rotation == KSHIM_FB_ROTATION_CCW_90) {
+        native_x1 = first_y; native_x2 = last_y;
+        native_y1 = framebuffer->height - last_x;
+        native_y2 = framebuffer->height - first_x;
+    } else if (rotation == KSHIM_FB_ROTATION_180) {
+        native_x1 = framebuffer->width - last_x;
+        native_x2 = framebuffer->width - first_x;
+        native_y1 = framebuffer->height - last_y;
+        native_y2 = framebuffer->height - first_y;
+    } else {
+        native_x1 = framebuffer->width - last_y;
+        native_x2 = framebuffer->width - first_y;
+        native_y1 = first_x; native_y2 = last_x;
+    }
+    const size_t source_step = swap_axes ? source_stride_bytes : sizeof(*source);
+    const bool source_reverse = rotation != KSHIM_FB_ROTATION_CCW_90;
+    const uint32_t count = native_x2 - native_x1;
+
+    /* Walk native rows contiguously: framebuffer is uncached, while strided
+     * reads stay within the small cached LVGL dirty-rectangle buffer. */
+    for (uint32_t row = native_y1; row < native_y2; ++row) {
+        uint32_t logical_x, logical_y;
+        if (rotation == KSHIM_FB_ROTATION_CCW_90) {
+            logical_x = framebuffer->height - 1U - row;
+            logical_y = native_x1;
+        } else if (rotation == KSHIM_FB_ROTATION_180) {
+            logical_x = framebuffer->width - 1U - native_x1;
+            logical_y = framebuffer->height - 1U - row;
+        } else {
+            logical_x = row;
+            logical_y = framebuffer->width - 1U - native_x1;
+        }
+        const uint8_t *pixel = (const uint8_t *)source +
+            (size_t)((int64_t)logical_y - y) * source_stride_bytes +
+            (size_t)((int64_t)logical_x - x) * sizeof(*source);
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+        uintptr_t target = framebuffer->render_address + (size_t)row * framebuffer->stride +
+                           (size_t)native_x1 * (framebuffer->bpp / 8U);
+        if ((framebuffer->format == KSHIM_FB_FORMAT_XRGB8888 ||
+             framebuffer->format == KSHIM_FB_FORMAT_ARGB8888) &&
+            ((target | (uintptr_t)pixel | source_step) & 3U) == 0U) {
+            volatile uint32_t *destination = (volatile uint32_t *)target;
+            const uint32_t alpha = framebuffer->format == KSHIM_FB_FORMAT_XRGB8888 ?
+                                   UINT32_C(0xff000000) : 0U;
+            for (uint32_t column = 0; column < count; ++column) {
+                destination[column] = kshim_fb_load_argb_aligned(pixel) | alpha;
+                if (column + 1U < count)
+                    pixel = source_reverse ? pixel - source_step : pixel + source_step;
             }
-            kshim_fb_write_value(framebuffer, column, row, value);
+            continue;
+        }
+#endif
+        for (uint32_t column = 0; column < count; ++column) {
+            kshim_fb_write_value(framebuffer, native_x1 + column, row,
+                                 kshim_fb_argb_value(framebuffer->format, pixel));
+            if (column + 1U < count)
+                pixel = source_reverse ? pixel - source_step : pixel + source_step;
         }
     }
     return KSHIM_FB_OK;

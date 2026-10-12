@@ -7,7 +7,7 @@
 #endif
 #endif
 
-/* The glass compositor and antialiased fonts render into ARGB8888. */
+/* The animated background and antialiased fonts render into ARGB8888. */
 #define LV_COLOR_DEPTH 32
 #if defined(CONFIG_KSHIM_SMP) && CONFIG_KSHIM_SMP && defined(__aarch64__)
 #define LV_USE_OS LV_OS_CUSTOM
@@ -42,16 +42,29 @@
 #define LV_USE_ASSERT_MEM_INTEGRITY 0
 #define LV_USE_ASSERT_OBJ 0
 
-/* Montserrat's four-bit masks remain antialiased in the 32-bit renderer. */
+/* The menu draws Noto Sans CJK SC (src/ui/font.c) with TinyTTF at any size;
+ * Montserrat 20 is only the Latin fallback when the font cannot be
+ * inflated (no scratch memory outside the runtime slot). */
+#if defined(CONFIG_KSHIM_MENU_STYLE_LVGL_DEFAULT) && CONFIG_KSHIM_MENU_STYLE_LVGL_DEFAULT
 #define LV_FONT_MONTSERRAT_14 1
+#define LV_FONT_DEFAULT &lv_font_montserrat_14
+#define LV_USE_THEME_DEFAULT 1
+#else
+#define LV_FONT_MONTSERRAT_14 0
+#define LV_FONT_DEFAULT &lv_font_montserrat_20
+#define LV_USE_THEME_DEFAULT 0
+#endif
 #define LV_FONT_MONTSERRAT_20 1
-#define LV_FONT_MONTSERRAT_28 1
-#define LV_FONT_MONTSERRAT_48 1
+#define LV_FONT_MONTSERRAT_28 0
+#define LV_FONT_MONTSERRAT_48 0
 #define LV_FONT_UNSCII_8 0
 #define LV_FONT_UNSCII_16 0
-#define LV_FONT_DEFAULT &lv_font_montserrat_20
 #define LV_FONT_SIMSUN_14_CJK 0
 #define LV_USE_FONT_PLACEHOLDER 1
+#define LV_USE_TINY_TTF 1
+#define LV_TINY_TTF_FILE_SUPPORT 0
+#define LV_TINY_TTF_CACHE_GLYPH_CNT 128
+#define LV_USE_LZ4_INTERNAL 1
 #define LV_TXT_ENC LV_TXT_ENC_UTF8
 
 /* The menu only needs labels, buttons, and a list. */
@@ -87,7 +100,6 @@
 #define LV_USE_TILEVIEW 0
 #define LV_USE_WIN 0
 
-#define LV_USE_THEME_DEFAULT 0
 #define LV_USE_THEME_SIMPLE 0
 #define LV_USE_THEME_MONO 0
 #define LV_USE_FLEX 1

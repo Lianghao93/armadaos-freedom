@@ -1,0 +1,268 @@
+/* Runtime menu locale and text table.
+ *
+ * A single const table holds both languages; selection is a static session
+ * language. With CONFIG_KSHIM_MENU_LANGUAGE_SWITCH the table follows the
+ * runtime language, otherwise it falls back to the compile-time locale so the
+ * legacy strings stay exactly compatible. */
+
+#include <stdio.h>
+
+#include "menu_locale.h"
+
+#if defined(CONFIG_KSHIM_MENU_LANGUAGE_SWITCH) && CONFIG_KSHIM_MENU_LANGUAGE_SWITCH
+#define KSHIM_MENU_RUNTIME_TEXT 1
+#else
+#define KSHIM_MENU_RUNTIME_TEXT 0
+#endif
+
+#if defined(CONFIG_KSHIM_MENU_CHINESE) && CONFIG_KSHIM_MENU_CHINESE
+#define KSHIM_MENU_LEGACY_LANGUAGE KSHIM_MENU_LANG_ZH_CN
+#else
+#define KSHIM_MENU_LEGACY_LANGUAGE KSHIM_MENU_LANG_EN
+#endif
+
+/* Session language: static, initialised from config, never reset on redraw. */
+static kshim_menu_language_t g_kshim_menu_language = KSHIM_MENU_LEGACY_LANGUAGE;
+
+/* Active language for output. */
+static kshim_menu_language_t kshim_menu_active_language(void)
+{
+#if KSHIM_MENU_RUNTIME_TEXT
+    return g_kshim_menu_language;
+#else
+    return (kshim_menu_language_t)KSHIM_MENU_LEGACY_LANGUAGE;
+#endif
+}
+
+/* Language x id table. Chinese preserves the exact existing text. */
+static const char *const kshim_menu_text_table[2][KSHIM_TEXT_COUNT] = {
+    [KSHIM_MENU_LANG_ZH_CN] = {
+        [KSHIM_TEXT_TITLE]          = "KShimC 启动器",
+        [KSHIM_TEXT_ACTION]         = "启动",
+        [KSHIM_TEXT_DETAIL]         = "选择系统或操作。\n音量键选择，电源键确认",
+        [KSHIM_TEXT_POWEROFF]       = "关机",
+        [KSHIM_TEXT_HELP]           = "音量＋／－切换 · 电源键确认",
+        [KSHIM_TEXT_ACTION_BOOT]    = "启动",
+        [KSHIM_TEXT_ACTION_ENTER]   = "进入",
+        [KSHIM_TEXT_ACTION_RESTART] = "重启",
+        [KSHIM_TEXT_ACTION_OFF]     = "关机",
+        [KSHIM_TEXT_ACTION_BACK]    = "返回",
+        [KSHIM_TEXT_DESC_BASE]      = "启动设备原有系统。",
+        [KSHIM_TEXT_DESC_ANDROID]   = "启动设备原有的 Android 系统。",
+        [KSHIM_TEXT_DESC_GENERIC]   = "启动所选系统。",
+        [KSHIM_TEXT_DESC_INTERNAL]  = "启动安装在机身存储中的 ArmadaOS。",
+        [KSHIM_TEXT_DESC_TF]        = "启动安装在 TF 卡中的 ArmadaOS，请先插入对应 TF 卡。",
+        [KSHIM_TEXT_DESC_DIAGNOSTIC] = "启动 Linux 诊断环境，用于检查启动和硬件问题。",
+        [KSHIM_TEXT_DESC_ADVANCED]  = "进入 Linux 诊断、恢复或刷机模式。",
+        [KSHIM_TEXT_DESC_RESTART]   = "重新启动设备。",
+        [KSHIM_TEXT_DESC_OFF]       = "关闭设备电源。",
+        [KSHIM_TEXT_DESC_RECOVERY]  = "进入 Android 恢复模式，进行系统维护。",
+        [KSHIM_TEXT_DESC_FASTBOOT]  = "进入 Fastboot，通过 USB 连接电脑进行维护或刷写。",
+        [KSHIM_TEXT_DESC_EDL]       = "进入高通 9008 下载模式，供电脑端工具恢复或刷写。",
+        [KSHIM_TEXT_DESC_BACK]      = "返回系统启动选项。",
+        [KSHIM_TEXT_STATUS]         = "选择要启动的系统",
+
+        [KSHIM_TEXT_MENU_TITLE]     = "KShimC 启动器",
+        [KSHIM_TEXT_MENU_PROMPT]    = "输入序号并按回车确认：",
+        [KSHIM_TEXT_MENU_DEFAULT]   = " [默认]",
+        [KSHIM_TEXT_KEYS_HINT]      = "音量键选择，电源键启动",
+        [KSHIM_TEXT_KEYS_UNAVAILABLE] = "音量键暂不可用",
+        [KSHIM_TEXT_AUTO_CANCELLED] = "已取消自动启动，请手动选择",
+        [KSHIM_TEXT_POWER_FAILED]   = "电源操作失败",
+        [KSHIM_TEXT_MODE_FAILED]    = "切换启动模式失败",
+        [KSHIM_TEXT_RESTORE_FAILED] = "切换启动模式失败，恢复原设置失败",
+        [KSHIM_TEXT_HANDOFF_UNSAFE] = "启动交接不安全，已中止启动。",
+        [KSHIM_TEXT_UNABLE_START]   = "无法启动所选系统。",
+        [KSHIM_TEXT_RESTART]        = "重启",
+        [KSHIM_TEXT_POWER_OFF]      = "关机",
+        [KSHIM_TEXT_ADVANCED]       = "高级启动模式",
+        [KSHIM_TEXT_RECOVERY]       = "Recovery 恢复模式",
+        [KSHIM_TEXT_FASTBOOT]       = "Fastboot 模式",
+        [KSHIM_TEXT_EDL]            = "9008 下载模式",
+        [KSHIM_TEXT_BACK]           = "返回主菜单",
+
+        [KSHIM_TEXT_NAME_ANDROID]     = "Android 原厂",
+        [KSHIM_TEXT_NAME_INTERNAL]    = "机身 ArmadaOS",
+        [KSHIM_TEXT_NAME_TF]          = "TF 卡 ArmadaOS",
+        [KSHIM_TEXT_NAME_DIAGNOSTIC]  = "Linux 诊断模式",
+
+        [KSHIM_TEXT_LANGUAGE_LABEL]   = "语言 / Language",
+        [KSHIM_TEXT_LANGUAGE_STATE]   = "简体中文",
+        [KSHIM_TEXT_LANGUAGE_DESC]    = "选择菜单显示语言。",
+        [KSHIM_TEXT_LANGUAGE_SELECT]  = "选择",
+        [KSHIM_TEXT_DESC_LANG_ZH]     = "使用简体中文菜单。",
+        [KSHIM_TEXT_DESC_LANG_EN]     = "使用英文菜单。",
+        [KSHIM_TEXT_LANG_ZH_NAME]     = "简体中文",
+        [KSHIM_TEXT_LANG_EN_NAME]     = "English",
+        [KSHIM_TEXT_CREDIT]           = "适配维护：B站「单翼」｜免费使用，谨防收费诈骗。",
+    },
+    [KSHIM_MENU_LANG_EN] = {
+        [KSHIM_TEXT_TITLE]          = "KShimC Launcher",
+        [KSHIM_TEXT_ACTION]         = "Boot",
+        [KSHIM_TEXT_DETAIL]         = "Select an image.\nPress Boot to continue.",
+        [KSHIM_TEXT_POWEROFF]       = "Power off",
+        [KSHIM_TEXT_HELP]           = "Volume keys to select, Power to confirm",
+        [KSHIM_TEXT_ACTION_BOOT]    = "Boot",
+        [KSHIM_TEXT_ACTION_ENTER]   = "Enter",
+        [KSHIM_TEXT_ACTION_RESTART] = "Restart",
+        [KSHIM_TEXT_ACTION_OFF]     = "Power off",
+        [KSHIM_TEXT_ACTION_BACK]    = "Back",
+        [KSHIM_TEXT_DESC_BASE]      = "Start the device's original system.",
+        [KSHIM_TEXT_DESC_ANDROID]   = "Start the device's original Android system.",
+        [KSHIM_TEXT_DESC_GENERIC]   = "Start the selected system.",
+        [KSHIM_TEXT_DESC_INTERNAL]  = "Start ArmadaOS installed on internal storage.",
+        [KSHIM_TEXT_DESC_TF]        = "Start ArmadaOS installed on the TF card. Insert the matching card first.",
+        [KSHIM_TEXT_DESC_DIAGNOSTIC] = "Start the Linux diagnostic environment to investigate boot and hardware problems.",
+        [KSHIM_TEXT_DESC_ADVANCED]  = "Enter Linux diagnostics, recovery or flashing modes.",
+        [KSHIM_TEXT_DESC_RESTART]   = "Restart the device.",
+        [KSHIM_TEXT_DESC_OFF]       = "Turn off the device.",
+        [KSHIM_TEXT_DESC_RECOVERY]  = "Enter Android recovery mode for system maintenance.",
+        [KSHIM_TEXT_DESC_FASTBOOT]  = "Enter Fastboot and connect to a computer over USB for maintenance or flashing.",
+        [KSHIM_TEXT_DESC_EDL]       = "Enter Qualcomm 9008 download mode for recovery or flashing with a computer.",
+        [KSHIM_TEXT_DESC_BACK]      = "Return to the system boot options.",
+        [KSHIM_TEXT_STATUS]         = "Select a system to boot",
+
+        [KSHIM_TEXT_MENU_TITLE]     = "KShim boot menu",
+        [KSHIM_TEXT_MENU_PROMPT]    = "Select kernel and press Enter: ",
+        [KSHIM_TEXT_MENU_DEFAULT]   = " [default]",
+        [KSHIM_TEXT_KEYS_HINT]      = "Use vol keys, power to boot",
+        [KSHIM_TEXT_KEYS_UNAVAILABLE] = "Volume keys unavailable",
+        [KSHIM_TEXT_AUTO_CANCELLED] = "Auto boot cancelled; choose an entry",
+        [KSHIM_TEXT_POWER_FAILED]   = "Power action failed",
+        [KSHIM_TEXT_MODE_FAILED]    = "Boot mode switch failed",
+        [KSHIM_TEXT_RESTORE_FAILED] = "Boot mode switch failed; restoring the original settings failed",
+        [KSHIM_TEXT_HANDOFF_UNSAFE] = "Unsafe boot handoff; boot aborted.",
+        [KSHIM_TEXT_UNABLE_START]   = "Unable to start the selected system.",
+        [KSHIM_TEXT_RESTART]        = "Restart",
+        [KSHIM_TEXT_POWER_OFF]      = "Power off",
+        [KSHIM_TEXT_ADVANCED]       = "Advanced boot modes",
+        [KSHIM_TEXT_RECOVERY]       = "Enter Recovery",
+        [KSHIM_TEXT_FASTBOOT]       = "Enter Fastboot",
+        [KSHIM_TEXT_EDL]            = "Enter 9008",
+        [KSHIM_TEXT_BACK]           = "Back to main menu",
+
+        [KSHIM_TEXT_NAME_ANDROID]     = "Stock Android",
+        [KSHIM_TEXT_NAME_INTERNAL]    = "Internal ArmadaOS",
+        [KSHIM_TEXT_NAME_TF]          = "TF card ArmadaOS",
+        [KSHIM_TEXT_NAME_DIAGNOSTIC]  = "Linux diagnostics",
+
+        [KSHIM_TEXT_LANGUAGE_LABEL]   = "语言 / Language",
+        [KSHIM_TEXT_LANGUAGE_STATE]   = "English",
+        [KSHIM_TEXT_LANGUAGE_DESC]    = "Choose the menu display language.",
+        [KSHIM_TEXT_LANGUAGE_SELECT]  = "Select",
+        [KSHIM_TEXT_DESC_LANG_ZH]     = "Use Simplified Chinese menus.",
+        [KSHIM_TEXT_DESC_LANG_EN]     = "Use English menus.",
+        [KSHIM_TEXT_LANG_ZH_NAME]     = "简体中文",
+        [KSHIM_TEXT_LANG_EN_NAME]     = "English",
+        [KSHIM_TEXT_CREDIT]           = "Adapted by Danyi on Bilibili · Free to use. Beware of paid scams.",
+    },
+};
+
+/* Role -> name id; KSHIM_TEXT_COUNT means "use the caller fallback". */
+static const kshim_menu_text_id kshim_menu_role_name_table[KSHIM_MENU_ROLE_LANG_EN + 1] = {
+    [KSHIM_MENU_ROLE_UNKNOWN]    = KSHIM_TEXT_COUNT,
+    [KSHIM_MENU_ROLE_BASE]       = KSHIM_TEXT_COUNT,
+    [KSHIM_MENU_ROLE_ANDROID]    = KSHIM_TEXT_NAME_ANDROID,
+    [KSHIM_MENU_ROLE_INTERNAL]   = KSHIM_TEXT_NAME_INTERNAL,
+    [KSHIM_MENU_ROLE_TF]         = KSHIM_TEXT_NAME_TF,
+    [KSHIM_MENU_ROLE_DIAGNOSTIC] = KSHIM_TEXT_NAME_DIAGNOSTIC,
+    [KSHIM_MENU_ROLE_ADVANCED]   = KSHIM_TEXT_ADVANCED,
+    [KSHIM_MENU_ROLE_LANGUAGE]   = KSHIM_TEXT_LANGUAGE_LABEL,
+    [KSHIM_MENU_ROLE_RESTART]    = KSHIM_TEXT_RESTART,
+    [KSHIM_MENU_ROLE_OFF]        = KSHIM_TEXT_POWER_OFF,
+    [KSHIM_MENU_ROLE_RECOVERY]   = KSHIM_TEXT_RECOVERY,
+    [KSHIM_MENU_ROLE_FASTBOOT]   = KSHIM_TEXT_FASTBOOT,
+    [KSHIM_MENU_ROLE_EDL]        = KSHIM_TEXT_EDL,
+    [KSHIM_MENU_ROLE_BACK]       = KSHIM_TEXT_BACK,
+    [KSHIM_MENU_ROLE_LANG_ZH]    = KSHIM_TEXT_LANG_ZH_NAME,
+    [KSHIM_MENU_ROLE_LANG_EN]    = KSHIM_TEXT_LANG_EN_NAME,
+};
+
+/* Role -> description id; KSHIM_TEXT_COUNT means "use the caller fallback". */
+static const kshim_menu_text_id kshim_menu_role_desc_table[KSHIM_MENU_ROLE_LANG_EN + 1] = {
+    [KSHIM_MENU_ROLE_UNKNOWN]    = KSHIM_TEXT_COUNT,
+    [KSHIM_MENU_ROLE_BASE]       = KSHIM_TEXT_DESC_BASE,
+    [KSHIM_MENU_ROLE_ANDROID]    = KSHIM_TEXT_DESC_ANDROID,
+    [KSHIM_MENU_ROLE_INTERNAL]   = KSHIM_TEXT_DESC_INTERNAL,
+    [KSHIM_MENU_ROLE_TF]         = KSHIM_TEXT_DESC_TF,
+    [KSHIM_MENU_ROLE_DIAGNOSTIC] = KSHIM_TEXT_DESC_DIAGNOSTIC,
+    [KSHIM_MENU_ROLE_ADVANCED]   = KSHIM_TEXT_DESC_ADVANCED,
+    [KSHIM_MENU_ROLE_LANGUAGE]   = KSHIM_TEXT_LANGUAGE_DESC,
+    [KSHIM_MENU_ROLE_RESTART]    = KSHIM_TEXT_DESC_RESTART,
+    [KSHIM_MENU_ROLE_OFF]        = KSHIM_TEXT_DESC_OFF,
+    [KSHIM_MENU_ROLE_RECOVERY]   = KSHIM_TEXT_DESC_RECOVERY,
+    [KSHIM_MENU_ROLE_FASTBOOT]   = KSHIM_TEXT_DESC_FASTBOOT,
+    [KSHIM_MENU_ROLE_EDL]        = KSHIM_TEXT_DESC_EDL,
+    [KSHIM_MENU_ROLE_BACK]       = KSHIM_TEXT_DESC_BACK,
+    [KSHIM_MENU_ROLE_LANG_ZH]    = KSHIM_TEXT_DESC_LANG_ZH,
+    [KSHIM_MENU_ROLE_LANG_EN]    = KSHIM_TEXT_DESC_LANG_EN,
+};
+
+kshim_menu_language_t kshim_menu_get_language(void)
+{
+    return g_kshim_menu_language;
+}
+
+int kshim_menu_set_language(kshim_menu_language_t language)
+{
+    if (language != KSHIM_MENU_LANG_ZH_CN && language != KSHIM_MENU_LANG_EN) {
+        return -1;
+    }
+    g_kshim_menu_language = language;
+    return 0;
+}
+
+const char *kshim_menu_text(kshim_menu_text_id id)
+{
+    const char *text;
+
+    if ((unsigned)id >= (unsigned)KSHIM_TEXT_COUNT) {
+        return "";
+    }
+    text = kshim_menu_text_table[kshim_menu_active_language()][id];
+    return text ? text : "";
+}
+
+const char *kshim_menu_role_name(kshim_menu_role_t role, const char *fallback)
+{
+    kshim_menu_text_id id;
+
+    if ((unsigned)role > (unsigned)KSHIM_MENU_ROLE_LANG_EN) {
+        return fallback;
+    }
+    id = kshim_menu_role_name_table[role];
+    if (id >= KSHIM_TEXT_COUNT) {
+        return fallback;
+    }
+    return kshim_menu_text(id);
+}
+
+const char *kshim_menu_role_description(kshim_menu_role_t role, const char *fallback)
+{
+    kshim_menu_text_id id;
+
+    if ((unsigned)role > (unsigned)KSHIM_MENU_ROLE_LANG_EN) {
+        return fallback;
+    }
+    id = kshim_menu_role_desc_table[role];
+    if (id >= KSHIM_TEXT_COUNT) {
+        return fallback;
+    }
+    return kshim_menu_text(id);
+}
+
+int kshim_menu_format_countdown(char *buffer, size_t capacity, uint32_t seconds, const char *name)
+{
+    int has_name = (name != NULL) && (name[0] != '\0');
+
+    if (kshim_menu_active_language() == KSHIM_MENU_LANG_ZH_CN) {
+        if (has_name) {
+            return snprintf(buffer, capacity, "%u 秒后启动%s", (unsigned)seconds, name);
+        }
+        return snprintf(buffer, capacity, "%u 秒后自动启动", (unsigned)seconds);
+    }
+    if (has_name) {
+        return snprintf(buffer, capacity, "Booting %s in %u s", name, (unsigned)seconds);
+    }
+    return snprintf(buffer, capacity, "Booting in %u s", (unsigned)seconds);
+}

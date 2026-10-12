@@ -40,6 +40,16 @@ int64_t kshim_psci_cpu_off(void);
 int64_t kshim_psci_affinity_info(uint64_t target_mpidr, uint32_t level);
 void kshim_psci_system_off(void) __attribute__((noreturn));
 
+/*
+ * Returnable power requests. The caller initializes PSCI independently before
+ * calling these. A successful SYSTEM_OFF/SYSTEM_RESET does not return; any
+ * return, including zero or positive, means the firmware did not perform the
+ * requested transition. The raw firmware status is returned unchanged for the
+ * caller to report, and the caller treats every return as a failure.
+ */
+int64_t kshim_psci_request_system_off(void);
+int64_t kshim_psci_request_system_reset(void);
+
 /* Weak architecture calls let host tests replace the firmware conduit. */
 int64_t kshim_psci_arch_smc(
     uint64_t function_id, uint64_t arg0, uint64_t arg1, uint64_t arg2);

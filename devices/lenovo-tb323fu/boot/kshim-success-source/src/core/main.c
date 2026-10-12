@@ -6,6 +6,8 @@
 #include <arm64/boot.h>
 #include <manifest.h>
 #include <platform.h>
+#include <menu_text.h>
+#include <boot_metrics.h>
 #include <dt.h>
 #include <qcom_dt.h>
 #include <dt_handoff.h>
@@ -240,11 +242,14 @@ static void print_entry_name(const MANIFEST_ENTRY *entry)
     }
 }
 
-static uint32_t select_image(const MANIFEST_VIEW *view, uint64_t fdt)
+static uint32_t select_image(const MANIFEST_VIEW *view, uint64_t fdt, uint64_t linux_base)
 {
     uint32_t indexes[MANIFEST_MAX_ENTRIES];
     char labels[MANIFEST_MAX_ENTRIES][96];
     const char *names[MANIFEST_MAX_ENTRIES];
+    const char *descriptions[MANIFEST_MAX_ENTRIES];
+    kshim_menu_role_t roles[MANIFEST_MAX_ENTRIES];
+    uint64_t advanced_mask = 0;
     size_t count = 0, initial = 0, selected = 0;
     for (uint32_t i = 0; i + 1 < view->manifest->header.entry_count; ++i) {
         const MANIFEST_ENTRY *entry = view->entries[i];
@@ -252,10 +257,44 @@ static uint32_t select_image(const MANIFEST_VIEW *view, uint64_t fdt)
         size_t n = entry->name_len < sizeof(labels[0]) ? entry->name_len : sizeof(labels[0]) - 1;
         memcpy(labels[count], entry->name, n); labels[count][n] = 0;
         indexes[count] = i; names[count] = labels[count];
+        descriptions[count] = (entry->flags & MF_ENTRY_FLAG_BASE_IMAGE) != 0 ?
+            KSHIM_MENU_DESC_BASE : KSHIM_MENU_DESC_GENERIC;
+        /* Known roles localise their own label/description; unknown stock images
+         * keep the manifest name so they are never assumed to be Android. */
+        roles[count] = (entry->flags & MF_ENTRY_FLAG_BASE_IMAGE) != 0 ?
+            KSHIM_MENU_ROLE_BASE : KSHIM_MENU_ROLE_UNKNOWN;
+#if defined(CONFIG_KSHIM_MENU_BASE_ANDROID) && CONFIG_KSHIM_MENU_BASE_ANDROID
+        if ((entry->flags & MF_ENTRY_FLAG_BASE_IMAGE) != 0 &&
+            (entry->flags & MF_ENTRY_FLAG_HAS_DEVICE_TREE_BLOB) == 0) {
+            descriptions[count] = KSHIM_MENU_DESC_ANDROID;
+            roles[count] = KSHIM_MENU_ROLE_ANDROID;
+        }
+#endif
+        if ((entry->flags & MF_ENTRY_FLAG_HAS_DEVICE_TREE_BLOB) != 0) {
+            const MANIFEST_ENTRY *dtb = view->entries[entry->device_tree_blob_entry];
+            const void *blob = (const void *)(uintptr_t)(linux_base + dtb->offset);
+            int chosen = fdt_path_offset(blob, "/chosen");
+            const char *stage = chosen >= 0 ? dt_string(blob, chosen, "armada,boot-stage") : NULL;
+            const char *medium = chosen >= 0 ? dt_string(blob, chosen, "armada,root-medium") : NULL;
+            descriptions[count] = KSHIM_MENU_DESC_GENERIC;
+            roles[count] = KSHIM_MENU_ROLE_UNKNOWN;
+            if (count < 64 && stage && strcmp(stage, "maintenance") == 0) {
+                advanced_mask |= UINT64_C(1) << count;
+                descriptions[count] = KSHIM_MENU_DESC_DIAGNOSTIC;
+                roles[count] = KSHIM_MENU_ROLE_DIAGNOSTIC;
+            } else if (medium && strcmp(medium, "internal") == 0) {
+                descriptions[count] = KSHIM_MENU_DESC_INTERNAL;
+                roles[count] = KSHIM_MENU_ROLE_INTERNAL;
+            } else if (medium && strcmp(medium, "tf") == 0) {
+                descriptions[count] = KSHIM_MENU_DESC_TF;
+                roles[count] = KSHIM_MENU_ROLE_TF;
+            }
+        }
         if (i == view->manifest->header.default_entry) initial = count;
         ++count;
     }
-    if (kshim_platform_select(fdt, names, count, initial, view->manifest->header.timeout_ms, &selected)) {
+    if (kshim_platform_select_localized(fdt, names, descriptions, roles, count, initial,
+            view->manifest->header.timeout_ms, advanced_mask, &selected)) {
         printf("Unsafe UI shutdown; refusing payload handoff\n");
         for (;;) (void)delay(100000);
     }
@@ -282,6 +321,7 @@ int kshim_main(
     uint64_t manifest_address,
     uint64_t manifest_size)
 {
+    kshim_boot_metrics_record_once(KSHIM_BOOT_STAGE_ENTRY);
 #if KSHIM_DIAGNOSTIC_BASE_ONLY
     /* Diagnostic only: hand off to the packed Linux base image immediately,
      * before any DT, console, or peripheral work.  No menu is shown and no
@@ -350,6 +390,7 @@ int kshim_main(
         printf("Invalid runtime device resources\n");
         for (;;) (void)delay(100000);
     }
+    kshim_boot_metrics_record_once(KSHIM_BOOT_STAGE_RESOURCES);
 #if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
     /* Diagnostic checkpoint after DT/console/resource probing: optional
      * resources may be absent and no menu is shown.  A valid runtime FDT and
@@ -500,7 +541,8 @@ int kshim_main(
             arm64_boot_linux(linux_base, device_tree_address, 4);
         }
 
-        uint32_t selected_index = select_image(&view, device_tree_address);
+        uint32_t selected_index = select_image(&view, device_tree_address, linux_base);
+        kshim_boot_metrics_record_once(KSHIM_BOOT_STAGE_HANDOFF);
         const MANIFEST_ENTRY *entry = view.entries[selected_index];
         if ((entry->flags & MF_ENTRY_FLAG_BASE_IMAGE) &&
             !(entry->flags & MF_ENTRY_FLAG_HAS_DEVICE_TREE_BLOB)) {
@@ -593,6 +635,7 @@ int kshim_main(
                     }
                     if (status == 0) {
                         /* Re-pack the modified DT, then validate the result. */
+                        (void)kshim_boot_metrics_export(blob);
                         int packed = fdt_pack(blob);
                         if (packed != 0)
                             status = packed;

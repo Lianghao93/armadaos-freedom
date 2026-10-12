@@ -6,8 +6,9 @@
 #include <string.h>
 
 #include <lvgl.h>
+#include "../src/ui/menu_style.h"
 #include <lvgl_port.h>
-#include <kshim_ui_fonts.h>
+#include <ui_font.h>
 
 #ifdef CONFIG_KSHIM_UEFI_TEST_MENU
 #define DEFAULT_ENTRY_COUNT 2U
@@ -169,7 +170,11 @@ static void TestDefaultKeys(void)
     assert(lv_group_get_focused(Group) == Second);
     lv_obj_t *SecondLabel = lv_obj_get_child(Second, 0U);
     const lv_anim_t *Focus = lv_anim_get(SecondLabel, NULL);
-    assert(Focus != NULL && Focus->duration == KSHIM_UI_FOCUS_DURATION_MS);
+    if (KSHIM_MENU_IS_NATIVE) {
+        assert(Focus == NULL);
+        assert(lv_obj_has_state(Second, LV_STATE_CHECKED));
+        assert(!lv_obj_has_state(First, LV_STATE_CHECKED));
+    } else assert(Focus != NULL && Focus->duration == KSHIM_UI_FOCUS_DURATION_MS);
 
     PressKey(&Test.ui, 2U);
     assert(kshim_lvgl_take_selection(&Test.ui) == DEFAULT_SECOND_ACTION);
@@ -177,7 +182,8 @@ static void TestDefaultKeys(void)
     assert(kshim_lvgl_take_index(&Test.ui) == 1);
     assert(kshim_lvgl_take_index(&Test.ui) == -1);
     const lv_anim_t *Confirm = lv_anim_get(Test.ui.BootButton, NULL);
-    assert(Confirm != NULL &&
+    if (KSHIM_MENU_IS_NATIVE) assert(Confirm == NULL);
+    else assert(Confirm != NULL &&
            Confirm->duration == KSHIM_UI_CONFIRM_DURATION_MS);
 
     PressKey(&Test.ui, 0U);
@@ -224,7 +230,7 @@ static void TestDynamicAndTouch(void)
            lv_group_get_obj_by_index(Test.ui.Group, 37U));
     assert(kshim_lvgl_set_entries(&Test.ui, Names, 0U, 0U) != 0);
     assert(kshim_lvgl_set_entries(&Test.ui, Names,
-                                  KSHIM_MENU_MAX_ENTRIES, 49U) != 0);
+                                  KSHIM_MENU_MAX_ENTRIES, KSHIM_MENU_MAX_ENTRIES) != 0);
 
     PressKey(&Test.ui, 1U);
     assert(lv_group_get_focused(Test.ui.Group) ==
@@ -247,7 +253,13 @@ static void TestDynamicAndTouch(void)
 
     lv_obj_send_event(Focused, LV_EVENT_PRESSED, NULL);
     const lv_anim_t *Press = lv_anim_get(Focused, NULL);
-    assert(Press != NULL && Press->duration == KSHIM_UI_PRESS_DURATION_MS);
+    if (KSHIM_MENU_IS_NATIVE) {
+        /* The native theme owns pressed feedback; no kShim transform is installed. */
+        assert(Press == NULL);
+        assert(lv_obj_get_style_transform_scale_x(Focused, LV_PART_MAIN) == 256);
+    } else {
+        assert(Press != NULL && Press->duration == KSHIM_UI_PRESS_DURATION_MS);
+    }
     DestroyUi(&Test);
 }
 
@@ -274,6 +286,11 @@ static void TestBatchedTouchAndCancel(void)
      * between ENTER and LEAVE. The old sampled pointer loses this tap. */
     assert(kshim_touch_update(&TouchState, 0, KSHIM_TOUCH_CONTACT_ENTER, X, Y) == 0);
     assert(kshim_touch_update(&TouchState, 0, KSHIM_TOUCH_CONTACT_LEAVE, X, Y) == 0);
+    if(lv_group_get_focused(Test.ui.Group) != Second) {
+        lv_area_t l,p,b;lv_obj_get_coords(Test.ui.List,&l);
+        lv_obj_get_coords(lv_obj_get_parent(Test.ui.List),&p);lv_obj_get_coords(Test.ui.BootButton,&b);
+        fprintf(stderr,"TOUCH %s XY=%u,%u row=%ld,%ld..%ld,%ld list=%ld,%ld..%ld,%ld panel=%ld,%ld boot=%ld,%ld scroll=%ld\n",mMenuStyle.Name,X,Y,(long)Area.x1,(long)Area.y1,(long)Area.x2,(long)Area.y2,(long)l.x1,(long)l.y1,(long)l.x2,(long)l.y2,(long)p.x1,(long)p.y1,(long)b.x1,(long)b.y1,(long)lv_obj_get_scroll_y(Test.ui.List));
+    }
     assert(lv_group_get_focused(Test.ui.Group) == Second);
     assert(kshim_lvgl_take_index(&Test.ui) == -1);
 
@@ -293,196 +310,55 @@ static void TestBatchedTouchAndCancel(void)
     DestroyUi(&Test);
 }
 
-static const uint32_t ChinesePhraseCodepoints[] = {
-    0x9009U, 0x62E9U, 0x542FU, 0x52A8U, 0x7CFBU, 0x7EDFU, 0x97F3U,
-    0x91CFU, 0x952EU, 0x7535U, 0x6E90U, 0xFF0CU, 0x5173U, 0x673AU,
-    0x6062U, 0x590DU, 0x6A21U, 0x5F0FU, 0x6682U, 0x4E0DU, 0x53EFU,
-    0x7528U, 0x79D2U, 0x540EU, 0x81EAU, 0x539FU, 0x5382U, 0x5907U,
-    0x8BCAU, 0x65ADU, 0x00B7U,
-};
-
-static const uint32_t ChineseTitleCodepoints[] = {
-    0x9009U, 0x62E9U, 0x542FU, 0x52A8U, 0x7CFBU, 0x7EDFU,
-};
-
-static void ExpectGlyphSameFont(const lv_font_t *Font, uint32_t Codepoint)
+/* With scratch memory the menu inflates Noto Sans CJK and draws CJK labels
+ * with real glyphs; without it (every other test) it falls back to Latin. */
+static void TestCjkFont(void)
 {
-    lv_font_glyph_dsc_t Dsc;
-    memset(&Dsc, 0, sizeof(Dsc));
-    assert(lv_font_get_glyph_dsc(Font, &Dsc, Codepoint, 0U));
-    assert(!Dsc.is_placeholder);
-    assert(Dsc.resolved_font == Font);
-    assert(Dsc.box_w > 0U && Dsc.box_h > 0U);
-}
-
-static void ExpectGlyphFallback(const lv_font_t *Font, uint32_t Codepoint)
-{
-    lv_font_glyph_dsc_t Dsc;
-    memset(&Dsc, 0, sizeof(Dsc));
-    assert(lv_font_get_glyph_dsc(Font, &Dsc, Codepoint, 0U));
-    assert(!Dsc.is_placeholder);
-    assert(Dsc.resolved_font != Font);
-    assert(Dsc.box_w > 0U && Dsc.box_h > 0U);
-}
-
-static void ExpectGlyphAbsent(const lv_font_t *Font, uint32_t Codepoint)
-{
-    lv_font_glyph_dsc_t Dsc;
-    memset(&Dsc, 0, sizeof(Dsc));
-    int Present = lv_font_get_glyph_dsc(Font, &Dsc, Codepoint, 0U);
-    assert(!Present || Dsc.is_placeholder);
-}
-
-static void ExpectPhraseGlyphs(const lv_font_t *Font, const uint32_t *Codepoints,
-                               size_t Count)
-{
-    for (size_t Index = 0; Index < Count; Index++)
-        ExpectGlyphSameFont(Font, Codepoints[Index]);
-}
-
-static void TestChineseFontGlyphs(void)
-{
-    const lv_font_t *PhraseFonts[] = {
-        &kshim_font_cjk_14, &kshim_font_cjk_20, &kshim_font_cjk_28,
-    };
-    for (size_t Index = 0;
-         Index < sizeof(PhraseFonts) / sizeof(PhraseFonts[0]); Index++) {
-        const lv_font_t *Font = PhraseFonts[Index];
-        ExpectPhraseGlyphs(Font, ChinesePhraseCodepoints,
-                           sizeof(ChinesePhraseCodepoints) /
-                               sizeof(ChinesePhraseCodepoints[0]));
-        ExpectGlyphFallback(Font, 0x41U);
-        ExpectGlyphFallback(Font, 0x30U);
-        ExpectGlyphAbsent(Font, 0x9F98U);
-    }
-
-    ExpectPhraseGlyphs(&kshim_font_cjk_48, ChineseTitleCodepoints,
-                       sizeof(ChineseTitleCodepoints) /
-                           sizeof(ChineseTitleCodepoints[0]));
-    ExpectGlyphFallback(&kshim_font_cjk_48, 0x41U);
-    ExpectGlyphFallback(&kshim_font_cjk_48, 0x30U);
-    ExpectGlyphAbsent(&kshim_font_cjk_48, 0x9F98U);
-}
-
-typedef struct chinese_scan {
-    lv_obj_t   *Title;
-    lv_obj_t   *Boot;
-    lv_obj_t   *Help;
-    lv_obj_t   *Countdown;
-    unsigned    TitleCount;
-    unsigned    BootCount;
-    unsigned    HelpCount;
-    const char *CountdownNumber;
-} chinese_scan_t;
-
-static lv_obj_t *TopObject(lv_obj_t *Object)
-{
-    lv_obj_t *Parent = lv_obj_get_parent(Object);
-    while (Parent != NULL) {
-        Object = Parent;
-        Parent = lv_obj_get_parent(Object);
-    }
-    return Object;
-}
-
-static void ScanChineseLabel(lv_obj_t *Label, void *Context)
-{
-    chinese_scan_t *Scan = Context;
-    const char *Text = lv_label_get_text(Label);
-    if (Text == NULL)
-        return;
-    if (strcmp(Text, "选择启动系统") == 0) {
-        Scan->Title = Label;
-        Scan->TitleCount++;
-    } else if (strcmp(Text, "启动") == 0) {
-        Scan->Boot = Label;
-        Scan->BootCount++;
-    } else if (strcmp(Text, "音量键选择，电源键启动") == 0) {
-        Scan->Help = Label;
-        Scan->HelpCount++;
-    } else if (Scan->CountdownNumber != NULL &&
-               strstr(Text, Scan->CountdownNumber) != NULL) {
-        Scan->Countdown = Label;
-    }
-}
-
-static unsigned WalkLabels(lv_obj_t *Object, void (*Visit)(lv_obj_t *, void *),
-                           void *Context)
-{
-    unsigned Found = 0U;
-    uint32_t Count = lv_obj_get_child_count(Object);
-    for (uint32_t Index = 0; Index < Count; Index++) {
-        lv_obj_t *Child = lv_obj_get_child(Object, (int32_t)Index);
-        if (lv_obj_check_type(Child, &lv_label_class)) {
-            Visit(Child, Context);
-            Found++;
-        }
-        Found += WalkLabels(Child, Visit, Context);
-    }
-    return Found;
-}
-
-static void TestChineseMenu(void)
-{
+    const size_t Bytes = 4U << 20;
+    void *Scratch = aligned_alloc(64, Bytes);
+    const void *Font;
     test_ui_t Test;
-    InitStableUi(&Test, 800U, 1200U, KSHIM_FB_FORMAT_ARGB8888);
-    kshim_lvgl_set_status(&Test.ui, "音量键选择，电源键启动");
-    Advance(&Test.ui, 400U);
+    static const char *const Names[] = {"Android 启动", "恢复模式", "ひらがな"};
+    static const uint32_t Glyphs[] = {0x542f, 0x6062, 0x3072, 0x0041};
 
-    TestChineseFontGlyphs();
+    assert(Scratch != NULL);
+    assert(kshim_ui_font_size() > 800000U);
+    assert(kshim_ui_font_inflate(Scratch, 1024U, &Font) == -2 && Font == NULL);
+    assert(kshim_ui_font_inflate(Scratch, Bytes, &Font) == 0 && Font == Scratch);
+    assert(memcmp(Scratch, "OTTO", 4) == 0);   /* CFF OpenType */
 
-    kshim_lvgl_frame(&Test.ui, 16U);
-
-    chinese_scan_t Scan;
-    memset(&Scan, 0, sizeof(Scan));
-
-    lv_obj_t *Root = TopObject(Test.ui.List);
-    assert(Root != NULL);
-    assert(WalkLabels(Root, ScanChineseLabel, &Scan) > 0U);
-
-    assert(Scan.TitleCount == 1U);
-    assert(Scan.BootCount == 1U);
-    assert(Scan.HelpCount == 1U);
-    assert(Scan.Title != NULL && Scan.Boot != NULL && Scan.Help != NULL);
-    assert(lv_obj_get_style_text_font(Scan.Title, 0) == &kshim_font_cjk_48);
-    assert(lv_obj_get_style_text_font(Scan.Boot, 0) == &kshim_font_cjk_28);
-    assert(lv_obj_get_style_text_font(Scan.Help, 0) == &kshim_font_cjk_28);
-
-    const char *Names[] = {"Android", "Android 备用"};
-    assert(kshim_lvgl_set_entries(&Test.ui, Names, 2U, 0U) == 0);
-
-    kshim_lvgl_set_countdown(&Test.ui, 30000U);
-    kshim_lvgl_frame(&Test.ui, 16U);
-
-    char Expected[128];
-    int Length = snprintf(Expected, sizeof(Expected),
-                          "音量键选择，电源键启动 · %u 秒后自动启动",
-                          Test.ui.CountdownShown);
-    assert(Length > 0 && (size_t)Length < sizeof(Expected));
-
-    memset(&Scan, 0, sizeof(Scan));
-    Scan.CountdownNumber = Expected;
-
-    Root = TopObject(Test.ui.List);
-    assert(Root != NULL);
-    assert(WalkLabels(Root, ScanChineseLabel, &Scan) > 0U);
-
-    assert(Scan.Countdown != NULL);
-    const char *CountdownText = lv_label_get_text(Scan.Countdown);
-    assert(CountdownText != NULL);
-    assert(strcmp(CountdownText, Expected) == 0);
-    assert(lv_obj_get_style_text_font(Scan.Countdown, 0) == &kshim_font_cjk_28);
-
+    kshim_lvgl_set_scratch(Scratch, Bytes);
+    InitStableUi(&Test, 1920U, 1080U, KSHIM_FB_FORMAT_ARGB8888);
+    assert(kshim_lvgl_has_cjk_font(&Test.ui));
+    assert(kshim_lvgl_set_entries(&Test.ui, Names, 3U, 0U) == 0);
+    Advance(&Test.ui, KSHIM_UI_ENTRY_DURATION_MS + 64U);
+    lv_obj_t *Label = lv_obj_get_child(lv_obj_get_child(Test.ui.List, 0), 0);
+    assert(Label != NULL);
+    const lv_font_t *RowFont = lv_obj_get_style_text_font(Label, LV_PART_MAIN);
+    assert(RowFont != &lv_font_montserrat_20);
+    for (size_t Index = 0; Index < sizeof(Glyphs) / sizeof(Glyphs[0]); Index++) {
+        lv_font_glyph_dsc_t Glyph;
+        assert(lv_font_get_glyph_dsc(RowFont, &Glyph, Glyphs[Index], 0));
+        assert(Glyph.box_w > 4U && Glyph.box_h > 4U);
+    }
     DestroyUi(&Test);
+
+    /* Too little scratch for the font: Latin fallback, still a menu. */
+    kshim_lvgl_set_scratch(Scratch, 64U * 1024U);
+    InitStableUi(&Test, 320U, 240U, KSHIM_FB_FORMAT_ARGB8888);
+    assert(!kshim_lvgl_has_cjk_font(&Test.ui));
+    DestroyUi(&Test);
+    kshim_lvgl_set_scratch(NULL, 0U);
+    free(Scratch);
 }
 
 int main(void)
 {
-    TestChineseMenu();
     TestFormats();
     TestDefaultKeys();
     TestDynamicAndTouch();
     TestBatchedTouchAndCancel();
-    puts("LVGL color formats, 49-entry menu, key mapping, touch confirmation and motion tests passed");
+    TestCjkFont();
+    puts("LVGL color formats, 51-entry menu, key mapping, touch confirmation and motion tests passed");
     return 0;
 }

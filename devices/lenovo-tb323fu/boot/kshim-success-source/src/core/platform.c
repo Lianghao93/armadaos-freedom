@@ -12,6 +12,7 @@
 #include <kshim_console.h>
 #include <timer.h>
 #include <config.h>
+#include <menu_text.h>
 #include <framebuffer.h>
 #include <lvgl_port.h>
 #include <qcom_key_platform.h>
@@ -19,10 +20,86 @@
 #include <qcom_keys_fdt.h>
 #include <uefi_boot.h>
 #include <dt.h>
+#include <boot_metrics.h>
+#if CONFIG_KSHIM_MENU_ADVANCED_ACTIONS
+#include <qcom_reboot.h>
+#endif
+
+/* With the runtime language switch on, every user-visible string resolves
+ * through the locale table so the live selection flips platform text too; the
+ * compile-time literals below stay authoritative when the switch is off. */
+#if defined(CONFIG_KSHIM_MENU_LANGUAGE_SWITCH) && CONFIG_KSHIM_MENU_LANGUAGE_SWITCH
+#define KSHIM_STR_KEYS_HINT      kshim_menu_text(KSHIM_TEXT_KEYS_HINT)
+#define KSHIM_STR_KEYS_UNAVAIL   kshim_menu_text(KSHIM_TEXT_KEYS_UNAVAILABLE)
+#define KSHIM_STR_AUTO_CANCELLED kshim_menu_text(KSHIM_TEXT_AUTO_CANCELLED)
+#define KSHIM_STR_POWER_FAILED   kshim_menu_text(KSHIM_TEXT_POWER_FAILED)
+#define KSHIM_STR_RESTART        kshim_menu_text(KSHIM_TEXT_RESTART)
+#define KSHIM_STR_POWER_OFF      kshim_menu_text(KSHIM_TEXT_POWER_OFF)
+#define KSHIM_STR_ADVANCED       kshim_menu_text(KSHIM_TEXT_ADVANCED)
+#define KSHIM_STR_RECOVERY       kshim_menu_text(KSHIM_TEXT_RECOVERY)
+#define KSHIM_STR_FASTBOOT       kshim_menu_text(KSHIM_TEXT_FASTBOOT)
+#define KSHIM_STR_EDL            kshim_menu_text(KSHIM_TEXT_EDL)
+#define KSHIM_STR_BACK           kshim_menu_text(KSHIM_TEXT_BACK)
+#define KSHIM_STR_MODE_FAILED    kshim_menu_text(KSHIM_TEXT_MODE_FAILED)
+#define KSHIM_STR_RESTORE_FAILED kshim_menu_text(KSHIM_TEXT_RESTORE_FAILED)
+#define KSHIM_STR_MENU_TITLE     kshim_menu_text(KSHIM_TEXT_MENU_TITLE)
+#define KSHIM_STR_MENU_PROMPT    kshim_menu_text(KSHIM_TEXT_MENU_PROMPT)
+#define KSHIM_STR_MENU_DEFAULT   kshim_menu_text(KSHIM_TEXT_MENU_DEFAULT)
+#define KSHIM_STR_HANDOFF_UNSAFE kshim_menu_text(KSHIM_TEXT_HANDOFF_UNSAFE)
+#define KSHIM_STR_UNABLE_START   kshim_menu_text(KSHIM_TEXT_UNABLE_START)
+#elif CONFIG_KSHIM_MENU_CHINESE
+#define KSHIM_STR_KEYS_HINT      "音量键选择，电源键启动"
+#define KSHIM_STR_KEYS_UNAVAIL   "音量键暂不可用"
+#define KSHIM_STR_AUTO_CANCELLED "已取消自动启动，请手动选择"
+#define KSHIM_STR_POWER_FAILED   "电源操作失败"
+#define KSHIM_STR_RESTART        "重启"
+#define KSHIM_STR_POWER_OFF      "关机"
+#define KSHIM_STR_ADVANCED       "高级启动模式"
+#define KSHIM_STR_RECOVERY       "Recovery 恢复模式"
+#define KSHIM_STR_FASTBOOT       "Fastboot 模式"
+#define KSHIM_STR_EDL            "9008 下载模式"
+#define KSHIM_STR_BACK           "返回主菜单"
+#define KSHIM_STR_MODE_FAILED    "切换启动模式失败"
+#define KSHIM_STR_RESTORE_FAILED "切换启动模式失败，恢复原设置失败"
+#define KSHIM_STR_MENU_TITLE     "KShimC 启动器"
+#define KSHIM_STR_MENU_PROMPT    "输入序号并按回车确认："
+#define KSHIM_STR_MENU_DEFAULT   " [默认]"
+#define KSHIM_STR_HANDOFF_UNSAFE "Unsafe UI shutdown; refusing payload handoff"
+#define KSHIM_STR_UNABLE_START   "Unable to start selected image"
+#else
+#define KSHIM_STR_KEYS_HINT      "Use vol keys, power to boot"
+#define KSHIM_STR_KEYS_UNAVAIL   "Volume keys unavailable"
+#define KSHIM_STR_AUTO_CANCELLED "Auto boot cancelled; choose an entry"
+#define KSHIM_STR_POWER_FAILED   "Power action failed"
+#define KSHIM_STR_RESTART        "Restart"
+#define KSHIM_STR_POWER_OFF      "Power off"
+#define KSHIM_STR_ADVANCED       "Advanced boot modes"
+#define KSHIM_STR_RECOVERY       "Enter Recovery"
+#define KSHIM_STR_FASTBOOT       "Enter Fastboot"
+#define KSHIM_STR_EDL            "Enter 9008"
+#define KSHIM_STR_BACK           "Back to main menu"
+#define KSHIM_STR_MODE_FAILED    "Boot mode switch failed"
+#define KSHIM_STR_RESTORE_FAILED "Boot mode switch failed; restoring the original settings failed"
+#define KSHIM_STR_MENU_TITLE     "KShim boot menu"
+#define KSHIM_STR_MENU_PROMPT    "Select kernel and press Enter: "
+#define KSHIM_STR_MENU_DEFAULT   " [default]"
+#define KSHIM_STR_HANDOFF_UNSAFE "Unsafe UI shutdown; refusing payload handoff"
+#define KSHIM_STR_UNABLE_START   "Unable to start selected image"
+#endif
+
+/* Enables the runtime language page and role driven payload labels. Guarded so
+ * the plain (switch off) builds never reference the locale module. */
+#if defined(CONFIG_KSHIM_MENU_LANGUAGE_SWITCH) && CONFIG_KSHIM_MENU_LANGUAGE_SWITCH
+#define KSHIM_MENU_LANGUAGE_ENABLED 1
+#else
+#define KSHIM_MENU_LANGUAGE_ENABLED 0
+#endif
 
 __attribute__((weak)) int kshim_menu_activate(kshim_menu_action_t action)
 { (void)action; return -1; }
+#if CONFIG_KSHIM_SMP
 static int SmpInitialized;
+#endif
 static QcomKeys Keys;
 static int build_keys(const void *fdt)
 {
@@ -30,11 +107,19 @@ static int build_keys(const void *fdt)
     (void)fdt; return -1;
 #elif CONFIG_QCOM_KEYS
     QcomKeyDescriptor descriptors[QCOM_KEYS_MAX];
+    QcomKeyFdtAdapter adapter;
     size_t count = 0;
-    if (!fdt || QcomKeysBuildFromDeviceTree(fdt, descriptors, QCOM_KEYS_MAX, &count) || !count)
+    if (!fdt || QcomKeyFdtAdapterInit(&adapter, fdt))
         return -1;
-    int status = QcomKeysInitEx(&Keys, descriptors, count, kshim_qcom_key_read32,
-                                kshim_qcom_key_read32_status, NULL);
+    /* The resources phase has already closed its DT index. Reopen it only
+     * for parsing this validated blob, then release it before key setup. */
+    dt_parent_index_begin(fdt);
+    int status = QcomKeysBuildFromFdt(&adapter.Ops, descriptors, QCOM_KEYS_MAX, &count);
+    dt_parent_index_end();
+    if (status || !count)
+        return -1;
+    status = QcomKeysInitEx(&Keys, descriptors, count, kshim_qcom_key_read32,
+                            kshim_qcom_key_read32_status, NULL);
     QcomKeysSetDebounce(&Keys, CONFIG_QCOM_KEY_DEBOUNCE_SAMPLES);
     return status;
 #else
@@ -343,7 +428,7 @@ static void start_touch(struct kshim_resources *r)
     }
     TouchReady = status == 0;
     printf("Touch: FTM%u status %d\n", r->touch.generation, status);
-    if (!TouchReady) { (void)touch_quiesce(); kshim_lvgl_set_status(&Lvgl, "音量键选择，电源键启动"); }
+    if (!TouchReady) { (void)touch_quiesce(); kshim_lvgl_set_status(&Lvgl, KSHIM_STR_KEYS_HINT); }
 }
 #endif
 static int start_menu(const void *fdt)
@@ -373,6 +458,9 @@ static int start_menu(const void *fdt)
     if (!kshim_mmu_is_enabled() &&
         (kshim_mmu_root_table() || kshim_mmu_configure_default(fdt) == 0))
         (void)kshim_mmu_enable_current_cpu();
+    kshim_boot_metrics_record_once(KSHIM_BOOT_STAGE_MMU);
+    kshim_lvgl_set_scratch((void *)(uintptr_t)r->ui_scratch.base,
+                           (size_t)r->ui_scratch.size);
 #if CONFIG_KSHIM_DIAGNOSTIC_UI_ONLY && CONFIG_KSHIM_DIAGNOSTIC_KEYS_DESCRIPTORS_ONLY
     ui_prepare_key_descriptors(fdt);
 #endif
@@ -391,10 +479,13 @@ static int start_menu(const void *fdt)
     UiInit = lvgl_status;
 #endif
     if (lvgl_status) return -2;
+    printf("UI: %s font, scratch %#llx+%#llx\n",
+           kshim_lvgl_has_cjk_font(&Lvgl) ? "Noto Sans CJK" : "fallback Latin",
+           (unsigned long long)r->ui_scratch.base, (unsigned long long)r->ui_scratch.size);
 #if CONFIG_KSHIM_DIAGNOSTIC_UI_ONLY
-    kshim_lvgl_set_status(&Lvgl, "音量键选择，电源键启动");
+    kshim_lvgl_set_status(&Lvgl, KSHIM_STR_KEYS_HINT);
 #else
-    if (keys) kshim_lvgl_set_status(&Lvgl, "音量键暂不可用");
+    if (keys) kshim_lvgl_set_status(&Lvgl, KSHIM_STR_KEYS_UNAVAIL);
 #endif
 #if CONFIG_KSHIM_TOUCH
     start_touch(r);
@@ -411,7 +502,7 @@ static void menu_frame(void)
         if (status < 0) {
             TouchReady = 0; kshim_touch_cancel(&Touch);
             printf("Touch: input status %d\n", status);
-            kshim_lvgl_set_status(&Lvgl, "音量键选择，电源键启动");
+            kshim_lvgl_set_status(&Lvgl, KSHIM_STR_KEYS_HINT);
         }
     }
 #endif
@@ -435,71 +526,387 @@ int kshim_platform_prepare_handoff(void)
     if (kshim_lvgl_os_prepare_shutdown()) return -2;
 #endif
 #endif
+#if CONFIG_KSHIM_SMP
     if (SmpInitialized) {
         if (kshim_smp_prepare_handoff(KSHIM_SMP_DEFAULT_TIMEOUT_US)) return -2;
         SmpInitialized = 0;
         return 0;
     }
+#endif
     return kshim_mmu_prepare_handoff();
 }
-static int serial_select(const void *fdt, const char *const *names, size_t count,
-                          size_t initial, uint32_t timeout, size_t *selected)
+/* Entries carry their action separately from the original manifest index. */
+enum menu_action {
+    MENU_PAYLOAD, MENU_ADVANCED, MENU_BACK, MENU_RESET, MENU_OFF,
+    MENU_RECOVERY, MENU_FASTBOOT, MENU_EDL,
+    MENU_LANGUAGE, MENU_LANG_ZH, MENU_LANG_EN,
+};
+struct menu_page {
+    const char *names[KSHIM_MENU_MAX_ENTRIES];
+    const char *descriptions[KSHIM_MENU_MAX_ENTRIES];
+    const char *action_labels[KSHIM_MENU_MAX_ENTRIES];
+    enum menu_action actions[KSHIM_MENU_MAX_ENTRIES];
+    kshim_menu_role_t roles[KSHIM_MENU_MAX_ENTRIES];
+    uint8_t payloads[KSHIM_MENU_MAX_ENTRIES];
+    size_t count, initial;
+};
+struct menu_selection {
+    struct menu_page pages[3];
+    const void *fdt;
+    /* Caller-owned inputs are cached so the pages can be rebuilt in place after
+     * a language change; no translated text is retained across rebuilds. */
+    const char *const *caller_names;
+    const char *const *caller_descriptions;
+    const kshim_menu_role_t *caller_roles;
+    size_t caller_count;
+    size_t page, advanced_row, language_row, original_initial;
+    uint64_t advanced_mask;
+    uint32_t timeout;
+    int advanced, language, psci_ready;
+};
+static int menu_append(struct menu_page *page, const char *name, const char *description,
+                       enum menu_action action, size_t payload, kshim_menu_role_t role)
 {
-    int keys_ready = build_keys(fdt) == 0;
-    size_t current = initial, numeric = 0;
-    printf("\nKShim boot menu\n");
-    for (size_t i = 0; i < count; ++i) printf("  %u. %s%s\n", (unsigned)i + 1, names[i], i == initial ? " [default]" : "");
-    printf("Select kernel and press Enter: ");
+    if (page->count >= KSHIM_MENU_MAX_ENTRIES || !name) return -1;
+    size_t row = page->count++;
+    page->names[row] = name;
+    page->descriptions[row] = description;
+    page->actions[row] = action;
+    page->roles[row] = role;
+    switch (action) {
+    case MENU_PAYLOAD:
+        page->action_labels[row] = KSHIM_MENU_ACTION_BOOT;
+        break;
+    case MENU_ADVANCED:
+    case MENU_RECOVERY:
+    case MENU_FASTBOOT:
+    case MENU_EDL:
+    case MENU_LANGUAGE:
+        page->action_labels[row] = KSHIM_MENU_ACTION_ENTER;
+        break;
+    case MENU_LANG_ZH:
+    case MENU_LANG_EN:
+        page->action_labels[row] = kshim_menu_text(KSHIM_TEXT_LANGUAGE_SELECT);
+        break;
+    case MENU_RESET:
+        page->action_labels[row] = KSHIM_MENU_ACTION_RESTART;
+        break;
+    case MENU_OFF:
+        page->action_labels[row] = KSHIM_MENU_ACTION_OFF;
+        break;
+    case MENU_BACK:
+        page->action_labels[row] = KSHIM_MENU_ACTION_BACK;
+        break;
+    }
+    page->payloads[row] = (uint8_t)payload;
+    return 0;
+}
+/* Rebuild every page from the cached caller inputs for the active locale. */
+static int menu_fill(struct menu_selection *menu)
+{
+    for (size_t p = 0; p < 3; ++p) {
+        menu->pages[p].count = 0;
+        menu->pages[p].initial = 0;
+    }
+    for (size_t i = 0; i < menu->caller_count; ++i) {
+        size_t page_index = menu->advanced && (menu->advanced_mask & (UINT64_C(1) << i)) ? 1U : 0U;
+        struct menu_page *page = &menu->pages[page_index];
+        if (i == menu->original_initial) {
+            menu->page = page_index;
+            page->initial = page->count;
+        }
+        kshim_menu_role_t role = menu->caller_roles ? menu->caller_roles[i] : KSHIM_MENU_ROLE_UNKNOWN;
+        const char *name = menu->caller_names[i];
+        const char *description = menu->caller_descriptions ? menu->caller_descriptions[i] : NULL;
+#if KSHIM_MENU_LANGUAGE_ENABLED
+        name = kshim_menu_role_name(role, name);
+        description = kshim_menu_role_description(role, description);
+#endif
+        if (menu_append(page, name, description, MENU_PAYLOAD, i, role)) return -1;
+    }
+    if (menu->advanced) {
+        menu->advanced_row = menu->pages[0].count;
+        if (menu_append(&menu->pages[0], KSHIM_STR_ADVANCED, KSHIM_MENU_DESC_ADVANCED,
+                        MENU_ADVANCED, 0, KSHIM_MENU_ROLE_ADVANCED) ||
+            menu_append(&menu->pages[1], KSHIM_STR_RECOVERY, KSHIM_MENU_DESC_RECOVERY,
+                        MENU_RECOVERY, 0, KSHIM_MENU_ROLE_RECOVERY) ||
+            menu_append(&menu->pages[1], KSHIM_STR_FASTBOOT, KSHIM_MENU_DESC_FASTBOOT,
+                        MENU_FASTBOOT, 0, KSHIM_MENU_ROLE_FASTBOOT) ||
+            menu_append(&menu->pages[1], KSHIM_STR_EDL, KSHIM_MENU_DESC_EDL,
+                        MENU_EDL, 0, KSHIM_MENU_ROLE_EDL) ||
+            menu_append(&menu->pages[1], KSHIM_STR_BACK, KSHIM_MENU_DESC_BACK,
+                        MENU_BACK, 0, KSHIM_MENU_ROLE_BACK)) return -1;
+    }
+#if KSHIM_MENU_LANGUAGE_ENABLED
+    if (menu->language) {
+        menu->language_row = menu->pages[0].count;
+        if (menu_append(&menu->pages[0], KSHIM_MENU_TEXT_LANGUAGE_LABEL,
+                        kshim_menu_text(KSHIM_TEXT_LANGUAGE_DESC), MENU_LANGUAGE, 0,
+                        KSHIM_MENU_ROLE_LANGUAGE) ||
+            menu_append(&menu->pages[2], KSHIM_MENU_LABEL_LANG_ZH,
+                        kshim_menu_text(KSHIM_TEXT_DESC_LANG_ZH), MENU_LANG_ZH, 0,
+                        KSHIM_MENU_ROLE_LANG_ZH) ||
+            menu_append(&menu->pages[2], KSHIM_MENU_LABEL_LANG_EN,
+                        kshim_menu_text(KSHIM_TEXT_DESC_LANG_EN), MENU_LANG_EN, 0,
+                        KSHIM_MENU_ROLE_LANG_EN) ||
+            menu_append(&menu->pages[2], KSHIM_STR_BACK, KSHIM_MENU_DESC_BACK,
+                        MENU_BACK, 0, KSHIM_MENU_ROLE_BACK)) return -1;
+    }
+#endif
+#if CONFIG_KSHIM_MENU_POWER_ACTIONS
+    if (menu_append(&menu->pages[0], KSHIM_STR_RESTART, KSHIM_MENU_DESC_RESTART,
+                    MENU_RESET, 0, KSHIM_MENU_ROLE_RESTART) ||
+        menu_append(&menu->pages[0], KSHIM_STR_POWER_OFF, KSHIM_MENU_DESC_OFF,
+                    MENU_OFF, 0, KSHIM_MENU_ROLE_OFF)) return -1;
+#endif
+    return 0;
+}
+static int menu_build(struct menu_selection *menu, const char *const *names,
+                      const char *const *descriptions, const kshim_menu_role_t *roles,
+                      size_t count, size_t initial, uint64_t mask, int advanced, int language)
+{
+    if (!names || !count || count > 49U || initial >= count || (mask >> count)) return -1;
+    menu->caller_names = names;
+    menu->caller_descriptions = descriptions;
+    menu->caller_roles = roles;
+    menu->caller_count = count;
+    menu->original_initial = initial;
+    menu->advanced = advanced;
+    menu->language = language;
+    menu->advanced_mask = mask;
+    menu->advanced_row = 0;
+    menu->language_row = 0;
+    return menu_fill(menu);
+}
+/* 1 = payload selected; 2 = changed page; 0 = returned firmware action failed. */
+static int menu_activate(struct menu_selection *menu, size_t index,
+                         size_t *selected, const char **failure)
+{
+    struct menu_page *page = &menu->pages[menu->page];
+    enum menu_action action = page->actions[index];
+    *failure = NULL;
+    if (action == MENU_PAYLOAD) {
+        *selected = page->payloads[index];
+        return 1;
+    }
+    /* This flag belongs to the whole menu session, not to an individual page. */
+    menu->timeout = 0;
+    if (action == MENU_ADVANCED) {
+        menu->page = 1U;
+        menu->pages[1].initial = 0U;
+        return 2;
+    }
+    if (action == MENU_BACK) {
+        size_t from = menu->page;
+        menu->page = 0U;
+        menu->pages[0].initial = from == 2U ? menu->language_row : menu->advanced_row;
+        return 2;
+    }
+#if KSHIM_MENU_LANGUAGE_ENABLED
+    if (action == MENU_LANGUAGE) {
+        menu->page = 2U;
+        menu->pages[2].initial = 0U;
+        return 2;
+    }
+    if (action == MENU_LANG_ZH || action == MENU_LANG_EN) {
+        (void)kshim_menu_set_language(action == MENU_LANG_ZH ?
+            KSHIM_MENU_LANG_ZH_CN : KSHIM_MENU_LANG_EN);
+        if (menu_fill(menu)) return 2;
+        /* Rebuilt in the new locale; focus stays on the home language row. */
+        menu->page = 0U;
+        menu->pages[0].initial = menu->language_row;
+        return 2;
+    }
+#endif
+#if CONFIG_KSHIM_MENU_ADVANCED_ACTIONS
+    if (action == MENU_RECOVERY || action == MENU_FASTBOOT || action == MENU_EDL) {
+        enum kshim_qcom_reboot_target target = action == MENU_RECOVERY ?
+            KSHIM_QCOM_REBOOT_RECOVERY : action == MENU_FASTBOOT ?
+            KSHIM_QCOM_REBOOT_BOOTLOADER : KSHIM_QCOM_REBOOT_EDL;
+        int result = kshim_qcom_reboot_request(menu->fdt, target);
+        *failure = result == KSHIM_QCOM_REBOOT_ROLLBACK_FAILED ?
+            KSHIM_STR_RESTORE_FAILED : KSHIM_STR_MODE_FAILED;
+        printf("%s: %d\n", *failure, result);
+        return 0;
+    }
+#endif
+    *failure = KSHIM_STR_POWER_FAILED;
+#if CONFIG_KSHIM_MENU_POWER_ACTIONS
+    if (menu->psci_ready) {
+        int64_t result = action == MENU_RESET ? kshim_psci_request_system_reset() :
+                                                kshim_psci_request_system_off();
+        printf("%s: %lld\n", *failure, (long long)result);
+    } else
+#endif
+        printf("%s\n", *failure);
+    return 0;
+}
+static void serial_show_page(const struct menu_page *page)
+{
+    printf("\n%s\n", KSHIM_STR_MENU_TITLE);
+    for (size_t i = 0; i < page->count; ++i)
+        printf("  %u. %s%s\n", (unsigned)i + 1U, page->names[i],
+               i == page->initial ? KSHIM_STR_MENU_DEFAULT : "");
+    printf("%s", KSHIM_STR_MENU_PROMPT);
+}
+static void serial_cancel_timeout(struct menu_selection *menu)
+{
+    if (menu->timeout) printf("\n%s\n", KSHIM_STR_AUTO_CANCELLED);
+    menu->timeout = 0;
+}
+static int serial_select(struct menu_selection *menu, size_t *selected)
+{
+    int keys_ready = build_keys(menu->fdt) == 0;
+    struct menu_page *page = &menu->pages[menu->page];
+    size_t current = page->initial, numeric = 0;
+    serial_show_page(page);
     uint64_t start = get_current_time();
     for (;;) {
+        int confirm = 0;
+        size_t confirmed_index = current;
         char c;
         if (kshim_console_try_read(&c)) {
             if (c >= '0' && c <= '9') {
-                size_t next = numeric * 10 + c - '0';
-                if (next <= count) { numeric = next; kshim_console_write(&c, 1); }
+                size_t digit = (size_t)(c - '0');
+                if (numeric > 0 || digit > 0) {
+                    size_t next = numeric * 10U + digit;
+                    if (next <= page->count) {
+                        numeric = next;
+                        kshim_console_write(&c, 1);
+                        serial_cancel_timeout(menu);
+                    }
+                }
             } else if (c == '\r' || c == '\n') {
-                if (numeric && numeric <= count) { current = numeric - 1; break; }
+                if (numeric >= 1U && numeric <= page->count) {
+                    confirmed_index = numeric - 1U;
+                    confirm = 1;
+                }
                 numeric = 0;
-            } else if (c == 27) { current = initial; break; }
-        }
-        if (keys_ready) {
-            QcomKeyEvent event;
-            if (QcomKeysPoll(&Keys, &event) == QCOM_KEYS_OK && event.Pressed) {
-                if (event.Action == QCOM_KEY_ACTION_UP) current = current ? current - 1 : count - 1;
-                if (event.Action == QCOM_KEY_ACTION_DOWN) current = (current + 1) % count;
-                if (event.Action == QCOM_KEY_ACTION_SELECT) break;
-                printf("\n> %s\n", names[current]);
+            } else if (c == 27) {
+                if (menu->page != 0U) {
+                    /* Every subpage ends with the explicit Back action. */
+                    confirmed_index = page->count - 1U;
+                    confirm = 1;
+                    serial_cancel_timeout(menu);
+                } else {
+                    *selected = menu->original_initial;
+                    return 0;
+                }
             }
         }
-        if (timeout && get_current_time() - start >= timeout) break;
+        if (!confirm && keys_ready) {
+            QcomKeyEvent event;
+            if (QcomKeysPoll(&Keys, &event) == QCOM_KEYS_EVENT &&
+                event.Type == QCOM_KEY_EVENT_PRESS && event.Pressed) {
+                int consumed = 0;
+                if (event.Action == QCOM_KEY_ACTION_UP) {
+                    current = current ? current - 1U : page->count - 1U;
+                    consumed = 1;
+                }
+                if (event.Action == QCOM_KEY_ACTION_DOWN) {
+                    current = (current + 1U) % page->count;
+                    consumed = 1;
+                }
+                if (event.Action == QCOM_KEY_ACTION_SELECT) {
+                    consumed = 1;
+                    confirmed_index = current;
+                    confirm = 1;
+                }
+                if (consumed) {
+                    serial_cancel_timeout(menu);
+                    printf("\n> %s\n", page->names[current]);
+                }
+            }
+        }
+        if (confirm) {
+            const char *failure;
+            int result = menu_activate(menu, confirmed_index, selected, &failure);
+            if (result == 1) return 0;
+            if (result == 2) {
+                page = &menu->pages[menu->page];
+                current = page->initial;
+                serial_show_page(page);
+            } else {
+                printf("%s", KSHIM_STR_MENU_PROMPT);
+            }
+            numeric = 0;
+            continue;
+        }
+        if (menu->timeout && get_current_time() - start >= (uint64_t)menu->timeout) {
+            *selected = menu->original_initial;
+            return 0;
+        }
         (void)delay(5000);
     }
-    printf("\n"); *selected = current;
-    return 0;
 }
-int kshim_platform_select(uint64_t fdt, const char *const *names, size_t count,
-                           size_t initial, uint32_t timeout_ms, size_t *selected)
+static int platform_select(uint64_t fdt, const char *const *names,
+                           const char *const *descriptions,
+                           const kshim_menu_role_t *roles, size_t count,
+                           size_t initial, uint32_t timeout_ms, uint64_t advanced_mask,
+                           int advanced, int language, size_t *selected)
 {
-    if (!names || !selected || !count || initial >= count) return -1;
+    if (!selected) return -1;
+    struct menu_selection menu = {.fdt = (const void *)(uintptr_t)fdt, .timeout = timeout_ms};
+    if (menu_build(&menu, names, descriptions, roles, count, initial,
+                   advanced_mask, advanced, language)) return -1;
+#if CONFIG_KSHIM_MENU_POWER_ACTIONS
+    int pi = kshim_psci_init(menu.fdt);
+    menu.psci_ready = pi == 0;
+    if (pi) printf("PSCI init failed: %d\n", pi);
+#endif
 #if CONFIG_KSHIM_FRAMEBUFFER && CONFIG_KSHIM_LVGL
-    int status = start_menu((const void *)(uintptr_t)fdt);
-    if (!status && kshim_lvgl_set_entries(&Lvgl, names, count, initial) == 0) {
-        kshim_lvgl_set_countdown(&Lvgl, timeout_ms);
+    struct menu_page *page = &menu.pages[menu.page];
+    int status = start_menu(menu.fdt);
+    if (!status && kshim_lvgl_set_entries_described(&Lvgl, page->names, page->descriptions,
+                                                   page->action_labels, page->count,
+                                                   page->initial) == 0) {
+        kshim_lvgl_set_entry_roles(&Lvgl, page->roles, page->count);
+        kshim_boot_metrics_record_once(KSHIM_BOOT_STAGE_ENTRIES);
+        kshim_lvgl_set_countdown(&Lvgl, menu.timeout);
         uint64_t start = get_current_time();
         for (;;) {
             menu_frame();
+            if (menu.timeout && kshim_lvgl_has_interacted(&Lvgl)) {
+                menu.timeout = 0;
+                kshim_lvgl_set_countdown(&Lvgl, 0);
+                kshim_lvgl_set_status(&Lvgl, KSHIM_STR_AUTO_CANCELLED);
+            }
             int index = kshim_lvgl_take_index(&Lvgl);
-            if (index >= 0 && (size_t)index < count) { *selected = index; break; }
-            if (timeout_ms && get_current_time() - start >= timeout_ms) { *selected = initial; break; }
+            if (index >= 0 && (size_t)index < page->count) {
+                const char *failure;
+                int result = menu_activate(&menu, (size_t)index, selected, &failure);
+                if (result == 1) break;
+                kshim_lvgl_set_countdown(&Lvgl, 0);
+                if (result == 2) {
+                    page = &menu.pages[menu.page];
+                    if (kshim_lvgl_set_entries_described(&Lvgl, page->names, page->descriptions,
+                                                        page->action_labels, page->count,
+                                                        page->initial)) {
+                        /* Keep the selected page and cancelled timeout on serial fallback. */
+                        status = -1;
+                        break;
+                    }
+                    kshim_lvgl_set_entry_roles(&Lvgl, page->roles, page->count);
+                } else {
+                    kshim_lvgl_set_status(&Lvgl, failure);
+                }
+                continue;
+            }
+            if (menu.timeout && get_current_time() - start >= (uint64_t)menu.timeout) {
+                *selected = menu.original_initial;
+                break;
+            }
             (void)delay(5000);
         }
+        if (!status) {
 #if CONFIG_KSHIM_DIAGNOSTIC_UI_ONLY
-        int close = kshim_platform_prepare_handoff();
-        ui_probe_report((void *)(uintptr_t)fdt, close, *selected);
-        return close ? -2 : 0;
+            int close = kshim_platform_prepare_handoff();
+            ui_probe_report((void *)(uintptr_t)fdt, close, *selected);
+            return close ? -2 : 0;
 #else
-        return kshim_platform_prepare_handoff() ? -2 : 0;
+            return kshim_platform_prepare_handoff() ? -2 : 0;
 #endif
+        }
     }
 #if CONFIG_KSHIM_DIAGNOSTIC_UI_ONLY
     {
@@ -511,7 +918,51 @@ int kshim_platform_select(uint64_t fdt, const char *const *names, size_t count,
     if (kshim_platform_prepare_handoff()) return -2;
 #endif
 #endif
-    return serial_select((const void *)(uintptr_t)fdt, names, count, initial, timeout_ms, selected);
+    return serial_select(&menu, selected);
+}
+int kshim_platform_select(uint64_t fdt, const char *const *names, size_t count,
+                           size_t initial, uint32_t timeout_ms, size_t *selected)
+{
+    /* Compatibility entry point: flat rows, no role labels, no language page. */
+    return platform_select(fdt, names, NULL, NULL, count, initial, timeout_ms, 0, 0, 0, selected);
+}
+int kshim_platform_select_advanced(uint64_t fdt, const char *const *names,
+                                  size_t count, size_t initial,
+                                  uint32_t timeout_ms, uint64_t advanced_mask,
+                                  size_t *selected)
+{
+    return kshim_platform_select_described(fdt, names, NULL, count, initial,
+                                           timeout_ms, advanced_mask, selected);
+}
+int kshim_platform_select_described(uint64_t fdt, const char *const *names,
+                                   const char *const *descriptions, size_t count,
+                                   size_t initial, uint32_t timeout_ms,
+                                   uint64_t advanced_mask, size_t *selected)
+{
+    /* No caller roles: every payload keeps its own name/description text. */
+#if CONFIG_KSHIM_MENU_ADVANCED_ACTIONS
+    return platform_select(fdt, names, descriptions, NULL, count, initial, timeout_ms,
+                            advanced_mask, 1, KSHIM_MENU_LANGUAGE_ENABLED, selected);
+#else
+    (void)advanced_mask;
+    return platform_select(fdt, names, descriptions, NULL, count, initial, timeout_ms,
+                            0, 0, KSHIM_MENU_LANGUAGE_ENABLED, selected);
+#endif
+}
+int kshim_platform_select_localized(uint64_t fdt, const char *const *names,
+                                    const char *const *descriptions,
+                                    const kshim_menu_role_t *roles, size_t count,
+                                    size_t initial, uint32_t timeout_ms,
+                                    uint64_t advanced_mask, size_t *selected)
+{
+#if CONFIG_KSHIM_MENU_ADVANCED_ACTIONS
+    return platform_select(fdt, names, descriptions, roles, count, initial, timeout_ms,
+                            advanced_mask, 1, KSHIM_MENU_LANGUAGE_ENABLED, selected);
+#else
+    (void)advanced_mask;
+    return platform_select(fdt, names, descriptions, roles, count, initial, timeout_ms,
+                            0, 0, KSHIM_MENU_LANGUAGE_ENABLED, selected);
+#endif
 }
 int kshim_platform_main(uint64_t fdt, uint64_t arg1, uint64_t arg2, uint64_t arg3)
 {
@@ -525,10 +976,10 @@ int kshim_platform_main(uint64_t fdt, uint64_t arg1, uint64_t arg2, uint64_t arg
     for (;;) {
         size_t selected;
         if (kshim_platform_select(fdt, names, 2, 0, 0, &selected) == -2) {
-            printf("Unsafe UI shutdown; refusing payload handoff\n");
+            printf("%s\n", KSHIM_STR_HANDOFF_UNSAFE);
             for (;;) (void)delay(100000);
         }
         if (kshim_menu_activate(selected ? KSHIM_MENU_RECOVERY : KSHIM_MENU_BOOT))
-            printf("Unable to start selected image\n");
+            printf("%s\n", KSHIM_STR_UNABLE_START);
     }
 }
