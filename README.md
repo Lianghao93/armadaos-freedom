@@ -7,6 +7,8 @@
 
 <h1 align="center">ArmadaOS Freedom</h1>
 
+<p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
+
 <p align="center"><strong>SteamOS-like Linux for ARM tablets</strong></p>
 
 <p align="center">
@@ -38,10 +40,6 @@ ArmadaOS Freedom is a community-maintained tablet branch based on
 and desktop foundation while adapting boot, display, power, peripherals, and
 Armada Control to tablet hardware. Current device work focuses on the
 **Lenovo Legion Tab Gen 5 / Y700 (TB323FU, SM8850P)**.
-
-本项目是基于 ArmadaOS、面向 ARM 平板的适配分支，当前主要维护 Y700 五代。
-使用 kShimC 启动器选择 Android、机身 ArmadaOS 或 TF 卡 ArmadaOS。
-设备适配状态和已知问题见[设备维护入口](devices/lenovo-tb323fu/README.md)。
 
 Highlights of the current adaptation:
 
@@ -79,16 +77,16 @@ separate installation targets. The menu does not imply direct SD/UFS filesystem
 support in kShimC.
 
 <p align="center">
-  <img src=".github/assets/kshimc-star-chart-zh.png" alt="KShimC launcher — STAR_CHART theme, Simplified Chinese menu" width="100%">
+  <img src=".github/assets/kshimc-star-chart-en.png" alt="KShimC launcher — STAR_CHART theme, English menu" width="100%">
 </p>
 
 *STAR_CHART menu rendered from the current implementation; this is a software
 preview, not a photograph of the tablet.*
 
 <details>
-<summary>English menu preview</summary>
+<summary>Simplified Chinese menu preview</summary>
 
-![KShimC launcher — English menu](.github/assets/kshimc-star-chart-en.png)
+![KShimC launcher — Simplified Chinese menu](.github/assets/kshimc-star-chart-zh.png)
 
 </details>
 
@@ -133,13 +131,18 @@ build outputs are kept outside the repository.
 
 ## Credits
 
-Based on [ArmadaOS](https://github.com/armada-os/armada), whose foundation uses
-[Fedora bootc](https://github.com/bootc-dev/bootc) and device support derived from
-[ROCKNIX](https://github.com/ROCKNIX). See the
-[upstream credits](https://armadaos.dev/project/credits/) and our
-[component sources](devices/lenovo-tb323fu/docs/SOURCES.md) for contributors,
-boot projects, kernel sources, and pinned versions. The Armada logo was created
-by [Rax](https://github.com/Raxcoms).
+- System foundation: [ArmadaOS](https://github.com/armada-os/armada), built on
+  [Fedora bootc](https://github.com/bootc-dev/bootc).
+- Boot menu: [kShimC](https://github.com/sunflower2333/kShimC/tree/feature/2610),
+  with [CrDK](https://github.com/Project-Aloha/CrDK) and
+  [DualBootKernelPatcher](https://github.com/Project-Aloha/DualBootKernelPatcher/tree/feature/2610).
+- TB323FU board support: [tb323fu-linux](https://github.com/joonhoekim/tb323fu-linux),
+  with this branch's device patches.
+- Armada logo: [Rax](https://github.com/Raxcoms).
+
+See the [upstream credits](https://armadaos.dev/project/credits/) and our
+[component sources](devices/lenovo-tb323fu/docs/SOURCES.md) for contributors and
+pinned versions. Individual components retain their source attribution and licenses.
 
 ## License
 
