@@ -14,8 +14,6 @@ The runtime uses picolibc 1.8.11 and LVGL 9.2.2. Hardware libraries come from
 `ports/crdk/prepare.py` verifies and applies the recorded patches into each
 build directory. It never modifies the submodule or a mu_aloha workspace.
 See [the CrDK port contract and provenance](ports/crdk/README.md).
-Completed checks and remaining evidence limits are in the
-[migration validation report](docs/crdk-migration-validation.md).
 
 ## Build
 

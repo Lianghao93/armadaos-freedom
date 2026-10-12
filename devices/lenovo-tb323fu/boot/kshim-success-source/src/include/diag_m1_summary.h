@@ -22,10 +22,9 @@
  * Linux gate. A missing/incomplete actual DT is still reported (error
  * return or 0 fingerprints), never masked as success.
  *
- * NAS target dir:
- *   Z:\AI项目\Codex\y700-tb323fu-offline-20261003-8c81d5d0\m0-m1-observability-20261006-a7c91e
+ * Build and validation records are maintained outside the source tree.
  * No local compile; CPU compile tests happen later only on
- * 192.168.88.9 Docker. Not compiled/tested in-tree.
+ * a remote build-server (Docker). Not compiled/tested in-tree.
  */
 
 #include <stddef.h>

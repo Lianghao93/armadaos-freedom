@@ -1,9 +1,0 @@
-tetrahedral-branchless equivalence: math fixture (no GPU execution)
-  lut sizes            : 2, 3, 17, 33
-  random cases / size  : 2000
-  total cases          : 8128
-  channel mismatches   : 0 (tol 1e-06)
-  vertex-map mismatches: 0
-  max channel diff     : 0.000e+00
-  six strict branches  : OK
-  RESULT               : PASS

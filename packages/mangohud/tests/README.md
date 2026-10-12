@@ -9,14 +9,14 @@ Gamescope v1 sender field order (offset 16 = application/app-ready ns, offset 26
 
 It uses only the standard library plus the real header; there is no test
 framework, no new dependency and no mirrored-header fixture. The asserts assume
-LP64 (`long` is 8 bytes), which is what the 192.168.88.9 Docker target uses.
+LP64 (`long` is 8 bytes), which is what the Linux Docker test environment uses.
 
 ## Build and run
 
 The test must be compiled against the actual patched MangoHud 0.8.4 upstream
 header, not a copy. Point `MANGOHUD_SOURCE` at that checkout and `TASK_OUTPUT`
 at an existing NAS-task-backed output directory. Commands run on the
-192.168.88.9 Docker target, not the Windows host.
+Linux Docker test environment, not the Windows host.
 
 ```sh
 MANGOHUD_SOURCE=/path/to/patched/MangoHud

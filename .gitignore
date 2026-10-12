@@ -5,3 +5,10 @@ cosign.key
 __pycache__/
 *.pyc
 
+# Local-only evidence/reports kept out of the tree (narrow, path-anchored)
+/local-reports/
+/devices/lenovo-tb323fu/docs/evidence/
+/devices/lenovo-tb323fu/docs/status-*.md
+/devices/lenovo-tb323fu/docs/*-202610*.md
+/docs/y700-g9-integration.md
+

@@ -1,6 +1,6 @@
-# TB323FU 扬声器保护：PipeWire 手动加载 → WirePlumber 0.5.18 自动 software DSP
+# TB323FU 扬声器保护部署
 
-2026-10-09 01:54 香港时间实际状态：三份配置均已部署，parser/保护 sink/RAW 隐藏和两路功放均已核验；用户已听到正常声音。新的 unit 启停绑定本轮已实测：停止 WirePlumber 时 gain 自动停止、两路恢复 159；重启后保护 sink 重新就绪、gain 自动成功、两路 21。以下迁移步骤为复现说明。
+使用 WirePlumber software DSP 保护扬声器，并将功放增益服务绑定到 PipeWire 和 WirePlumber 的生命周期。
 
 ## 文件映射
 
@@ -39,14 +39,3 @@
 1. 停用新增的 WP fragment（移出被扫描的 `*.conf` 目录）。
 2. 恢复原手动 `60-tb323fu-speakers.conf`。
 3. 由 root 重启音频服务。
-
-## 未测项 / 未解决项（配置写出 ≠ 真机验收）
-
-- parser / live-load 已核验；graph 首字节必须为 `{`，原首行注释导致解析失败的问题已修正。
-- 保护 sink 的真实链接、RAW 对 Pulse 隐藏已核验；普通客户端仅一份 Speakers。
-- helper 等待声卡/滤镜的远程测试 106 项已通过，真实 WP 停启增益变化已核验；用户听感已通过。重启后的完整启动时序仍待复核。
-
-部署服务重启、gain 生命周期/声卡就绪、真实验证由 root 另行负责；本文不含执行脚本。helper 源保持不变，
-仅 `tb323fu-speaker-gain.service` 的两行依赖/安装行（`BindsTo=`、`WantedBy=`）由单服务扩为
-`pipewire.service wireplumber.service`；`After=` 行本就包含两个服务、保持不变。runtime unit 的
-stop/start 已在真实用户会话核验，依据实际 gain 状态而非 unit 文本；听感由用户单独确认。

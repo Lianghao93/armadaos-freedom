@@ -47,7 +47,7 @@ index 0000000..cc0ee37
 +
 +Hardware has not been accessed for this adaptation. No boot image has been flashed or packaged for installation. Builds of existing profiles validate code compilation only and do not declare those profiles suitable for TB323FU.
 +
-+Validation on 2026-10-03 (Docker, 192.168.88.9): the new fixture fails on the unmodified baseline at SPMI discovery and passes after the change; all 15 host tests pass with ASan/UBSan. The existing HDK8450 capability profile builds a 4 MiB Manifest runtime with no unresolved symbols, exercising the enabled key/SPMI code. All six Manifest QEMU cases pass with that runtime. Separate packer-only tests preserve the original TB323FU kernel byte-for-byte through unpacking and repacking, including independent payload-DT references. No physical device testing has occurred.
++Validation on 2026-10-03 (Docker, build-server): the new fixture fails on the unmodified baseline at SPMI discovery and passes after the change; all 15 host tests pass with ASan/UBSan. The existing HDK8450 capability profile builds a 4 MiB Manifest runtime with no unresolved symbols, exercising the enabled key/SPMI code. All six Manifest QEMU cases pass with that runtime. Separate packer-only tests preserve the original TB323FU kernel byte-for-byte through unpacking and repacking, including independent payload-DT references. No physical device testing has occurred.
 diff --git a/src/dt/keys.c b/src/dt/keys.c
 index 188ede3..b0ff4a0 100644
 --- a/src/dt/keys.c
@@ -662,7 +662,7 @@ index cc0ee37..0d11772 100644
 @@ -25,3 +25,18 @@ Remaining board work:
  Hardware has not been accessed for this adaptation. No boot image has been flashed or packaged for installation. Builds of existing profiles validate code compilation only and do not declare those profiles suitable for TB323FU.
  
- Validation on 2026-10-03 (Docker, 192.168.88.9): the new fixture fails on the unmodified baseline at SPMI discovery and passes after the change; all 15 host tests pass with ASan/UBSan. The existing HDK8450 capability profile builds a 4 MiB Manifest runtime with no unresolved symbols, exercising the enabled key/SPMI code. All six Manifest QEMU cases pass with that runtime. Separate packer-only tests preserve the original TB323FU kernel byte-for-byte through unpacking and repacking, including independent payload-DT references. No physical device testing has occurred.
+ Validation on 2026-10-03 (Docker, build-server): the new fixture fails on the unmodified baseline at SPMI discovery and passes after the change; all 15 host tests pass with ASan/UBSan. The existing HDK8450 capability profile builds a 4 MiB Manifest runtime with no unresolved symbols, exercising the enabled key/SPMI code. All six Manifest QEMU cases pass with that runtime. Separate packer-only tests preserve the original TB323FU kernel byte-for-byte through unpacking and repacking, including independent payload-DT references. No physical device testing has occurred.
 +
 +Canoe continuous-splash extension
 +
@@ -677,7 +677,7 @@ index cc0ee37..0d11772 100644
 +
 +The splash reader only reads display MMIO. It retains the existing linear RGB565/8888 formats and contiguous two-half framebuffer checks. Compressed, multirect, overlapping or inconsistent configurations are rejected. A 10-bpc panel specification does not establish the boot framebuffer's format. Real bootloader register state, framebuffer caching/access and actual menu rendering remain untested. This is not a TB323FU installation image or proof of Linux panel support.
 +
-+Display validation on 2026-10-03 (Docker, 192.168.88.9): the new dual-scanout fixture compiles against the previous code and fails at the expected success assertion. With the Canoe extension, all 16 ASan/UBSan host tests pass (7.81 seconds), including DMA4/5 and VIG routes, LM6/7, sparse mixer IDs, dummy-active slots, pipe-mask mismatch, unsupported rect/format/compression, out-of-reservation address, duplicate/out-of-range stage offsets, and a changing scanout address. Mock display writes and legacy CTL reads are forbidden by assertions in the Canoe test. The existing HDK8450 capability profile builds a 4 MiB ARM64 runtime with no undefined symbols; all six Manifest QEMU tests pass. These are offline software checks, not TB323FU boot/display acceptance.
++Display validation on 2026-10-03 (Docker, build-server): the new dual-scanout fixture compiles against the previous code and fails at the expected success assertion. With the Canoe extension, all 16 ASan/UBSan host tests pass (7.81 seconds), including DMA4/5 and VIG routes, LM6/7, sparse mixer IDs, dummy-active slots, pipe-mask mismatch, unsupported rect/format/compression, out-of-reservation address, duplicate/out-of-range stage offsets, and a changing scanout address. Mock display writes and legacy CTL reads are forbidden by assertions in the Canoe test. The existing HDK8450 capability profile builds a 4 MiB ARM64 runtime with no undefined symbols; all six Manifest QEMU tests pass. These are offline software checks, not TB323FU boot/display acceptance.
 diff --git a/ports/crdk/UPSTREAM.json b/ports/crdk/UPSTREAM.json
 index d153964..4d58e51 100644
 --- a/ports/crdk/UPSTREAM.json
@@ -1259,7 +1259,7 @@ index 0d11772..bbf89b2 100644
 @@ -40,3 +40,9 @@ https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm88
  The splash reader only reads display MMIO. It retains the existing linear RGB565/8888 formats and contiguous two-half framebuffer checks. Compressed, multirect, overlapping or inconsistent configurations are rejected. A 10-bpc panel specification does not establish the boot framebuffer's format. Real bootloader register state, framebuffer caching/access and actual menu rendering remain untested. This is not a TB323FU installation image or proof of Linux panel support.
  
- Display validation on 2026-10-03 (Docker, 192.168.88.9): the new dual-scanout fixture compiles against the previous code and fails at the expected success assertion. With the Canoe extension, all 16 ASan/UBSan host tests pass (7.81 seconds), including DMA4/5 and VIG routes, LM6/7, sparse mixer IDs, dummy-active slots, pipe-mask mismatch, unsupported rect/format/compression, out-of-reservation address, duplicate/out-of-range stage offsets, and a changing scanout address. Mock display writes and legacy CTL reads are forbidden by assertions in the Canoe test. The existing HDK8450 capability profile builds a 4 MiB ARM64 runtime with no undefined symbols; all six Manifest QEMU tests pass. These are offline software checks, not TB323FU boot/display acceptance.
+ Display validation on 2026-10-03 (Docker, build-server): the new dual-scanout fixture compiles against the previous code and fails at the expected success assertion. With the Canoe extension, all 16 ASan/UBSan host tests pass (7.81 seconds), including DMA4/5 and VIG routes, LM6/7, sparse mixer IDs, dummy-active slots, pipe-mask mismatch, unsupported rect/format/compression, out-of-reservation address, duplicate/out-of-range stage offsets, and a changing scanout address. Mock display writes and legacy CTL reads are forbidden by assertions in the Canoe test. The existing HDK8450 capability profile builds a 4 MiB ARM64 runtime with no undefined symbols; all six Manifest QEMU tests pass. These are offline software checks, not TB323FU boot/display acceptance.
 +
 +Distinct-DTB handoff validation on 2026-10-03
 +
@@ -1574,7 +1574,7 @@ index 0000000..c8e86ef
 +
 +The first Linux profile requires a built-in initramfs. Destination linux,initrd-start/end are removed; Android initrd addresses are not imported. A malformed opt-in or handoff failure returns to the original base kernel and original runtime DT. CrDK pin and Manifest ABI are unchanged.
 +
-+Validation on 192.168.88.9 Docker: 18/18 ASan/UBSan host tests; ARM64 build within the 4 MiB slot with no undefined symbols; 8/8 manifest QEMU cases; tests/linux_handoff_qemu.py passes actual Linux boot into an embedded diagnostic PID1 and rejection/fallback. The Linux test accepts explicit runtime/kernel/packer/base/out paths; base is the existing manifest_qemu.py A.bin fixture. It does not build or contact hardware.
++Validation on build-server Docker: 18/18 ASan/UBSan host tests; ARM64 build within the 4 MiB slot with no undefined symbols; 8/8 manifest QEMU cases; tests/linux_handoff_qemu.py passes actual Linux boot into an embedded diagnostic PID1 and rejection/fallback. The Linux test accepts explicit runtime/kernel/packer/base/out paths; base is the existing manifest_qemu.py A.bin fixture. It does not build or contact hardware.
 +
 +The diagnostic kernel used the Kaanapali source commit 37a76066478cadff757c8dcf7cb3fde58d5c5e58 (7.2.0-rc5). The TB323FU DTS and diagnostic initramfs sources are retained outside this repository in the task's mainline-bringup directory. A synthetic-RAM fixture is only test evidence, never a device DT.
 +
