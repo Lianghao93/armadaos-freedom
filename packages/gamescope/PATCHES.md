@@ -61,21 +61,6 @@ to a commit, or `armada` if it's original; a URL source with no `notes` is verba
   source: armadaos-y705 (TB323FU adaptation)
   Empty EDID still reaches the existing device profile lookup; rates-only profiles use the kernel's modes. Unknown profiles retain real-mode fallback.
 
-- `patches/0029-vblank-keep-future-fixed-refresh-deadline.patch`
-  source: armadaos-y705
-  Keep fixed-refresh target vblank independent from a wake time clamped to now. Remote scheduling unit tests pass; this alone does not fix TB323FU high-rate throughput.
-- `patches/0030-vulkan-skip-redundant-tb323fu-composite-work.patch`
-  source: armadaos-y705 (TB323FU adaptation)
-  For the exact device ID `lenovo-tb323fu`, skip CTM/LUT work for fully transparent black blend pixels and avoid a redundant SDR transfer round trip when the base is fully opaque and every overlay is transparent. Preserve the original tetrahedral LUT and nearest sampling; the failed native trilinear candidate is excluded. Branchless tetrahedral preserves the four nearest samples and tested interpolation semantics; 8128 float32 model cases have zero mismatches. Remote shaders/build, 15 transparent-boundary checks and 5 SDR mathematical checks passed. The SDR model allows at most one UNORM8 rounding step; this is not GPU float32 bit equivalence or HDR/external-display acceptance. See the device pacing record for actual FPS, resolution and performance-profile scope.
-
-- `patches/0031-steamcompmgr-tb323fu-late-base-work-budget.patch`
-  source: armadaos-y705
-  Allows a ready non-FIFO base commit to use a bounded skipped paint opportunity on the exact TB323FU internal fixed-refresh DRM path. Measures actual paint work for that budget. The model Lua enables late-base/work-budget; preemptive cycle and bounded diagnostics stay disabled. Twenty-two independent boundary checks passed. See the device pacing record for measured FPS and the 1920x1200 acceptance scope.
-
-- `patches/0032-drm-tb323fu-bounded-present-diagnostics.patch`
-  source: armadaos-y705
-  Default-off, exact-model/internal/fixed164Hz bounded DRM-stage diagnostic. Retained to make the packaged source match the built binary; the Y700 Lua explicitly keeps it false. This does not provide an FPS improvement and is not the untested overlay-wait experiment.
-
 - `patches/0033-wlserver-only-take-an-edge-swipe-that-starts-at-the-edge.patch`
   source: https://github.com/armada-os/armada/blob/310c011470319aa40d264a10db855a7056842db5/packages/gamescope/patches/0028-wlserver-only-take-an-edge-swipe-that-starts-at-the-edge.patch
   PR: https://github.com/armada-os/armada/pull/665
