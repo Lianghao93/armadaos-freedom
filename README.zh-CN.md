@@ -31,6 +31,8 @@
   <a href="devices/lenovo-tb323fu/docs/SOURCES.md">组件来源</a>
   ·
   <a href="https://armadaos.dev/">上游文档</a>
+  ·
+  <a href="#支持项目">支持项目</a>
 </p>
 
 ## 关于 ArmadaOS Freedom
@@ -103,6 +105,18 @@ $ just --list    # 查看开发命令
 ```
 
 设备适配请遵循对应目录中的配置与构建说明，并保留按机型匹配的机制。调试报告、设备日志、凭据、备份和本地构建产物均在仓库外保存。
+
+## 支持项目
+
+ArmadaOS Freedom 目前靠热爱和自费投入持续推进。从启动、显示到供电和外设，每一项平板适配都需要反复测试，也需要长期跟进上游更新。
+
+如果这些工作对你有帮助，欢迎通过支付宝或微信自愿赞助，支持设备测试、系统适配和持续维护。量力而行，谢谢每一份支持。
+
+<p align="center">
+  <img src=".github/assets/sponsor-zh.png" alt="支持 ArmadaOS Freedom 平板适配：支付宝和微信赞助二维码，自愿支持，量力而行" width="100%">
+</p>
+
+反馈问题、提交代码和完善文档，同样是在支持项目。
 
 ## 致谢
 
