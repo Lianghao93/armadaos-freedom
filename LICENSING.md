@@ -64,23 +64,3 @@ and applicable license. For modifications, preserve the existing notices and
 identify the changes and their dates as required by the component's license.
 Contributions do not automatically transfer their authors' copyright to danyi,
 ArmadaOS, or another contributor.
-
-## Proposed commercial authorization policy (not in effect)
-
-This section records a proposal for independently licensable original components.
-No covered files or versions have been designated; it grants no new license and
-places no new conditions on the current repository.
-
-For components later lawfully released under separate terms, the proposed scope is:
-
-- Free use: personal noncommercial use and sharing, and a business's own internal use.
-- Prior written authorization from the relevant rights holders: paid flashing,
-  sale of devices preinstalled with a covered component, sale of images containing
-  it, and related paid services to customers. Such customer-facing activities do
-  not qualify as internal use.
-
-The existing [LICENSE](LICENSE), component licenses, and rights already granted
-under the GPL remain unchanged. Compliant commercial use of those GPL works does
-not require separate permission under this proposal. Before adopting separate
-terms, identify the covered files and versions, establish the necessary rights,
-and publish the applicable license and authorization contact.
