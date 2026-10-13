@@ -230,11 +230,10 @@ The four Andromeda base trees retain the phone's existing DTBO selection;
 
 HDK8250 bindings and hardware tables use the pinned OnePlus
 `oneplus/SM8250_Q_10.0` source at `cad09e061ef6cf689a4a1e54d27562e0f042236a`.
-Stock Kona HDK selects HDMI and clears `qcom,i2c-touch-active`. The inherited
-ST node therefore stays disabled until the active panel and touch selection
-match. With a supported panel selection, FTM4 uses DT GPIO/supply/clock
-resources, chip-ID validation and the DT X/Y flips. FTM5 is selected by its
-property family and independently verified chip ID.
+The HDK8250 ST FTM4 touch controller is unsupported; its driver and vendor
+reference snapshots have been removed. The menu remains controllable through
+physical volume and power keys. Touch input supports FTM5 controllers selected
+by their DT property family and independently verified chip ID.
 
 ```sh
 python3 tools/build_hdk8250.py --out build/hdk8250
@@ -249,3 +248,21 @@ Standalone copy-in validates that its scratch page does not overlap the
 incoming payload, and rejects an unsafe loader placement before writing.
 `tests/boot_emulation.py` checks overlapping and disjoint copies, original
 arguments, stack, BSS, relocations, both UEFI choices and that refusal path.
+
+## License / 许可证
+
+Unless a file carries a different license notice, kShimC's original source code
+is licensed under the **GNU General Public License, version 3 only**
+(`GPL-3.0-only`). See [LICENSE](LICENSE) for the full text.
+
+Third-party code, submodules, and font assets retain their own licenses and
+copyright notices. Existing per-file licenses remain in effect, including MIT,
+libfdt's dual license and the fonts' SIL Open Font License. This project license
+does not replace those notices or relicense those components.
+
+除文件中另有许可声明的部分外，kShimC 原创源码采用 **GNU 通用公共许可证第 3 版**
+（`GPL-3.0-only`），许可全文见 [LICENSE](LICENSE)。
+
+第三方代码、子模块和字库保留各自的许可证及版权声明。文件中已有的 MIT、libfdt 双重许可、
+字体 SIL Open Font License 等授权继续有效，本项目许可证不替代这些声明，
+也不改变这些组件原有的授权。

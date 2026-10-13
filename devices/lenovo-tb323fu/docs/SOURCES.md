@@ -29,6 +29,17 @@ CrDK 需要 `ports/crdk/` 的补丁层。源码归档不包含顶层 `lib/`、`t
 
 `patches/boot/kshim-local-commits.mbox` 是旧阶段的增量记录，不是当前 STAR 快照的完整补丁集，不能无条件重复应用。Android payload、原厂 boot、分区备份及构建生成的镜像不随仓库分发。
 
+### 快照许可同步（2026-10-14）
+
+在上述 STAR_CHART 快照上同步了本项目维护的 kShimC 仓库中以下两项变更：
+
+| 内容 | kShimC 来源提交 |
+|---|---|
+| 原创源码采用 `GPL-3.0-only`，保留第三方及字体的独立许可 | [`0cc6e62e18cfea269d795f9a620a8406a40d5a80`](https://github.com/sunflower2333/kShimC/commit/0cc6e62e18cfea269d795f9a620a8406a40d5a80) |
+| 删除 FTM4 驱动、头文件、专用测试及构建和运行时接入；DT 探测拒绝 FTM4，保留 FTM5 和实体按键回退 | [`6527d063c03b3e31a55b5f77b77f0fe3a42b1606`](https://github.com/sunflower2333/kShimC/commit/6527d063c03b3e31a55b5f77b77f0fe3a42b1606) |
+
+许可全文保存在 [`boot/kshim-success-source/LICENSE`](../boot/kshim-success-source/LICENSE)，与上述来源提交的文件一致。这是许可及对应清理的定向同步，不代表快照等同于当前 `feature/2610` 的全部代码；保留已有 STAR_CHART 菜单、TB323FU 适配及构建配置。原源码归档哈希记录的是同步前的历史输入，不是当前目录的哈希。
+
 ## 字体
 
 WenKai 菜单资产来自 LXGW WenKai Regular v1.522，固定提交 `e8b5b48b79f19f29aa68b0a178eab3472ea9f7e8`。资产目录保留来源 JSON、OFL 文本和菜单子集；新增翻译时需重新验证字形覆盖。

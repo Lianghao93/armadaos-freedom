@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 danyi and the armadaos-freedom contributors
 """Double-Home -> Steam Quick Access Menu helper.
 
 Target hardware: Lenovo Legion Tab Y700 5th Gen / TB323FU with the GameSir

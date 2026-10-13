@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 danyi and the armadaos-freedom contributors
 """Unit tests for armada-g9-double-home.py.
 
 Standard library only. These exercise the pure detector, the identity/model

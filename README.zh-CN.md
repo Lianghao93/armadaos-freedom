@@ -20,7 +20,7 @@
 <p align="center">
   <a href="https://github.com/armada-os/armada"><img alt="基于 ArmadaOS" src="https://img.shields.io/badge/基于-ArmadaOS-18181a?style=flat"></a>
   <a href="devices/lenovo-tb323fu/README.md"><img alt="Y700 五代平板适配" src="https://img.shields.io/badge/当前适配-Y700_五代-285580?style=flat"></a>
-  <a href="LICENSE.md"><img alt="GPL-2.0-or-later 许可证" src="https://img.shields.io/badge/许可证-GPL--2.0--or--later-18181a?style=flat"></a>
+  <a href="LICENSE"><img alt="GPL-2.0-or-later 许可证" src="https://img.shields.io/badge/许可证-GPL--2.0--or--later-18181a?style=flat"></a>
 </p>
 
 <p align="center">
@@ -115,4 +115,4 @@ $ just --list    # 查看开发命令
 
 ## 许可证
 
-Armada 自身代码采用 **GPL-2.0-or-later** 许可证。随附组件保留各自的上游许可证，详见 [LICENSE.md](LICENSE.md)。
+除文件或组件另有声明外，armadaos-freedom 原创软件和脚本采用 **GPL-2.0-or-later** 许可证。我们的原创贡献由 danyi 及 armadaos-freedom 各贡献者享有版权（Copyright (C) 2026）。继承的 ArmadaOS 代码及其他组件保留各自的版权和适用许可。详见 [LICENSE](LICENSE) 和[许可与版权说明](LICENSING.zh-CN.md)（[English](LICENSING.md)）。

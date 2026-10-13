@@ -20,7 +20,7 @@
 <p align="center">
   <a href="https://github.com/armada-os/armada"><img alt="Based on ArmadaOS" src="https://img.shields.io/badge/based_on-ArmadaOS-18181a?style=flat"></a>
   <a href="devices/lenovo-tb323fu/README.md"><img alt="Tablet adaptation" src="https://img.shields.io/badge/device-Legion_Tab_Gen_5-285580?style=flat"></a>
-  <a href="LICENSE.md"><img alt="GPL-2.0-or-later license" src="https://img.shields.io/badge/license-GPL--2.0--or--later-18181a?style=flat"></a>
+  <a href="LICENSE"><img alt="GPL-2.0-or-later license" src="https://img.shields.io/badge/license-GPL--2.0--or--later-18181a?style=flat"></a>
 </p>
 
 <p align="center">
@@ -146,5 +146,4 @@ pinned versions. Individual components retain their source attribution and licen
 
 ## License
 
-Armada's own code is licensed under **GPL-2.0-or-later**. Bundled components
-retain their upstream licenses. See [LICENSE.md](LICENSE.md).
+Original armadaos-freedom software and scripts are licensed under **GPL-2.0-or-later**, unless a file or component specifies otherwise. Copyright (C) 2026 danyi and the armadaos-freedom contributors, for their original contributions. Inherited ArmadaOS code and other components retain their copyrights and applicable licenses. See [LICENSE](LICENSE) and [licensing and copyright](LICENSING.md) ([简体中文](LICENSING.zh-CN.md)).
