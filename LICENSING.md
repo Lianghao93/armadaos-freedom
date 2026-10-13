@@ -64,3 +64,25 @@ and applicable license. For modifications, preserve the existing notices and
 identify the changes and their dates as required by the component's license.
 Contributions do not automatically transfer their authors' copyright to danyi,
 ArmadaOS, or another contributor.
+
+## Commercial authorization policy
+
+For independently licensable original components explicitly designated by their
+rights holders as covered by this policy, armadaos-freedom applies these rules:
+
+- Free use: personal noncommercial use and sharing, and a business's own internal use.
+- Prior written authorization from the relevant rights holders: paid flashing
+  using a covered component, sale of devices preinstalled with it, sale of images
+  containing it, and related paid services to customers. These customer-facing
+  activities do not qualify as internal use.
+
+Each covered component must identify its covered files and versions, actual rights
+holders, specific license terms, and authorization contact in its own licensing
+notice. The list of covered components is currently empty; existing repository
+files remain governed by their published licenses.
+
+This policy does not replace the existing [LICENSE](LICENSE) or component licenses,
+or alter rights already granted under the GPL. Compliant commercial use of existing
+GPL works requires no separate permission under this policy. Upstream code,
+third-party components, and modifications subject to the GPL are not subject to
+this policy's commercial authorization requirement.
