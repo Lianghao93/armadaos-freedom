@@ -1,8 +1,12 @@
 #!/bin/bash
 # Shared helpers for the armada update hooks (steamos-update, steamos-select-branch).
 
-ARMADA_CANONICAL_REGISTRY="ghcr.io/armada-os/armada"
+# Freedom is the only update target. The two old upstream origins are still
+# recognized so booted deployments can migrate onto Freedom.
+ARMADA_CANONICAL_REGISTRY="ghcr.io/mydanyi/armadaos-freedom"
+ARMADA_UPSTREAM_REGISTRY="ghcr.io/armada-os/armada"
 ARMADA_LEGACY_REGISTRY="ghcr.io/virtudude/armada"
+ARMADA_UPDATE_POLICY="${ARMADA_UPDATE_POLICY:-/etc/containers/policy.json}"
 ARMADA_CHANNEL_STATE="/var/lib/armada/update-channel"
 ARMADA_CHANNELS="stable beta testing"
 ARMADA_OSTREE_REPO="/ostree/repo"
@@ -48,29 +52,92 @@ armada_registry_from_ref() {
     r="${r%%@*}"
     [[ "${r##*/}" == *:* ]] && r="${r%:*}"
     case "$r" in
-        "$ARMADA_CANONICAL_REGISTRY"|"$ARMADA_LEGACY_REGISTRY") echo "$r" ;;
+        "$ARMADA_CANONICAL_REGISTRY"|"$ARMADA_UPSTREAM_REGISTRY"|"$ARMADA_LEGACY_REGISTRY") echo "$r" ;;
     esac
 }
 
-# Non-registry transports cannot be checked for network updates.
+# Non-registry transports cannot be checked for network updates. Only
+# well-formed, supported transports are parsed; a generic repository is kept so
+# external tests can exercise the parser, but it never remaps the result.
 armada_repository_from_ref() {
     local r
     case "$1" in
+        ostree-image-signed:docker://*) r="${1#ostree-image-signed:docker://}" ;;
+        ostree-unverified-image:docker://*) r="${1#ostree-unverified-image:docker://}" ;;
+        ostree-unverified-registry:docker://*) r="${1#ostree-unverified-registry:docker://}" ;;
         ostree-unverified-registry:*) r="${1#ostree-unverified-registry:}" ;;
-        *docker://*) r="${1##*docker://}" ;;
+        docker://*) r="${1#docker://}" ;;
         *) return 1 ;;
     esac
-    r="${r##*docker://}"
     r="${r%%@*}"
     [[ "${r##*/}" == *:* ]] && r="${r%:*}"
-    [[ -n "$r" && "$r" == */* && "$r" != *[[:space:]]* ]] || return 1
+    [[ -n "$r" && "$r" == */* && "$r" != *[[:space:]]* && "$r" != *:* ]] || return 1
     echo "$r"
+}
+
+# Structural validation shared by the ref parsers, run before any tag/digest is
+# stripped: a dangling tag colon, a repeated "@", or an "@" that is not a
+# non-empty hex sha256 digest would otherwise be discarded and silently
+# mistaken for a valid ref. Supported transports are stripped here; raw refs
+# (how bootc reports staged images) are allowed; whitespace, unknown "*://"
+# transports, and a bare transport prefix are rejected.
+armada_ref_validate() {
+    local ref="$1"
+    [[ -n "$ref" && "$ref" != *[[:space:]]* ]] || return 1
+    case "$ref" in
+        ostree-image-signed:docker://*) ref="${ref#ostree-image-signed:docker://}" ;;
+        ostree-unverified-image:docker://*) ref="${ref#ostree-unverified-image:docker://}" ;;
+        ostree-unverified-registry:docker://*) ref="${ref#ostree-unverified-registry:docker://}" ;;
+        ostree-unverified-registry:*) ref="${ref#ostree-unverified-registry:}" ;;
+        docker://*) ref="${ref#docker://}" ;;
+        *://*) return 1 ;;
+    esac
+    [[ -n "$ref" ]] || return 1
+    case "$ref" in
+        *@*)
+            [[ "${ref#*@}" != *@* ]] || return 1
+            [[ "${ref#*@}" =~ ^sha256:[0-9a-fA-F]+$ ]] || return 1
+            ref="${ref%%@*}"
+            ;;
+    esac
+    [[ -n "$ref" ]] || return 1
+    if [[ "${ref##*/}" == *:* ]]; then
+        [[ -n "${ref##*:}" ]] || return 1
+    fi
+    return 0
+}
+
+# "<repository> <tag>" for a raw or transport container ref; the tag is empty
+# when the ref carries none. Raw refs have no transport prefix, which is how
+# bootc reports staged images, so they are accepted here. Prints nothing and
+# returns non-zero for unsupported or malformed input so an unknown staged
+# source can never be mistaken for a supported one.
+armada_ref_parts() {
+    local ref="$1" repository tag
+    armada_ref_validate "$ref" || return 1
+    case "$ref" in
+        ostree-image-signed:docker://*) ref="${ref#ostree-image-signed:docker://}" ;;
+        ostree-unverified-image:docker://*) ref="${ref#ostree-unverified-image:docker://}" ;;
+        ostree-unverified-registry:docker://*) ref="${ref#ostree-unverified-registry:docker://}" ;;
+        ostree-unverified-registry:*) ref="${ref#ostree-unverified-registry:}" ;;
+        docker://*) ref="${ref#docker://}" ;;
+        *://*) return 1 ;;
+    esac
+    ref="${ref%%@*}"
+    tag=""
+    if [[ "${ref##*/}" == *:* ]]; then
+        tag="${ref##*:}"
+        ref="${ref%:*}"
+    fi
+    repository="$ref"
+    [[ -n "$repository" && "$repository" == */* && "$repository" != *:* ]] || return 1
+    printf '%s %s\n' "$repository" "$tag"
 }
 
 armada_steam_channels_apply() {
     local channel
     case "$1" in
-        "$ARMADA_CANONICAL_REGISTRY"|"$ARMADA_LEGACY_REGISTRY") ;;
+        "$ARMADA_CANONICAL_REGISTRY"|"$ARMADA_UPSTREAM_REGISTRY"|"$ARMADA_LEGACY_REGISTRY") ;;
         *) return 1 ;;
     esac
     for channel in ${ARMADA_CHANNELS}; do
@@ -109,12 +176,21 @@ print(" ".join(v or "-" for v in out))
 
 # "<missing-layer-bytes> <digest> <version-label-or-dash>" for a channel's
 # published image. Full skopeo inspection resolves an image index to this host's
-# platform and provides layer sizes without a second registry request.
+# platform and provides layer sizes without a second registry request. Only the
+# canonical Freedom repository on a supported channel is ever inspected. When
+# the repository argument is omitted it is resolved from the booted ref through
+# armada_update_target; that failure returns non-zero without contacting skopeo,
+# and there is no fallback to an upstream origin.
 armada_remote_info() {
-    local registry="${2:-}"
-    [[ -n "$registry" ]] || registry="$(armada_booted_registry)"
-    [[ -n "$registry" ]] || registry="$ARMADA_CANONICAL_REGISTRY"
-    skopeo inspect "docker://${registry}:$1" 2>/dev/null | \
+    local tag="$1" repository="${2:-}" target desired
+    if [[ -z "${repository}" ]]; then
+        target="$(armada_update_target "$(armada_booted_ref)")" || return 1
+        read -r repository desired <<<"${target}"
+        tag="${desired}"
+    fi
+    [[ "${repository}" == "${ARMADA_CANONICAL_REGISTRY}" ]] || return 1
+    armada_steam_channels_apply "${repository}" "${tag}" || return 1
+    skopeo inspect "docker://${repository}:${tag}" 2>/dev/null | \
         python3 -c '
 import json
 import subprocess
@@ -241,41 +317,81 @@ armada_update_fits() {
     return 1
 }
 
-# Channel the user selected, validated to a known channel; else $1 (a caller-
-# supplied booted channel, to avoid re-querying) or the booted channel.
+# Channel the user selected, validated to a known channel; otherwise a
+# fallback tag. Called with an argument (even an explicit empty string) the
+# fallback is only that supplied tag and the booted channel is never
+# re-queried, so a digest-only ref with no valid stored channel fails in the
+# caller. Called with no argument (armada-select-branch -c) the fallback is the
+# booted channel, so the current branch is still displayed.
 armada_desired_channel() {
-    local c="" ch
+    local c="" fallback ch
+    if (( $# > 0 )); then
+        fallback="$1"
+    else
+        fallback="$(armada_booted_channel)"
+    fi
     [[ -r "$ARMADA_CHANNEL_STATE" ]] && read -r c < "$ARMADA_CHANNEL_STATE" 2>/dev/null
     # Exact-match a known channel (a substring/glob test would accept a corrupt
     # multi-word value and feed it to bootc as a tag).
     for ch in ${ARMADA_CHANNELS}; do
         [[ "$c" == "$ch" ]] && { echo "$c"; return; }
     done
-    if [[ -n "${1:-}" ]]; then echo "$1"; else armada_booted_channel; fi
+    [[ -n "$fallback" ]] && echo "$fallback"
 }
 
+# Resolve the ref of the booted deployment to the Freedom repository and the
+# desired channel. Unknown repositories, unsupported transports, empty refs,
+# unsupported feature tags, and digest-only refs with no valid stored channel
+# are all rejected. A valid selected channel overrides a valid booted tag; a
+# non-empty tag that is not a known channel is rejected rather than remapped.
 armada_update_target() {
     local ref="$1" booted repository desired
+    armada_ref_validate "$ref" || return 1
     booted="$(armada_tag_from_ref "$ref")"
-    if repository="$(armada_repository_from_ref "$ref")"; then
-        if [[ -z "$booted" ]]; then
-            case "$repository" in
-                "$ARMADA_CANONICAL_REGISTRY"|"$ARMADA_LEGACY_REGISTRY") ;;
-                *) return 1 ;;
-            esac
-        fi
-        if [[ -n "$booted" ]] && ! armada_steam_channels_apply "$repository" "$booted"; then
-            desired="$booted"
-        else
-            desired="$(armada_desired_channel "$booted")"
-        fi
-    else
-        repository="$ARMADA_CANONICAL_REGISTRY"
-        desired="$(armada_desired_channel "$booted")"
+    repository="$(armada_repository_from_ref "$ref")" || return 1
+    case "$repository" in
+        "$ARMADA_CANONICAL_REGISTRY"|"$ARMADA_UPSTREAM_REGISTRY"|"$ARMADA_LEGACY_REGISTRY") ;;
+        *) return 1 ;;
+    esac
+    if [[ -n "$booted" ]] && ! armada_steam_channels_apply "$repository" "$booted"; then
+        return 1
     fi
-    [[ -n "$repository" && -n "$desired" && \
-        "$repository" != *[[:space:]]* && "$desired" != *[[:space:]]* ]] || return 1
-    printf '%s %s\n' "$repository" "$desired"
+    desired="$(armada_desired_channel "$booted")"
+    [[ -n "$desired" && "$desired" != *[[:space:]]* ]] || return 1
+    printf '%s %s\n' "$ARMADA_CANONICAL_REGISTRY" "$desired"
+}
+
+# Success only when the containers policy pins the canonical Freedom repository
+# to a sigstoreSigned requirement with a non-empty keyPaths list whose string
+# entries are all existing regular files. This proves the signature
+# configuration is present; bootc still enforces the cryptography at switch
+# time. Missing/malformed JSON, a missing or wrong-typed requirement, or a
+# missing key file all fail.
+armada_update_policy_ready() {
+    [[ -r "${ARMADA_UPDATE_POLICY}" ]] || return 1
+    python3 - "${ARMADA_UPDATE_POLICY}" "${ARMADA_CANONICAL_REGISTRY}" <<'PY'
+import json
+import os
+import sys
+
+try:
+    with open(sys.argv[1]) as stream:
+        requirements = json.load(stream)["transports"]["docker"][sys.argv[2]]
+except (OSError, ValueError, KeyError, TypeError):
+    raise SystemExit(1)
+
+if not isinstance(requirements, list):
+    raise SystemExit(1)
+for requirement in requirements:
+    if not isinstance(requirement, dict) or requirement.get("type") != "sigstoreSigned":
+        continue
+    key_paths = requirement.get("keyPaths")
+    if not isinstance(key_paths, list) or not key_paths:
+        continue
+    if all(isinstance(path, str) and os.path.isfile(path) for path in key_paths):
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
 }
 
 # Run a bootc command with progress wired to the Steam N% translator. fd 3 must

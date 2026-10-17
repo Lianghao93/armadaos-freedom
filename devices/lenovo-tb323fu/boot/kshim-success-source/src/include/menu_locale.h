@@ -63,7 +63,20 @@ typedef enum kshim_menu_role_t {
     KSHIM_MENU_ROLE_EDL,
     KSHIM_MENU_ROLE_BACK,
     KSHIM_MENU_ROLE_LANG_ZH,
-    KSHIM_MENU_ROLE_LANG_EN
+    KSHIM_MENU_ROLE_LANG_EN,
+    /* Appended so every existing numeric role value is preserved. */
+    KSHIM_MENU_ROLE_DEVICE_INFO,
+    /* Session-settings rows, appended after DEVICE_INFO so the old value stays
+     * the same. The three device-option roles exist so each option row keeps
+     * its own localized label and can map to the shared device icon. */
+    KSHIM_MENU_ROLE_SETTINGS,
+    KSHIM_MENU_ROLE_DEVICE,
+    KSHIM_MENU_ROLE_DEFAULT,
+    KSHIM_MENU_ROLE_DEVICE_AUTO,
+    KSHIM_MENU_ROLE_DEVICE_TB322FC,
+    KSHIM_MENU_ROLE_DEVICE_TB323FU,
+    /* Highest valid role; the role tables are sized with it + 1. */
+    KSHIM_MENU_ROLE_MAX = KSHIM_MENU_ROLE_DEVICE_TB323FU
 } kshim_menu_role_t;
 
 /* Localized label for a known role. UNKNOWN and BASE return `fallback`
@@ -92,6 +105,12 @@ const char *kshim_menu_role_description(kshim_menu_role_t role, const char *fall
 #define KSHIM_MENU_LABEL_OFF        kshim_menu_role_name(KSHIM_MENU_ROLE_OFF, NULL)
 #define KSHIM_MENU_LABEL_LANG_ZH    kshim_menu_role_name(KSHIM_MENU_ROLE_LANG_ZH, NULL)
 #define KSHIM_MENU_LABEL_LANG_EN    kshim_menu_role_name(KSHIM_MENU_ROLE_LANG_EN, NULL)
+#define KSHIM_MENU_LABEL_SETTINGS   kshim_menu_role_name(KSHIM_MENU_ROLE_SETTINGS, NULL)
+#define KSHIM_MENU_LABEL_DEVICE     kshim_menu_role_name(KSHIM_MENU_ROLE_DEVICE, NULL)
+#define KSHIM_MENU_LABEL_DEFAULT    kshim_menu_role_name(KSHIM_MENU_ROLE_DEFAULT, NULL)
+#define KSHIM_MENU_LABEL_DEV_AUTO   kshim_menu_role_name(KSHIM_MENU_ROLE_DEVICE_AUTO, NULL)
+#define KSHIM_MENU_LABEL_DEV_322    kshim_menu_role_name(KSHIM_MENU_ROLE_DEVICE_TB322FC, NULL)
+#define KSHIM_MENU_LABEL_DEV_323    kshim_menu_role_name(KSHIM_MENU_ROLE_DEVICE_TB323FU, NULL)
 
 /* ------------------------------------------------------------------ */
 /* Text table                                                          */
@@ -164,6 +183,48 @@ typedef enum kshim_menu_text_id {
     KSHIM_TEXT_LANG_ZH_NAME,
     KSHIM_TEXT_LANG_EN_NAME,
     KSHIM_TEXT_CREDIT,
+
+    /* read-only Device info page */
+    KSHIM_TEXT_INFO_LABEL,
+    KSHIM_TEXT_INFO_DESC,
+    KSHIM_TEXT_INFO_BOARD,
+    KSHIM_TEXT_INFO_SOC,
+    KSHIM_TEXT_INFO_MODEL,
+    KSHIM_TEXT_INFO_COMPATIBLE,
+    KSHIM_TEXT_INFO_RAM,
+    KSHIM_TEXT_INFO_FRAMEBUFFER,
+    KSHIM_TEXT_INFO_VERSION,
+    KSHIM_TEXT_INFO_RAM_PREFIX,
+    KSHIM_TEXT_UNKNOWN,
+
+    /* Session-settings pages (appended; every earlier id keeps its value) */
+    KSHIM_TEXT_SETTINGS_LABEL,
+    KSHIM_TEXT_SETTINGS_DESC,
+    KSHIM_TEXT_DEVICE_LABEL,
+    KSHIM_TEXT_DEVICE_DESC,
+    KSHIM_TEXT_DEFAULT_LABEL,
+    KSHIM_TEXT_DEFAULT_DESC,
+    KSHIM_TEXT_DEVICE_AUTO_NAME,
+    KSHIM_TEXT_DEVICE_AUTO_DESC,
+    KSHIM_TEXT_DEVICE_TB322FC_NAME,
+    KSHIM_TEXT_DEVICE_TB322FC_DESC,
+    KSHIM_TEXT_DEVICE_TB323FU_NAME,
+    KSHIM_TEXT_DEVICE_TB323FU_DESC,
+    KSHIM_TEXT_BOARD_TB322FC_NAME,
+    KSHIM_TEXT_BOARD_TB323FU_NAME,
+    /* printf format strings: the settings rows show their current value */
+    KSHIM_TEXT_SETTINGS_DEVICE_AUTO_FMT,
+    KSHIM_TEXT_SETTINGS_DEVICE_MANUAL_FMT,
+    KSHIM_TEXT_SETTINGS_DEFAULT_FMT,
+    KSHIM_TEXT_DEFAULT_MANIFEST,
+    KSHIM_TEXT_UNAVAILABLE,
+    /* Short button label for a row that cannot be used; the long
+     * KSHIM_TEXT_UNAVAILABLE sentence stays the row description. */
+    KSHIM_TEXT_ACTION_UNAVAILABLE,
+    /* Parent-layer Back description for the new-API settings pages; the legacy
+     * KSHIM_MENU_DESC_BACK ("back to the system boot options") stays with the
+     * old page set. */
+    KSHIM_TEXT_DESC_BACK_PARENT,
 
     KSHIM_TEXT_COUNT
 } kshim_menu_text_id;

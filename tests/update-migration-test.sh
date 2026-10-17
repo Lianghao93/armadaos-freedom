@@ -60,6 +60,27 @@ TEST_TMP=$(mktemp -d)
 trap 'rm -rf "$TEST_TMP"' EXIT
 ARMADA_CHANNEL_STATE="$TEST_TMP/channel"
 
+# Literal Freedom target: the expected repository must not be derived from the
+# production constants, or a half-migrated implementation would pass by agreement.
+FREEDOM=ghcr.io/mydanyi/armadaos-freedom
+UPSTREAM_CANONICAL=ghcr.io/armada-os/armada
+UPSTREAM_LEGACY=ghcr.io/virtudude/armada
+
+assert_channel_token() {
+    local channel="$1" token="$2" actual
+    actual="$(armada_channel_to_token "$channel" || true)"
+    if [[ "$actual" != "$token" ]]; then
+        printf 'channel token failed: expected %q, got %q for %q\n' \
+            "$token" "$actual" "$channel" >&2
+        exit 1
+    fi
+}
+
+# The Steam UI preview token is the testing channel.
+assert_channel_token stable rel
+assert_channel_token beta beta
+assert_channel_token testing preview
+
 assert_target() {
     local expected_repository="$1" expected_tag="$2" state="$3" ref="$4" actual
     if [[ "$state" == - ]]; then
@@ -75,24 +96,38 @@ assert_target() {
     fi
 }
 
-assert_target "$ARMADA_CANONICAL_REGISTRY" beta beta \
-    "ostree-image-signed:docker://${ARMADA_CANONICAL_REGISTRY}:stable"
-assert_target "$ARMADA_LEGACY_REGISTRY" stable stable \
-    "ostree-image-signed:docker://${ARMADA_LEGACY_REGISTRY}:testing"
-assert_target "$ARMADA_CANONICAL_REGISTRY" stable invalid \
-    "ostree-image-signed:docker://${ARMADA_CANONICAL_REGISTRY}:stable"
-assert_target "$ARMADA_CANONICAL_REGISTRY" testing - \
-    "ostree-image-signed:docker://${ARMADA_CANONICAL_REGISTRY}:testing"
-assert_target "$ARMADA_CANONICAL_REGISTRY" feature-a beta \
-    "ostree-image-signed:docker://${ARMADA_CANONICAL_REGISTRY}:feature-a"
-assert_target "local.armadaos.dev/armada" feature-a beta \
-    "ostree-unverified-registry:docker://local.armadaos.dev/armada:feature-a"
-assert_target "$ARMADA_CANONICAL_REGISTRY" beta beta \
-    "ostree-image-signed:docker://${ARMADA_CANONICAL_REGISTRY}@sha256:deadbeef"
-assert_target "$ARMADA_CANONICAL_REGISTRY" beta beta \
-    "containers-storage:localhost/armada:latest"
-assert_target "example.invalid/${ARMADA_LEGACY_REGISTRY}" stable beta \
-    "ostree-image-signed:docker://example.invalid/${ARMADA_LEGACY_REGISTRY}:stable"
+# A normal Freedom origin resolves to Freedom only, on every supported transport.
+assert_target "$FREEDOM" stable - \
+    "ostree-image-signed:docker://${FREEDOM}:stable"
+assert_target "$FREEDOM" beta beta \
+    "ostree-image-signed:docker://${FREEDOM}:stable"
+assert_target "$FREEDOM" testing - \
+    "ostree-image-signed:docker://${FREEDOM}:testing"
+assert_target "$FREEDOM" testing - \
+    "docker://${FREEDOM}:testing"
+assert_target "$FREEDOM" testing - \
+    "ostree-unverified-registry:${FREEDOM}:testing"
+assert_target "$FREEDOM" testing - \
+    "ostree-unverified-registry:docker://${FREEDOM}:testing"
+
+# A digest-only origin resolves only from a valid stored channel.
+assert_target "$FREEDOM" beta beta \
+    "ostree-image-signed:docker://${FREEDOM}@sha256:deadbeef"
+assert_target "$FREEDOM" stable stable \
+    "ostree-image-signed:docker://${FREEDOM}@sha256:deadbeef"
+
+# The two old upstream origins migrate to Freedom, keeping the chosen state or
+# the booted (tag) channel; the target repository is never the old upstream.
+assert_target "$FREEDOM" stable - \
+    "ostree-image-signed:docker://${UPSTREAM_CANONICAL}:stable"
+assert_target "$FREEDOM" beta beta \
+    "ostree-image-signed:docker://${UPSTREAM_CANONICAL}:stable"
+assert_target "$FREEDOM" testing - \
+    "ostree-image-signed:docker://${UPSTREAM_LEGACY}:testing"
+assert_target "$FREEDOM" stable stable \
+    "ostree-image-signed:docker://${UPSTREAM_LEGACY}@sha256:deadbeef"
+assert_target "$FREEDOM" beta - \
+    "ostree-unverified-registry:${UPSTREAM_CANONICAL}:beta"
 
 assert_no_target() {
     local state="$1" ref="$2" actual
@@ -110,11 +145,35 @@ assert_no_target() {
 assert_no_target beta \
     "ostree-unverified-registry:docker://local.armadaos.dev/armada@sha256:deadbeef"
 assert_no_target testing \
-    "ostree-image-signed:docker://example.invalid/${ARMADA_LEGACY_REGISTRY}@sha256:deadbeef"
+    "ostree-image-signed:docker://example.invalid/${UPSTREAM_LEGACY}@sha256:deadbeef"
+assert_no_target beta \
+    "ostree-image-signed:docker://example.invalid/${UPSTREAM_LEGACY}:stable"
+assert_no_target beta \
+    "ostree-image-signed:docker://example.invalid/${FREEDOM}:stable"
+assert_no_target beta \
+    "ostree-image-signed:docker://${FREEDOM}-extra:stable"
+assert_no_target beta \
+    "ostree-image-signed:docker://ghcr.io/mydanyi/armadaos freedom:stable"
+assert_no_target beta \
+    "containers-storage:localhost/armada:latest"
+assert_no_target beta \
+    ""
+
+# A known repository with an unsupported feature tag is rejected.
+assert_no_target beta \
+    "ostree-image-signed:docker://${FREEDOM}:feature-a"
+assert_no_target beta \
+    "ostree-image-signed:docker://${UPSTREAM_CANONICAL}:feature-a"
+assert_no_target beta \
+    "ostree-unverified-registry:docker://local.armadaos.dev/armada:feature-a"
+
+# A digest-only origin must never guess its channel by re-querying booted state.
 (
-    armada_booted_channel() { :; }
+    armada_booted_channel() { echo stable; }
     assert_no_target - \
-        "ostree-image-signed:docker://${ARMADA_CANONICAL_REGISTRY}@sha256:deadbeef"
+        "ostree-image-signed:docker://${FREEDOM}@sha256:deadbeef"
+    assert_no_target - \
+        "ostree-image-signed:docker://${UPSTREAM_CANONICAL}@sha256:deadbeef"
 )
 
 UPDATE="$ROOT/system_files/usr/libexec/armada/armada-update"

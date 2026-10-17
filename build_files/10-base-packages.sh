@@ -66,7 +66,6 @@ dnf5 -y install --setopt=install_weak_deps=False \
     wlr-randr \
     distrobox \
     wl-clipboard \
-    binutils \
     btop \
     tailscale
 
@@ -94,6 +93,13 @@ dnf5 -y install --setopt=install_weak_deps=False \
 
 dnf5 -y install --setopt=install_weak_deps=False \
     /packages/umtp-responder/umtp-responder-*.rpm
+
+# kshim-tools scripts run under python3 and call dtc, gzip and openssl.
+dnf5 -y install --setopt=install_weak_deps=False \
+    python3 \
+    dtc \
+    gzip \
+    openssl
 
 # CachyOS Proton's ARM64 GStreamer asks for Arch's libbz2 soname.
 ln -sf libbz2.so.1 /usr/lib64/libbz2.so.1.0

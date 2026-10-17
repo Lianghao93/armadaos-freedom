@@ -209,6 +209,7 @@ expected_ram:
         {"name": "distinct-base-dtb", "default": "Image-A", "key": b"", "copied": False, "dtb": False, "new": True},
         {"name": "distinct-alt-dtb", "default": "Image-B", "key": b"", "copied": False, "dtb": False, "new": True},
         {"name": "freeexec-dtb", "default": "Image-B", "key": b"", "copied": False, "dtb": True, "new": False},
+        {"name": "base-only-android", "default": "Image-A", "key": b"", "copied": False, "dtb": False, "new": False, "base_only": True},
     ]
     expected_map = {
         "default": "PAYLOAD_A_PASS",
@@ -220,6 +221,7 @@ expected_ram:
         "distinct-base-dtb": "PAYLOAD_E_PASS",
         "distinct-alt-dtb": "PAYLOAD_D_PASS",
         "freeexec-dtb": "PAYLOAD_D_PASS",
+        "base-only-android": "PAYLOAD_A_PASS",
     }
 
     results = []
@@ -229,6 +231,7 @@ expected_ram:
         key = case["key"]
         with_dtb = case["dtb"]
         is_new = case["new"]
+        base_only = case.get("base_only", False)
         rejected = name in ("short-dtb-entry", "bad-dtb-structure")
         config = out / (name + ".cfg")
         packed = out / (name + ".bin")
@@ -247,6 +250,10 @@ expected_ram:
             dtb_section = (f"[Image-DTB]\nName=Payload DT\nType=DTB\nPath={payload_dtb}\nBaseImage=false\n"
                            f"[Image-Base-DTB]\nName=Base DT\nType=DTB\nPath={base_dtb}\nBaseImage=false\n")
 
+        image_b_block = "" if base_only else (
+            f"[Image-B]\nName=Alternate B\nPath={alt_path}\nBaseImage=false\n"
+            f"{extra}\n{dtb_section}\n")
+
         config.write_text(f"""[Pack]
 Shim={runtime}
 Output={packed}
@@ -258,17 +265,17 @@ Path={base_path}
 Type=Linux
 BaseImage=true
 {base_extra}
-[Image-B]
-Name=Alternate B
-Path={alt_path}
-BaseImage=false
-{extra}
-{dtb_section}
-[Manifest]
+{image_b_block}[Manifest]
 Type=Manifest
 """)
         with (out / (name + "-pack.log")).open("w") as log:
             run([out / "packer/MultiBootKernelPatcher", config], stdout=log, stderr=subprocess.STDOUT)
+        if base_only:
+            # Base-only layout: one base Image plus the auto-added Attached Shim.
+            data = packed.read_bytes()
+            manifest = struct.unpack_from("<Q", data, 0x20)[0]
+            assert struct.unpack_from("<I", data, manifest + 8)[0] == 2, "base-only manifest count != 2"
+            assert struct.unpack_from("<I", data, manifest + 12)[0] == 0, "base-only manifest default != 0"
         if rejected:
             data = bytearray(packed.read_bytes())
             manifest = struct.unpack_from("<Q", data, 0x20)[0]
@@ -297,6 +304,8 @@ Type=Manifest
         assert expected in output, output
         if rejected:
             assert "Manifest not found, booting base image" in output, output
+        if base_only:
+            assert "Manifest not found, booting base image" not in output, output
         results.append({"case": name, "expected": expected, "passed": True})
         print(name + ": PASS", flush=True)
     (out / "validation.json").write_text(json.dumps({

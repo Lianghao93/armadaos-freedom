@@ -82,7 +82,7 @@ os_state = {
     "rollback": {"version": "20260907.previous", "checksum": "b" * 64, "incompatible": False},
     "staged": None, "rollback_queued": False, "reboot_ready": False,
     "channel": "stable", "channels": ["stable", "beta", "preview"],
-    "repository": "ghcr.io/armada-os/armada",
+    "repository": "ghcr.io/mydanyi/armadaos-freedom",
 }
 os_calls = []
 operation_script = None
@@ -104,7 +104,9 @@ def os_request(action, *arguments):
         os_state["channel"] = action.removeprefix("channel-")
         return {"ok": True}
     if action == "update-os":
-        os_state["staged"] = {"version": "20260920.next"}
+        channel = "testing" if os_state["channel"] == "preview" else os_state["channel"]
+        os_state["staged"] = {"version": "20260920.next",
+                              "image": f"ghcr.io/mydanyi/armadaos-freedom:{channel}"}
         os_state["reboot_ready"] = True
         return {"ok": True, "started": 124}
     if action == "rollback-os":
@@ -291,6 +293,17 @@ with tempfile.TemporaryDirectory() as directory, \
     respond(updates.confirmation, "cancel")
     assert not any(call[0] == "restart-os" for call in os_calls)
     assert updates.job.log.exists()
+    assert updates.message.get_text() == "Update installed. Restart to apply."
+    unsupported = os_state.copy()
+    unsupported.update(staged={"version": "20260920.next", "image": "ghcr.io/armada-os/armada:stable"},
+                       reboot_ready=False)
+    updates.result = ""
+    updates.render(unsupported)
+    assert "Update installed" not in updates.message.get_text()
+    assert "Restart to apply" not in updates.message.get_text()
+    assert "ghcr.io/armada-os/armada:stable" in updates.message.get_text()
+    assert not updates.operation.restart_button.get_visible()
+    updates.render(os_state.copy())
     assert updates.message.get_text() == "Update installed. Restart to apply."
     updates.rollback.emit("clicked")
     assert updates.confirmation.get_heading() == "Roll Back Armada?"

@@ -1,8 +1,9 @@
 [Unit]
-Description=Rebuild the ABL boot.img for the next-boot deployment before reboot
+Description=Sync the next-boot image (ABL /KERNEL or kShimC boot_a) before reboot
 ConditionPathExists=/run/ostree-booted
 DefaultDependencies=no
-RequiresMountsFor=/sysroot /boot /boot/efi
+# /var holds the installed kShimC private inputs and state.
+RequiresMountsFor=/sysroot /boot /boot/efi /var
 # Reverse stop order: ordered before finalize so our ExecStop runs after it,
 # against the finalized next-boot deployment.
 After=local-fs.target systemd-journal-flush.service
@@ -12,10 +13,11 @@ Conflicts=final.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# Must outlast the lock wait plus a slow-card regen, or systemd kills it mid-write.
+# Must outlast the lock wait plus a slow media sync, or systemd kills it mid-write.
 TimeoutStopSec=180
-# Completes a regen that died in the previous shutdown. '-' is load-bearing: a
-# failed start would fail the unit and skip ExecStop.
+# Completes work the previous shutdown left unfinished: the ABL spare or the
+# kShimC boot record. '-' is load-bearing: a failed start would fail the unit
+# and skip ExecStop.
 ExecStart=-/usr/bin/ionice -c 2 -n 7 /usr/libexec/armada/armada-bootimg-update --snapshot-prev
 # Keep manual rollback and other non-staged BLS changes in sync. Staged-update
 # failure handling belongs to the OSTree finalization hook.

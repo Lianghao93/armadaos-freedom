@@ -19,8 +19,8 @@ on:
         default: ""
 
 env:
-  ARMADA_CANONICAL_IMAGE: "ghcr.io/armada-os/armada"
-  ARMADA_LEGACY_IMAGE: "ghcr.io/virtudude/armada"
+  ARMADA_CANONICAL_IMAGE: "ghcr.io/mydanyi/armadaos-freedom"
+  ARMADA_SIGNING_PUBLIC_KEY: "system_files/etc/pki/containers/armadaos-freedom.pub"
   IMAGE_NAME: ${{ github.event.repository.name }}
   IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"
 
@@ -62,21 +62,21 @@ jobs:
       - name: Verify source container signature
         id: resolve
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           REPO="${IMAGE_REGISTRY}/${IMAGE_NAME}"
+          if [ "${REPO}" != "${ARMADA_CANONICAL_IMAGE}" ]; then
+            echo "::error::Freedom repository mismatch: this workflow only promotes ${ARMADA_CANONICAL_IMAGE}, but the source resolves to ${REPO}. Refusing to continue."
+            exit 1
+          fi
+          if [ ! -f "${ARMADA_SIGNING_PUBLIC_KEY}" ] || [ ! -s "${ARMADA_SIGNING_PUBLIC_KEY}" ]; then
+            echo "::error::Freedom signing public key missing or empty: ${ARMADA_SIGNING_PUBLIC_KEY}"
+            exit 1
+          fi
           # Pin to the digest so verify and the retag below act on the same image
           # even if a concurrent build re-points the source tag in between.
           DIGEST=$(skopeo inspect --format '{{.Digest}}' "docker://${REPO}:${{ inputs.source }}")
           # Fail closed: never promote an unsigned build into beta/stable.
-          cosign verify --key system_files/etc/pki/containers/armada.pub "${REPO}@${DIGEST}"
-          if [ "${REPO}" = "${ARMADA_LEGACY_IMAGE}" ]; then
-            # Legacy promotions must carry the canonical identity required by bridge policy.
-            cosign verify --check-claims=false \
-              --key system_files/etc/pki/containers/armada.pub \
-              "${REPO}@${DIGEST}" |
-              jq -s -e --arg identity "${ARMADA_CANONICAL_IMAGE}" \
-                'any(.. | objects; .critical?.identity?["docker-reference"]? == $identity)'
-          fi
+          cosign verify --key "${ARMADA_SIGNING_PUBLIC_KEY}" "${REPO}@${DIGEST}"
           echo "digest=${DIGEST}" >> "${GITHUB_OUTPUT}"
 
       - name: Publish release tags

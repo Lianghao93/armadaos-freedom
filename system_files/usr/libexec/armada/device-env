@@ -5,9 +5,11 @@ device_dir=${ARMADA_DEVICE_DIR:-/usr/lib/armada/devices}
 
 source "$device_dir/defaults.conf"
 
+dt_root=${ARMADA_DT_ROOT:-/sys/firmware/devicetree/base}
+
 model=${ARMADA_MODEL:-}
 if [[ -z "$model" ]]; then
-    model=$(tr -d '\0' </sys/firmware/devicetree/base/model 2>/dev/null || true)
+    model=$(tr -d '\0' <"$dt_root/model" 2>/dev/null || true)
 fi
 case "$model" in
     "AYANEO Pocket EVO") profile=ayaneo-pocket-evo ;;
@@ -38,8 +40,22 @@ case "$model" in
     "Retroid Pocket 6 TOP-DPAD") profile=retroid-pocket-6 ;;
     "Retroid Pocket Nova") profile=retroid-pocket-nova ;;
     "Lenovo Legion Tab Y700 5th Gen"|"Lenovo Legion Y700 Gen 5 (TB323FU)"|"Lenovo Legion Tab Y700 (TB323FU)") profile=lenovo-tb323fu ;;
+    "Lenovo Legion Y700 Gen4") profile=lenovo-tb322fc ;;
     *) profile= ;;
 esac
+
+# An exact NUL-separated "lenovo,elden" compatible token identifies the Gen4
+# board even when its model string is unrecognized, and takes precedence over a
+# conflicting model. An explicit nonempty ARMADA_MODEL stays the top-priority
+# override, so the compatible is only consulted for a detected model.
+if [[ -z "${ARMADA_MODEL:-}" && -r "$dt_root/compatible" ]]; then
+    while IFS= read -r -d '' entry || [[ -n "$entry" ]]; do
+        if [[ "$entry" == "lenovo,elden" ]]; then
+            profile=lenovo-tb322fc
+            break
+        fi
+    done <"$dt_root/compatible"
+fi
 
 if [[ -n "$profile" && -r "$device_dir/$profile.conf" ]]; then
     source "$device_dir/$profile.conf"
@@ -126,6 +142,7 @@ vars=(
     ARMADA_GAMESCOPE_FAKE_OUTPUT_MM
     ARMADA_HDR_NITS
     ARMADA_GAMEPAD_QUIRK
+    ARMADA_BUILTIN_GAMEPAD
     ARMADA_IP_TARGETS
     ARMADA_LITTLE_CORES
     ARMADA_BIG_CORES

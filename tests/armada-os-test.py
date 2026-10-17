@@ -15,11 +15,24 @@ REAL_SNAPSHOT = maintenance.snapshot
 
 def fixture():
     def entry(version, checksum):
-        return {"version": version, "image": "ghcr.io/armada-os/armada:stable", "checksum": checksum,
+        return {"version": version, "image": "ghcr.io/mydanyi/armadaos-freedom:stable", "checksum": checksum,
                 "serial": 0, "stateroot": "default", "incompatible": False}
     return {"booted": entry("current", "a" * 64), "rollback": entry("previous", "b" * 64),
             "staged": None, "rollback_queued": False, "channel": "stable",
-            "repository": "ghcr.io/armada-os/armada", "channels": ["stable", "beta", "preview"]}
+            "repository": "ghcr.io/mydanyi/armadaos-freedom", "channels": ["stable", "beta", "preview"]}
+
+
+def staged_entry(image, version="queued"):
+    return {"version": version, "image": image, "checksum": "c" * 64, "serial": 0,
+            "stateroot": "default", "incompatible": False}
+
+
+def raw_state(staged=True):
+    def entry(version, checksum):
+        return {"image": {"version": version, "image": {"image": "ghcr.io/mydanyi/armadaos-freedom:stable"}},
+                "ostree": {"checksum": checksum, "deploySerial": 0, "stateroot": "default"}}
+    return {"status": {"booted": entry("current", "a" * 64), "rollback": entry("previous", "b" * 64),
+                       "staged": entry("queued", "c" * 64) if staged else None, "rollbackQueued": False}}
 
 
 class OperationTests(unittest.TestCase):
@@ -43,7 +56,12 @@ class OperationTests(unittest.TestCase):
             self.state["rollback_queued"] = not self.state["rollback_queued"]
             self.state["staged"] = None
         elif arguments == [maintenance.UPDATE]:
-            self.state["staged"] = {**self.state["booted"], "version": "next", "checksum": "c" * 64}
+            # The staged image follows the currently desired channel, not the
+            # booted one: selecting beta then updating stages beta, and the
+            # preview picker maps to the testing tag.
+            channel = "testing" if self.state["channel"] == "preview" else self.state["channel"]
+            self.state["staged"] = staged_entry(f"ghcr.io/mydanyi/armadaos-freedom:{channel}",
+                                                version="next")
         return subprocess.CompletedProcess(arguments, 0)
 
     def perform(self, operation):
@@ -57,19 +75,30 @@ class OperationTests(unittest.TestCase):
         self.command.assert_not_called()
 
     def test_bootc_deployment_metadata(self):
-        def entry(version, checksum):
-            return {"image": {"version": version, "image": {"image": "ghcr.io/armada-os/armada:stable"}},
-                    "ostree": {"checksum": checksum, "deploySerial": 0, "stateroot": "default"}}
-        raw = {"status": {"booted": entry("current", "a" * 64), "rollback": entry("previous", "b" * 64),
-                          "staged": entry("queued", "c" * 64), "rollbackQueued": False}}
-        self.command.side_effect = [json.dumps(raw), "ghcr.io/armada-os/armada testing\n"]
+        self.command.side_effect = [json.dumps(raw_state()), "ghcr.io/mydanyi/armadaos-freedom testing\n"]
         state = REAL_SNAPSHOT()
         self.assertEqual(state["booted"]["version"], "current")
         self.assertEqual(state["rollback"]["version"], "previous")
         self.assertEqual(state["staged"]["version"], "queued")
+        self.assertEqual(state["repository"], "ghcr.io/mydanyi/armadaos-freedom")
         self.assertEqual(state["channels"], ["stable", "beta", "preview"])
         self.assertEqual(state["channel"], "preview")
         self.assertEqual(self.command.call_count, 2)
+
+    def test_snapshot_offers_no_channels_for_old_or_unknown_targets(self):
+        for target in ("ghcr.io/armada-os/armada stable\n",
+                       "ghcr.io/virtudude/armada beta\n",
+                       "example.invalid/whatever stable\n"):
+            with self.subTest(target=target):
+                self.command.side_effect = [json.dumps(raw_state(staged=False)), target]
+                self.assertEqual(REAL_SNAPSHOT()["channels"], [])
+
+    def test_snapshot_target_resolution_failure_leaves_state_empty(self):
+        self.command.side_effect = [json.dumps(raw_state(staged=False)), RuntimeError("resolver failed")]
+        state = REAL_SNAPSHOT()
+        self.assertEqual(state["channel"], "")
+        self.assertEqual(state["repository"], "")
+        self.assertEqual(state["channels"], [])
 
     def test_no_previous_version_refuses_rollback(self):
         self.state["rollback"] = None
@@ -130,6 +159,67 @@ class OperationTests(unittest.TestCase):
         self.state["rollback_queued"] = False
         with self.assertRaisesRegex(RuntimeError, "no pending"):
             maintenance.restart()
+
+    def test_reboot_ready_requires_a_migrated_staged_source(self):
+        self.state["channel"] = "stable"
+        for image in ("ghcr.io/armada-os/armada:stable", "ghcr.io/virtudude/armada:stable",
+                      "example.invalid/whatever:stable"):
+            with self.subTest(image=image):
+                self.state["staged"] = staged_entry(image)
+                state = maintenance.status()
+                self.assertEqual(state["staged"]["version"], "queued")
+                self.assertFalse(state["reboot_ready"])
+
+    def test_reboot_ready_for_staged_freedom_matching_desired_channel(self):
+        self.state["channel"] = "stable"
+        self.state["staged"] = staged_entry("ghcr.io/mydanyi/armadaos-freedom:stable")
+        self.assertTrue(maintenance.status()["reboot_ready"])
+
+    def test_reboot_ready_maps_preview_desired_channel_to_testing_staged(self):
+        self.state["channel"] = "preview"
+        self.state["staged"] = staged_entry("ghcr.io/mydanyi/armadaos-freedom:testing")
+        self.assertTrue(maintenance.status()["reboot_ready"])
+
+    def test_reboot_ready_rejects_a_same_freedom_wrong_channel_source(self):
+        self.state["channel"] = "stable"
+        for image in ("ghcr.io/mydanyi/armadaos-freedom:beta",
+                      "ghcr.io/mydanyi/armadaos-freedom:testing",
+                      "ghcr.io/mydanyi/armadaos-freedom:preview"):
+            with self.subTest(image=image):
+                self.state["staged"] = staged_entry(image)
+                state = maintenance.status()
+                self.assertEqual(state["staged"]["version"], "queued")
+                self.assertEqual(state["staged"]["image"], image)
+                self.assertFalse(state["reboot_ready"])
+
+    def test_reboot_ready_accepts_a_signed_docker_freedom_source(self):
+        self.state["channel"] = "stable"
+        image = "ostree-image-signed:docker://ghcr.io/mydanyi/armadaos-freedom:stable"
+        self.state["staged"] = staged_entry(image)
+        state = maintenance.status()
+        self.assertEqual(state["staged"]["image"], image)
+        self.assertTrue(state["reboot_ready"])
+
+    def test_queued_rollback_is_ready_for_any_staged_source(self):
+        self.state["rollback_queued"] = True
+        for image in ("ghcr.io/armada-os/armada:stable", "example.invalid/whatever:stable"):
+            with self.subTest(image=image):
+                self.state["staged"] = staged_entry(image)
+                self.assertTrue(maintenance.status()["reboot_ready"])
+
+    def test_restart_rejects_an_old_upstream_staged_source(self):
+        self.state["staged"] = staged_entry("ghcr.io/armada-os/armada:stable")
+        with self.assertRaisesRegex(RuntimeError, "no pending"):
+            maintenance.restart()
+
+    def test_update_rejects_an_old_upstream_pending_source(self):
+        def fake_run(arguments, **kwargs):
+            if arguments == [maintenance.UPDATE]:
+                self.state["staged"] = staged_entry("ghcr.io/armada-os/armada:stable", version="next")
+            return subprocess.CompletedProcess(arguments, 0)
+        self.run.side_effect = fake_run
+        with self.assertRaisesRegex(RuntimeError, "(?i)unsupported|pending"):
+            self.perform("update")
 
     def test_queued_rollback_allows_explicit_update_and_channel_change(self):
         self.state["rollback_queued"] = True

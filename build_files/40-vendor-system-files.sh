@@ -30,6 +30,16 @@ sha256sum -c <<'EOF'
 1bb1feec68a13da18d581aa2c631798f86f6bc10b55d587b2dd31446a0f8a203  /usr/libexec/armada/gki/generate_gki_certificate.py
 EOF
 
+# kShim boot tools: the packer/unpacker and the v4/AVB scripts they feed.
+for tool in MultiBootKernelPatcher UnpackTool repack_boot_v4.py avbtool.py; do
+    install -Dpm 0755 "/packages/kshim-tools/${tool}" \
+        "/usr/libexec/armada/kshim-tools/${tool}"
+done
+install -Dpm 0644 /packages/kshim-tools/licenses/packer-LICENSE \
+    /usr/share/licenses/armada-kshim-tools/packer-LICENSE
+install -Dpm 0644 /packages/kshim-tools/licenses/inih-LICENSE.txt \
+    /usr/share/licenses/armada-kshim-tools/inih-LICENSE.txt
+
 chmod 0755 /usr/libexec/armada/*
 chmod 0755 /usr/libexec/os-session-select
 

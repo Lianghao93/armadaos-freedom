@@ -77,6 +77,15 @@ static void test_compact(void)
 		assert(hex_field(buf + 4 + i * 8, 8) == mirror[i]);
 	for (i = 0; i < 12; i++)
 		assert(hex_field(buf + 4 + 24 + i * 4, 4) == mirror[3 + i]);
+
+	/* Sun variant (last_offset 0x45224) reuses the exact same compact body. */
+	fill_compact(&t, mirror);
+	t.last_offset = 0x45224u;
+	memset(buf, 0x5a, sizeof(buf));
+	n = kshim_splash_trace_report(&t, -95, buf, sizeof(buf));
+	assert(n == 76);
+	assert(strlen(buf) == 76);
+	assert(strcmp(buf, COMPACT_STR) == 0);
 }
 
 static void test_wide(void)
@@ -93,6 +102,16 @@ static void test_wide(void)
 	memset(buf, 0x5a, sizeof(buf));
 	n = kshim_splash_trace_report(&t, -95, buf, sizeof(buf));
 
+	assert(strcmp(buf, "r14:wide:i=9:v=1c0c0") == 0);
+	assert(n == (int)strlen("r14:wide:i=9:v=1c0c0"));
+	assert(buf[n] == '\0');
+
+	/* Sun variant (last_offset 0x45224) yields the identical wide form. */
+	fill_compact(&t, mirror);
+	t.first[9] = 0x0001c0c0u;
+	t.last_offset = 0x45224u;
+	memset(buf, 0x5a, sizeof(buf));
+	n = kshim_splash_trace_report(&t, -95, buf, sizeof(buf));
 	assert(strcmp(buf, "r14:wide:i=9:v=1c0c0") == 0);
 	assert(n == (int)strlen("r14:wide:i=9:v=1c0c0"));
 	assert(buf[n] == '\0');
@@ -127,6 +146,12 @@ static void test_gate(void)
 	t.last_offset = 0x104225u;
 	n = kshim_splash_trace_report(&t, -95, buf, sizeof(buf));
 	assert(strcmp(buf, "r14:s=-95:n=15:o=104225:v=0,0,0,0,0") == 0);
+
+	/* Sun other-offset (0x45225) also stays on the ordinary ring fallback. */
+	fill_compact(&t, mirror);
+	t.last_offset = 0x45225u;
+	n = kshim_splash_trace_report(&t, -95, buf, sizeof(buf));
+	assert(strcmp(buf, "r14:s=-95:n=15:o=45225:v=0,0,0,0,0") == 0);
 }
 
 static void test_fallback(void)
@@ -197,6 +222,87 @@ static void test_bounds(void)
 		assert((unsigned char)buf[i] == 0x5a);
 }
 
+/* New DT-stage failure format and its gates. */
+static void test_dt_failure(void)
+{
+	struct kshim_splash_trace t;
+	char buf[128];
+	int n;
+	size_t i;
+
+	/* Exact new failure format: stage 2, root count 1, sunp present. */
+	memset(&t, 0, sizeof(t));
+	t.dt_stage = 2;
+	t.root_compatible_count = 1;
+	t.root_has_sunp = true;
+	memset(buf, 0x5a, sizeof(buf));
+	n = kshim_splash_trace_report(&t, -1, buf, sizeof(buf));
+	assert(strcmp(buf, "r14:dt=2:cc=1:sun=1") == 0);
+	assert(n == (int)strlen("r14:dt=2:cc=1:sun=1"));
+	assert(buf[n] == '\0');
+
+	/* A negative compatible count (malformed list) keeps its sign. */
+	memset(&t, 0, sizeof(t));
+	t.dt_stage = 1;
+	t.root_compatible_count = -11;
+	t.root_has_sunp = false;
+	n = kshim_splash_trace_report(&t, -1, buf, sizeof(buf));
+	assert(strcmp(buf, "r14:dt=1:cc=-11:sun=0") == 0);
+	assert(n == (int)strlen("r14:dt=1:cc=-11:sun=0"));
+
+	/* A two-digit stage still stays within 80 characters. */
+	memset(&t, 0, sizeof(t));
+	t.dt_stage = 11;
+	t.root_compatible_count = 5;
+	t.root_has_sunp = true;
+	n = kshim_splash_trace_report(&t, -1, buf, sizeof(buf));
+	assert(strcmp(buf, "r14:dt=11:cc=5:sun=1") == 0);
+	assert(n == (int)strlen("r14:dt=11:cc=5:sun=1"));
+
+	/* capacity 80 is rejected with no writes. */
+	memset(&t, 0, sizeof(t));
+	t.dt_stage = 2;
+	t.root_compatible_count = 1;
+	t.root_has_sunp = true;
+	memset(buf, 0x5a, sizeof(buf));
+	assert(kshim_splash_trace_report(&t, -1, buf, 80) == -1);
+	for (i = 0; i < sizeof(buf); i++)
+		assert((unsigned char)buf[i] == 0x5a);
+
+	/* capacity 81 succeeds; only the string + NUL are written. */
+	memset(buf, 0x5a, sizeof(buf));
+	n = kshim_splash_trace_report(&t, -1, buf, 81);
+	assert(n == (int)strlen("r14:dt=2:cc=1:sun=1"));
+	assert(strcmp(buf, "r14:dt=2:cc=1:sun=1") == 0);
+	assert(buf[n] == '\0');
+	for (i = (size_t)n + 1u; i < sizeof(buf); i++)
+		assert((unsigned char)buf[i] == 0x5a);
+
+	/* Gate: a non-empty ring keeps the legacy form even at status -1. */
+	memset(&t, 0, sizeof(t));
+	t.dt_stage = 2;
+	t.root_compatible_count = 1;
+	t.root_has_sunp = true;
+	t.count = 15;
+	n = kshim_splash_trace_report(&t, -1, buf, sizeof(buf));
+	assert(strcmp(buf, "r14:s=-1:n=15:o=0:v=0,0,0,0,0") == 0);
+	assert(n == (int)strlen("r14:s=-1:n=15:o=0:v=0,0,0,0,0"));
+
+	/* Gate: status other than -1 keeps the legacy form. */
+	memset(&t, 0, sizeof(t));
+	t.dt_stage = 2;
+	t.root_compatible_count = 1;
+	t.root_has_sunp = true;
+	n = kshim_splash_trace_report(&t, 0, buf, sizeof(buf));
+	assert(strcmp(buf, "r14:s=0:n=0:o=0:v=0,0,0,0,0") == 0);
+
+	/* status -1 with stage 0 keeps the exact legacy fallback string. */
+	memset(&t, 0, sizeof(t));
+	n = kshim_splash_trace_report(&t, -1, buf, sizeof(buf));
+	assert(strcmp(buf, "r14:s=-1:n=0:o=0:v=0,0,0,0,0") == 0);
+	assert(n == (int)strlen("r14:s=-1:n=0:o=0:v=0,0,0,0,0"));
+}
+
 int main(void)
 {
 	test_compact();
@@ -204,6 +310,7 @@ int main(void)
 	test_gate();
 	test_fallback();
 	test_bounds();
+	test_dt_failure();
 	puts("splash_trace_report_test: ok");
 	return 0;
 }

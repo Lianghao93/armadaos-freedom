@@ -139,7 +139,15 @@ int kshim_splash_trace_report(const struct kshim_splash_trace *t, int status, ch
 {
     if (!t || !out || capacity < 81) return -1;
     int n;
-    if (status == -95 && t->count == 15 && t->last_offset == 0x104224u) {
+    if (status == -1 && t->count == 0 && t->dt_stage != 0) {
+        /* A DT failure before any MMIO read: report the last stage reached,
+           the root compatible string-list count (signed; negative marks a
+           malformed list) and whether an exact "qcom,sunp" entry was seen. */
+        n = snprintf(out, capacity, "r14:dt=%u:cc=%d:sun=%u",
+                     (unsigned)t->dt_stage, t->root_compatible_count,
+                     t->root_has_sunp ? 1u : 0u);
+    } else if (status == -95 && t->count == 15 &&
+               (t->last_offset == 0x104224u || t->last_offset == 0x45224u)) {
         int wide = -1;
         for (int i = 3; i < 15; ++i) {
             if (t->first[i] >> 16) {
@@ -204,11 +212,31 @@ int kshim_dt_splash(const void *f, const struct CrIo *io,
 #if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
     memset(&g_kshim_splash_trace, 0, sizeof(g_kshim_splash_trace));
     memset(&g_kshim_splash_snapshot, 0, sizeof(g_kshim_splash_snapshot));
+    /* Stage 1: parameter checking. */
+    g_kshim_splash_trace.dt_stage = 1;
 #endif
     if (!fb || !mmio) return -1;
     memset(fb, 0, sizeof(*fb)); memset(mmio, 0, sizeof(*mmio));
+    /* Parse the root "compatible" once, up front. The complete string list is
+       validated by its count first, so a malformed tail cannot hide behind an
+       early exact entry; only a valid list is then searched for the exact
+       entry "qcom,sunp" (never a substring, prefix or casefold match). The
+       count/bool are reused for the Sun classification and the diagnostics. */
+    int root_compatible_count = fdt_stringlist_count(f, 0, "compatible");
+    bool root_has_sunp = root_compatible_count > 0 &&
+        fdt_stringlist_search(f, 0, "compatible", "qcom,sunp") >= 0;
+#if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
+    g_kshim_splash_trace.root_compatible_count = root_compatible_count;
+    g_kshim_splash_trace.root_has_sunp = root_has_sunp;
+    /* Stage 2: reservation lookup. */
+    g_kshim_splash_trace.dt_stage = 2;
+#endif
     struct dt_range memory = {0};
     if (kshim_dt_splash_reservation(f, &memory, NULL)) return -1;
+#if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
+    /* Stage 3: SDE enumeration. */
+    g_kshim_splash_trace.dt_stage = 3;
+#endif
     int node, sde = -1;
     for (node = fdt_node_offset_by_compatible(f, -1, "qcom,sde-kms"); node >= 0;
          node = fdt_node_offset_by_compatible(f, node, "qcom,sde-kms")) {
@@ -216,20 +244,59 @@ int kshim_dt_splash(const void *f, const struct CrIo *io,
         if (sde >= 0) return -1;
         sde = node;
     }
+    if (sde < 0) return -1;
+#if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
+    /* Stage 4: mdp_phys decoding. */
+    g_kshim_splash_trace.dt_stage = 4;
+#endif
     struct dt_range reg;
-    if (sde < 0 || dt_reg_named(f, sde, "mdp_phys", &reg)) return -1;
+    if (dt_reg_named(f, sde, "mdp_phys", &reg)) return -1;
     struct CrSplashResources resources = {.base = reg.base, .size = reg.size,
         .reserved_base = memory.base, .reserved_size = memory.size};
-    uint32_t version;
-    bool canoe = dt_u32(f, sde, "qcom,sde-hw-version", &version) == 0 && version == 0xd0000000;
-    resources.lm_source_select = canoe;
+    /* The root is Sun when the validated "compatible" list has an exact
+       "qcom,sunp" entry; the list was parsed and matched once, above. */
+    bool sun_root = root_has_sunp;
+    /* Distinguish an absent qcom,sde-hw-version from a malformed present one:
+       a present property must be exactly one u32, and any getprop failure other
+       than NOTFOUND rejects before any MMIO is issued. */
+#if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
+    /* Stage 5: hw-version parsing/checks. */
+    g_kshim_splash_trace.dt_stage = 5;
+#endif
+    int vlen;
+    const fdt32_t *vprop = fdt_getprop(f, sde, "qcom,sde-hw-version", &vlen);
+    uint32_t version = 0;
+    if (!vprop) {
+        if (vlen != -FDT_ERR_NOTFOUND) return -1;
+    } else {
+        if (vlen != 4) return -1;
+        version = fdt32_to_cpu(vprop[0]);
+    }
+    bool version_present = vprop != NULL;
+    /* An exact Sun root must not carry a present version other than 0xc0000000;
+       never mask that conflict by falling back. */
+    if (version_present && version != 0xc0000000u && sun_root) return -1;
+    bool canoe = version_present && version == 0xd0000000u;
+    bool sun_explicit = version_present && version == 0xc0000000u;
+    /* Only an absent version plus the exact Sun root enables the fallback, and
+       that fallback path is additionally fingerprint-checked below. */
+    bool sun_fallback = !version_present && sun_root;
+    bool sun = sun_explicit || sun_fallback;
+    /* LM source-select is shared by Sun (DPU12) and Canoe (DPU13); the separate
+       REC SSPP view is Canoe-only, so the two capabilities stay independent. */
+    bool lm_source_select = sun || canoe;
+    resources.lm_source_select = lm_source_select;
     resources.sspp_rec_separated = canoe;
-    int pipes = offsets(f, sde, "qcom,sde-sspp-off", resources.pipe, canoe ? 10 : 8);
+    int pipes = offsets(f, sde, "qcom,sde-sspp-off", resources.pipe, lm_source_select ? 10 : 8);
     int ctls = offsets(f, sde, "qcom,sde-ctl-off", resources.ctl, 8);
-    int count;
-    if (canoe) {
-        uint32_t raw[12];
-        int raw_n = offsets(f, sde, "qcom,sde-mixer-off", raw, 12);
+#if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
+    /* Stage 6: mixer offset parsing/compaction. */
+    g_kshim_splash_trace.dt_stage = 6;
+#endif
+    int count, raw_n = 0;
+    uint32_t raw[12];
+    if (lm_source_select) {
+        raw_n = offsets(f, sde, "qcom,sde-mixer-off", raw, 12);
         if (raw_n < 1) return -1;
         count = 0;
         for (int i = 0; i < raw_n; ++i) {
@@ -245,16 +312,29 @@ int kshim_dt_splash(const void *f, const struct CrIo *io,
     } else {
         count = offsets(f, sde, "qcom,sde-mixer-off", resources.mixer, 6);
     }
+#if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
+    /* Stage 7: pipe/CTL/mixer count validation. */
+    g_kshim_splash_trace.dt_stage = 7;
+#endif
     if (pipes < 1 || ctls < 1 || count < 1) return -1;
     resources.pipe_count = pipes; resources.ctl_count = ctls; resources.mixer_count = count;
-    if (canoe) {
+    if (lm_source_select) {
+#if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
+        /* Stage 8: blend-table parsing. */
+        g_kshim_splash_trace.dt_stage = 8;
+#endif
         int stages = offsets(f, sde, "qcom,sde-mixer-blend-op-off", resources.stage, 11);
         uint32_t blendstages;
         if (stages < 1 || dt_u32(f, sde, "qcom,sde-mixer-blendstages", &blendstages) ||
             blendstages != (uint32_t)stages) return -1;
         resources.stage_count = stages;
     }
-    unsigned vig = 0, dma = 0, dma_max = canoe ? 6 : 4;
+#if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
+    /* Stage 9: SSPP type table. */
+    g_kshim_splash_trace.dt_stage = 9;
+#endif
+    unsigned vig = 0, dma = 0, dma_max = lm_source_select ? 6 : 4;
+    int types = fdt_stringlist_count(f, sde, "qcom,sde-sspp-type");
     for (int i = 0; i < pipes; ++i) {
         int len;
         const char *type = fdt_stringlist_get(f, sde, "qcom,sde-sspp-type", i, &len);
@@ -263,8 +343,27 @@ int kshim_dt_splash(const void *f, const struct CrIo *io,
         else if (len == 3 && !memcmp(type, "dma", 3) && dma < dma_max) resources.pipe_id[i] = 4 + dma++;
         else return -1;
     }
+    if (sun_fallback) {
+#if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
+        /* Stage 10: Sun fallback shape validation. */
+        g_kshim_splash_trace.dt_stage = 10;
+#endif
+        /* Fingerprint only the measured .096 Sun shape: 10 pipes, 6 CTLs, 12 raw
+           mixer slots with the first 8 valid and the last 4 dummy, 8 effective
+           mixers, an 11-stage blend table, and exactly 4 VIG + 6 DMA type
+           strings with no trailing extras. Explicit-version paths keep the
+           ordinary capacity validation instead of these fallback restrictions. */
+        if (pipes != 10 || ctls != 6 || count != 8 || resources.stage_count != 11 ||
+            types != 10 || vig != 4 || dma != 6 || raw_n != 12) return -1;
+        for (int i = 0; i < 8; ++i)
+            if (resources.mixer_id[i] != (uint8_t)i) return -1;
+        for (int i = 8; i < 12; ++i)
+            if (raw[i] != 0 && raw[i] != 0xf0f) return -1;
+    }
     struct CrSplash scanout;
 #if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
+    /* Stage 11: CrSplashRead. */
+    g_kshim_splash_trace.dt_stage = 11;
     int status;
     if (io && io->read32) {
         struct kshim_splash_trace_ctx ctx = {.io = io, .base = (uintptr_t)resources.base};

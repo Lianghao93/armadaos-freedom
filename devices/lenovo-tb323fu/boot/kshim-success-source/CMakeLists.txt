@@ -53,6 +53,7 @@ option(KSHIM_STANDALONE "Boot directly as an ARM64 Image instead of an attached 
 option(KSHIM_DIAGNOSTIC_BASE_ONLY "Diagnostic only: hand off to the packed Linux base image before any DT/console/peripheral work; no menu and no peripheral probes; incompatible with KSHIM_STANDALONE" OFF)
 option(KSHIM_DIAGNOSTIC_RESOURCES_ONLY "Diagnostic only: probe DT/console/resources, then hand off to the packed Linux base image after quiescing the console; no menu and no post-checkpoint peripheral probes; incompatible with KSHIM_STANDALONE and KSHIM_DIAGNOSTIC_BASE_ONLY" OFF)
 option(KSHIM_RAMOOPS_RECOVERY_ONLY "Recovery only: read-only ramoops recovery entry after runtime DT validation; no console/resources/UI/Linux; incompatible with KSHIM_STANDALONE and the diagnostic handoff switches" OFF)
+option(KSHIM_DIAGNOSTIC_DT_ONLY "Diagnostic only: pure DT parsing (validation, device info, layout-only ramoops capture, memory snapshot) then an immediate handoff to the packed Linux base image; no console, resources, peripherals, MMU or UI; incompatible with KSHIM_STANDALONE and the other diagnostic/recovery switches" OFF)
 if(KSHIM_DIAGNOSTIC_BASE_ONLY AND KSHIM_STANDALONE)
     message(FATAL_ERROR "KSHIM_DIAGNOSTIC_BASE_ONLY is forbidden together with KSHIM_STANDALONE")
 endif()
@@ -71,12 +72,16 @@ endif()
 if(KSHIM_RAMOOPS_RECOVERY_ONLY AND KSHIM_DIAGNOSTIC_RESOURCES_ONLY)
     message(FATAL_ERROR "KSHIM_RAMOOPS_RECOVERY_ONLY is forbidden together with KSHIM_DIAGNOSTIC_RESOURCES_ONLY")
 endif()
+if(KSHIM_DIAGNOSTIC_DT_ONLY AND (KSHIM_STANDALONE OR KSHIM_DIAGNOSTIC_BASE_ONLY OR KSHIM_DIAGNOSTIC_RESOURCES_ONLY OR KSHIM_RAMOOPS_RECOVERY_ONLY))
+    message(FATAL_ERROR "KSHIM_DIAGNOSTIC_DT_ONLY is forbidden together with KSHIM_STANDALONE, KSHIM_DIAGNOSTIC_BASE_ONLY, KSHIM_DIAGNOSTIC_RESOURCES_ONLY or KSHIM_RAMOOPS_RECOVERY_ONLY")
+endif()
 set(KSHIM_LINK_ADDRESS "0x40200000" CACHE STRING "Runtime link address")
 set(KSHIM_RUNTIME_SLOT_SIZE "0x400000" CACHE STRING "Reserved runtime bytes (4 MiB for manifest protocol)")
 set(KSHIM_UEFI_PAYLOAD "" CACHE FILEPATH "Optional raw UEFI FD for standalone test menu")
 add_compile_definitions(KSHIM_STANDALONE=$<BOOL:${KSHIM_STANDALONE}>
     KSHIM_DIAGNOSTIC_BASE_ONLY=$<BOOL:${KSHIM_DIAGNOSTIC_BASE_ONLY}>
     KSHIM_DIAGNOSTIC_RESOURCES_ONLY=$<BOOL:${KSHIM_DIAGNOSTIC_RESOURCES_ONLY}>
+    KSHIM_DIAGNOSTIC_DT_ONLY=$<BOOL:${KSHIM_DIAGNOSTIC_DT_ONLY}>
     KSHIM_RAMOOPS_RECOVERY_ONLY=$<BOOL:${KSHIM_RAMOOPS_RECOVERY_ONLY}>
     KSHIM_LINK_ADDRESS=${KSHIM_LINK_ADDRESS} KSHIM_RUNTIME_SLOT_SIZE=${KSHIM_RUNTIME_SLOT_SIZE})
 
@@ -151,8 +156,8 @@ set(SRC_FILES
     lib/libfdt/fdt_overlay.c
 
     src/core/main.c src/core/platform.c src/core/uefi_boot.c src/core/picoport.c src/core/boot_metrics.c
-    src/core/menu_locale.c
-    src/dt/dt.c src/dt/handoff.c src/dt/handoff_reservations.c src/dt/console.c src/dt/resources.c src/dt/probe.c
+    src/core/menu_locale.c src/core/boot_settings.c
+    src/dt/dt.c src/dt/device_info.c src/dt/initrd.c src/dt/handoff.c src/dt/handoff_reservations.c src/dt/console.c src/dt/resources.c src/dt/probe.c
     src/dt/tb323fu_ramoops.c src/dt/tb323fu_ramoops_export.c
     src/drivers/console.c src/drivers/pl011.c src/drivers/keys.c src/drivers/qcom_reboot.c
     src/arch/arm64/exception.c src/arch/arm64/relocation.c src/arch/arm64/mmu.c
@@ -234,6 +239,10 @@ add_custom_command(
 
 add_custom_target(preprocess_linker_script ALL DEPENDS ${PROCESSED_LINKER_SCRIPT})
 add_executable(${OUTPUT_NAME}.elf ${SRC_FILES})
+# Expose the build version to C as a quoted string literal (e.g. "0.0.1"), not
+# a bare preprocessing token. VERSION is only an environment variable fed into
+# Kconfig, so it never reaches the C compiler as a definition on its own.
+target_compile_definitions(${OUTPUT_NAME}.elf PRIVATE KSHIM_BUILD_VERSION="${KSHIMC_VERSION}")
 if(KSHIM_UEFI_PAYLOAD)
     get_filename_component(KSHIM_UEFI_PAYLOAD "${KSHIM_UEFI_PAYLOAD}" ABSOLUTE)
     configure_file(src/arch/arm64/uefi_payload.S.in ${CMAKE_BINARY_DIR}/uefi_payload.S @ONLY)

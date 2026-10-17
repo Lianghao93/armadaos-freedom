@@ -93,6 +93,15 @@ menu "Framebuffer and UI"
         bool "Runtime Chinese / English menu"
         default n
 
+    config KSHIM_MENU_SESSION_SETTINGS
+        bool "Session-only device and default-boot settings"
+        default n
+        help
+            Offer device and default-boot settings in the boot menu. Any
+            change made here applies only to the current boot session: the
+            settings are not persistent, are never written to UFS or any
+            other storage, and reset on the next boot.
+
     config KSHIM_MENU_POWER_ACTIONS
         bool "Enable firmware restart and power-off menu actions"
         default n
@@ -259,6 +268,13 @@ menu "Generic"
         string "Boot Banner"
         default "kShimC v$(VERSION) $(HOST_INFO) $(BUILD_TIME) \n"
         depends on ENABLE_BANNER
+
+    config KSHIM_DEBUG_CONSOLE
+        bool "Initialize the boot-FDT debug console (UART read/write and handoff quiesce)"
+        default y
+        help
+            Controls boot-FDT UART initialization, read/write and handoff
+            quiesce independently of log verbosity.
 
     choice
         bool

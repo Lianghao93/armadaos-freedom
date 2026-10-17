@@ -92,7 +92,7 @@ add_library(kshim_dt STATIC
     "${KSHIM_ROOT}/lib/libfdt/fdt_overlay.c"
 
     "${KSHIM_ROOT}/src/dt/probe.c"
-    "${KSHIM_ROOT}/src/dt/dt.c" "${KSHIM_ROOT}/src/dt/handoff.c" "${KSHIM_ROOT}/src/dt/handoff_reservations.c" "${KSHIM_ROOT}/src/dt/spmi.c"
+    "${KSHIM_ROOT}/src/dt/dt.c" "${KSHIM_ROOT}/src/dt/device_info.c" "${KSHIM_ROOT}/src/dt/initrd.c" "${KSHIM_ROOT}/src/dt/handoff.c" "${KSHIM_ROOT}/src/dt/handoff_reservations.c" "${KSHIM_ROOT}/src/dt/spmi.c"
     "${KSHIM_ROOT}/src/dt/gpio.c" "${KSHIM_ROOT}/src/dt/touch.c" "${KSHIM_ROOT}/src/dt/console.c"
     "${KSHIM_ROOT}/src/dt/splash.c"
     "${KSHIM_ROOT}/lib/libfdt/fdt.c" "${KSHIM_ROOT}/lib/libfdt/fdt_check.c"
@@ -112,6 +112,8 @@ kshim_test(crdk_poll_test crdk_poll_test.c)
 target_link_libraries(crdk_poll_test PRIVATE crdk)
 kshim_test(dt_handoff_test dt_handoff_test.c)
 target_link_libraries(dt_handoff_test PRIVATE kshim_dt)
+kshim_test(initrd_test initrd_test.c)
+target_link_libraries(initrd_test PRIVATE kshim_dt)
 kshim_test(dt_handoff_reservations_test dt_handoff_reservations_test.c)
 target_link_libraries(dt_handoff_reservations_test PRIVATE kshim_dt)
 
@@ -203,6 +205,10 @@ add_dependencies(tb323fu_splash_test tb323fu_splash_fixture)
 target_compile_definitions(tb323fu_splash_test PRIVATE
     FIXTURE_PATH="${TB323FU_SPLASH_DTB}")
 
+# TB322FC / Sun (DPU12) splash detection; builds its DT in-process with libfdt.
+kshim_test(tb322fc_splash_test tb322fc_splash_test.c)
+target_link_libraries(tb322fc_splash_test PRIVATE kshim_dt)
+
 # Parent index cache unit test: wrap fdt_parent_offset to observe cache hits.
 kshim_test(dt_parent_index_test parent_index_test.c)
 target_link_libraries(dt_parent_index_test PRIVATE kshim_dt)
@@ -225,10 +231,16 @@ target_link_options(dt_phandle_scan_test PRIVATE -Wl,--wrap=fdt_getprop)
 kshim_test(dt_probe_report_test probe_report_test.c)
 target_link_libraries(dt_probe_report_test PRIVATE kshim_dt)
 
+kshim_test(dt_diagnostic_report_test dt_diagnostic_report_test.c)
+target_link_libraries(dt_diagnostic_report_test PRIVATE kshim_dt)
+
 target_compile_definitions(kshim_dt PRIVATE KSHIM_DIAGNOSTIC_RESOURCES_ONLY=1)
 
 kshim_test(memory_overlay_test memory_overlay_test.c)
 target_link_libraries(memory_overlay_test PRIVATE kshim_dt)
+
+kshim_test(device_info_test device_info_test.c)
+target_link_libraries(device_info_test PRIVATE kshim_dt)
 
 kshim_test(splash_trace_report_test splash_trace_report_test.c)
 target_link_libraries(splash_trace_report_test PRIVATE kshim_dt)
@@ -250,15 +262,61 @@ kshim_test(psci_power_test psci_power_test.c "${KSHIM_ROOT}/src/arch/arm64/psci.
 target_link_libraries(psci_power_test PRIVATE kshim_dt)
 
 # Compile the real platform loop with scripted peripherals in both profiles.
+# platform_menu_test and platform_menu_no_power_test keep the debug console ON
+# (explicit here, matching the harness default); platform_menu_console_off_test
+# forces it OFF to exercise the TB322FC auto-return gate against the same source.
 kshim_test(platform_menu_test platform_menu_test.c)
 kshim_test(platform_menu_no_power_test platform_menu_test.c)
+kshim_test(platform_menu_console_off_test platform_menu_test.c)
 target_compile_definitions(platform_menu_no_power_test PRIVATE CONFIG_KSHIM_MENU_POWER_ACTIONS=0)
-foreach(target platform_menu_test platform_menu_no_power_test)
+target_compile_definitions(platform_menu_test PRIVATE CONFIG_KSHIM_DEBUG_CONSOLE=1)
+target_compile_definitions(platform_menu_no_power_test PRIVATE CONFIG_KSHIM_DEBUG_CONSOLE=1)
+target_compile_definitions(platform_menu_console_off_test PRIVATE CONFIG_KSHIM_DEBUG_CONSOLE=0)
+foreach(target platform_menu_test platform_menu_no_power_test platform_menu_console_off_test)
     target_include_directories(${target} BEFORE PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/include" "${KSHIM_ROOT}/lib/libfdt/include")
     target_link_libraries(${target} PRIVATE crdk)
-    target_sources(${target} PRIVATE "${KSHIM_ROOT}/src/core/menu_locale.c")
+    target_sources(${target} PRIVATE "${KSHIM_ROOT}/src/core/menu_locale.c"
+        "${KSHIM_ROOT}/src/core/boot_settings.c")
 endforeach()
+
+# Pure boot-settings decision module: no stub, no storage/UFS backend.
+kshim_test(boot_settings_test boot_settings_test.c
+    "${KSHIM_ROOT}/src/core/boot_settings.c")
+
+# Session-settings entry-point profiles: the same real platform loop, driven
+# through kshim_platform_select_localized_settings. The console-off variant
+# additionally exercises the new entry point against the TB322FC auto-return
+# gate with the debug console forced off.
+kshim_test(platform_settings_menu_test platform_menu_test.c)
+target_compile_definitions(platform_settings_menu_test PRIVATE
+    CONFIG_KSHIM_MENU_SESSION_SETTINGS=1
+    CONFIG_KSHIM_MENU_LANGUAGE_SWITCH=1
+    CONFIG_KSHIM_MENU_ADVANCED_ACTIONS=1
+    CONFIG_KSHIM_DEBUG_CONSOLE=1
+    CONFIG_KSHIM_MENU_POWER_ACTIONS=1
+    CONFIG_KSHIM_MENU_CHINESE=1
+    CONFIG_KSHIM_QCOM_REBOOT=1)
+target_include_directories(platform_settings_menu_test BEFORE PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include" "${KSHIM_ROOT}/lib/libfdt/include")
+target_link_libraries(platform_settings_menu_test PRIVATE crdk)
+target_sources(platform_settings_menu_test PRIVATE
+    "${KSHIM_ROOT}/src/core/menu_locale.c" "${KSHIM_ROOT}/src/core/boot_settings.c")
+
+kshim_test(platform_settings_console_off_test platform_menu_test.c)
+target_compile_definitions(platform_settings_console_off_test PRIVATE
+    CONFIG_KSHIM_MENU_SESSION_SETTINGS=1
+    CONFIG_KSHIM_MENU_LANGUAGE_SWITCH=1
+    CONFIG_KSHIM_MENU_ADVANCED_ACTIONS=1
+    CONFIG_KSHIM_DEBUG_CONSOLE=0
+    CONFIG_KSHIM_MENU_POWER_ACTIONS=1
+    CONFIG_KSHIM_MENU_CHINESE=1
+    CONFIG_KSHIM_QCOM_REBOOT=1)
+target_include_directories(platform_settings_console_off_test BEFORE PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include" "${KSHIM_ROOT}/lib/libfdt/include")
+target_link_libraries(platform_settings_console_off_test PRIVATE crdk)
+target_sources(platform_settings_console_off_test PRIVATE
+    "${KSHIM_ROOT}/src/core/menu_locale.c" "${KSHIM_ROOT}/src/core/boot_settings.c")
 
 # TB323FU uses its own theme and locale without changing the generic suite.
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -313,7 +371,8 @@ kshim_test(platform_advanced_menu_test platform_menu_test.c)
 target_compile_definitions(platform_advanced_menu_test PRIVATE CONFIG_KSHIM_MENU_ADVANCED_ACTIONS=1 CONFIG_KSHIM_QCOM_REBOOT=1 CONFIG_KSHIM_MENU_CHINESE=1)
 target_include_directories(platform_advanced_menu_test BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include" "${KSHIM_ROOT}/lib/libfdt/include")
 target_link_libraries(platform_advanced_menu_test PRIVATE crdk)
-target_sources(platform_advanced_menu_test PRIVATE "${KSHIM_ROOT}/src/core/menu_locale.c")
+target_sources(platform_advanced_menu_test PRIVATE "${KSHIM_ROOT}/src/core/menu_locale.c"
+    "${KSHIM_ROOT}/src/core/boot_settings.c")
 
 # Runtime menu language switch profile: same real platform loop, scripted peripherals.
 kshim_test(platform_language_menu_test platform_menu_test.c)
@@ -324,7 +383,27 @@ target_compile_definitions(platform_language_menu_test PRIVATE
     CONFIG_KSHIM_QCOM_REBOOT=1)
 target_include_directories(platform_language_menu_test BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include" "${KSHIM_ROOT}/lib/libfdt/include")
 target_link_libraries(platform_language_menu_test PRIVATE crdk)
-target_sources(platform_language_menu_test PRIVATE "${KSHIM_ROOT}/src/core/menu_locale.c")
+target_sources(platform_language_menu_test PRIVATE "${KSHIM_ROOT}/src/core/menu_locale.c"
+    "${KSHIM_ROOT}/src/core/boot_settings.c")
 
 kshim_test(menu_locale_test menu_locale_test.c "${KSHIM_ROOT}/src/core/menu_locale.c")
 target_compile_definitions(menu_locale_test PRIVATE CONFIG_KSHIM_MENU_LANGUAGE_SWITCH=1 CONFIG_KSHIM_MENU_CHINESE=1)
+
+# Compile-time debug-console switch regression: the real src/drivers/console.c
+# against stubbed DT validate/probe, GENI poll UART and PL011 edges. The default
+# profile uses the generated board Kconfig (CONFIG_KSHIM_DEBUG_CONSOLE defaults
+# to y); the disabled profile forces it off with an empty config.h.
+set(KSHIM_CONSOLE_TEST_SOURCES console_config_test.c
+    "${KSHIM_ROOT}/src/drivers/console.c")
+kshim_test(console_default_test ${KSHIM_CONSOLE_TEST_SOURCES})
+target_compile_definitions(console_default_test PRIVATE TEST_CONSOLE_DISABLED=0)
+target_include_directories(console_default_test BEFORE PRIVATE
+    "${TB323FU_GENERATED}" "${KSHIM_ROOT}/lib/libfdt/include")
+target_link_libraries(console_default_test PRIVATE crdk)
+
+kshim_test(console_disabled_test ${KSHIM_CONSOLE_TEST_SOURCES})
+target_compile_definitions(console_disabled_test PRIVATE
+    TEST_CONSOLE_DISABLED=1 CONFIG_KSHIM_DEBUG_CONSOLE=0)
+target_include_directories(console_disabled_test BEFORE PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include" "${KSHIM_ROOT}/lib/libfdt/include")
+target_link_libraries(console_disabled_test PRIVATE crdk)

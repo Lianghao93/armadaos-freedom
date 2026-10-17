@@ -99,6 +99,43 @@ except SystemExit as error:
             self.assertEqual(self.invoke("update", "channel", "preview"), 0)
             request.assert_called_with("channel-preview")
 
+    def operating_system_state(self, **overrides):
+        state = {"booted": {"version": "20260919.current"},
+                 "rollback": {"version": "20260907.previous", "checksum": "b" * 64, "incompatible": False},
+                 "staged": None, "rollback_queued": False, "reboot_ready": False,
+                 "channel": "stable", "channels": ["stable", "beta", "preview"],
+                 "repository": "ghcr.io/mydanyi/armadaos-freedom"}
+        state.update(overrides)
+        return state
+
+    def operating_system_status(self, state):
+        output = io.StringIO()
+        with patch.object(tools, "privileged_request", return_value=state), contextlib.redirect_stdout(output):
+            self.assertEqual(tools.print_status("Operating System"), 0)
+        return output.getvalue()
+
+    def test_status_offers_after_restart_for_a_matching_freedom_pending_update(self):
+        output = self.operating_system_status(self.operating_system_state(
+            staged={"version": "20260920.next", "image": "ghcr.io/mydanyi/armadaos-freedom:stable"},
+            reboot_ready=True))
+        self.assertIn("After Restart: 20260920.next", output)
+
+    def test_status_reports_the_source_of_an_unsupported_pending_update(self):
+        for image in ("ghcr.io/armada-os/armada:stable",
+                      "ghcr.io/virtudude/armada:stable",
+                      "example.invalid/whatever:stable"):
+            with self.subTest(image=image):
+                output = self.operating_system_status(self.operating_system_state(
+                    staged={"version": "20260920.next", "image": image}))
+                self.assertNotIn("After Restart", output)
+                self.assertIn(image, output)
+
+    def test_status_keeps_after_restart_for_an_explicit_rollback(self):
+        output = self.operating_system_status(self.operating_system_state(
+            rollback_queued=True, reboot_ready=True,
+            staged={"version": "20260920.next", "image": "ghcr.io/armada-os/armada:stable"}))
+        self.assertIn("After Restart: 20260907.previous", output)
+
     def test_removed_steam_commands_are_rejected(self):
         for command in (("restore",), ("games", "list"), ("games", "uninstall", "100", "--yes")):
             with self.subTest(command=command), self.assertRaises(SystemExit) as error:

@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
 
 env:
-  ARMADA_CANONICAL_IMAGE: "ghcr.io/armada-os/armada"
-  ARMADA_LEGACY_IMAGE: "ghcr.io/virtudude/armada"
+  ARMADA_CANONICAL_IMAGE: "ghcr.io/mydanyi/armadaos-freedom"
+  ARMADA_SIGNING_PUBLIC_KEY: "system_files/etc/pki/containers/armadaos-freedom.pub"
   BASE_IMAGE: "quay.io/fedora/fedora-bootc:44"
   IMAGE_DESC: "Armada: a gaming-focused, SteamOS-like Fedora bootc image for ARM64 handhelds"
   IMAGE_NAME: "${{ github.event.repository.name }}"
@@ -87,17 +87,29 @@ jobs:
           done
           [ -z "$need" ] || { sudo apt-get update && sudo apt-get install -y $need; }
 
-      - name: Check signing key
-        run: |
-          if [ -z "${{ secrets.SIGNING_SECRET }}" ]; then
-            echo "::error::SIGNING_SECRET is not set — refusing to publish an unsigned image (devices verify ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }})."
-            exit 1
-          fi
-
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+
+      - name: Check signing key
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+        run: |
+          set -euo pipefail
+          IMAGE_FULL="${IMAGE_REGISTRY}/${IMAGE_NAME}"
+          if [ "${IMAGE_FULL}" != "${ARMADA_CANONICAL_IMAGE}" ]; then
+            echo "::error::Freedom repository mismatch: this workflow only signs ${ARMADA_CANONICAL_IMAGE}, but images would be published to ${IMAGE_FULL}. Refusing to continue."
+            exit 1
+          fi
+          if [ -z "${COSIGN_PRIVATE_KEY:-}" ]; then
+            echo "::error::SIGNING_SECRET is not set — refusing to publish an unsigned image (devices verify ${ARMADA_CANONICAL_IMAGE})."
+            exit 1
+          fi
+          if [ ! -f "${ARMADA_SIGNING_PUBLIC_KEY}" ] || [ ! -s "${ARMADA_SIGNING_PUBLIC_KEY}" ]; then
+            echo "::error::Freedom signing public key missing or empty: ${ARMADA_SIGNING_PUBLIC_KEY}"
+            exit 1
+          fi
 
       - name: Install just
         uses: ublue-os/just-action@30ab4659369934b65b655bf8d2fa4ddd6547d384 # v3
@@ -268,33 +280,23 @@ jobs:
         if: env.HAVE_SIGNING_SECRET == 'true'
         run: |
           set -euo pipefail
-          IMAGE_FULL="${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}"
+          IMAGE_FULL="${IMAGE_REGISTRY}/${IMAGE_NAME}"
           IMAGE_REF="${IMAGE_FULL}@${{ steps.push.outputs.digest }}"
           # Cosign and Skopeo use separate registry auth stores.
           echo "${{ secrets.GITHUB_TOKEN }}" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
           # Sign the digest, not a tag (a concurrent run could re-point the tag).
           # --new-bundle-format=false: bootc's verifier expects the legacy .sig; the
           # default flips in cosign v3.
-          cosign sign -y --new-bundle-format=false --key env://COSIGN_PRIVATE_KEY "${IMAGE_REF}"
+          # --sign-container-identity: sign the exact canonical identity devices trust.
+          cosign sign -y --new-bundle-format=false \
+            --key env://COSIGN_PRIVATE_KEY \
+            --sign-container-identity "${ARMADA_CANONICAL_IMAGE}" \
+            "${IMAGE_REF}"
 
-          # Legacy-hosted images also need the canonical identity required by bridge policy.
-          if [ "${IMAGE_FULL}" = "${ARMADA_LEGACY_IMAGE}" ]; then
-            cosign sign -y --new-bundle-format=false \
-              --key env://COSIGN_PRIVATE_KEY \
-              --sign-container-identity "${ARMADA_CANONICAL_IMAGE}" \
-              "${IMAGE_REF}"
-          fi
-
-          if [ "${{ github.event.repository.fork }}" != "true" ]; then
-            cosign verify --key system_files/etc/pki/containers/armada.pub "${IMAGE_REF}"
-            if [ "${IMAGE_FULL}" = "${ARMADA_LEGACY_IMAGE}" ]; then
-              cosign verify --check-claims=false \
-                --key system_files/etc/pki/containers/armada.pub \
-                "${IMAGE_REF}" |
-                jq -s -e --arg identity "${ARMADA_CANONICAL_IMAGE}" \
-                  'any(.. | objects; .critical?.identity?["docker-reference"]? == $identity)'
-            fi
-          fi
+          # Always verify the signature we just created, on every repository
+          # including forks, with the Freedom signing public key. A failed verify
+          # must abort the job so the channel tags are never published.
+          cosign verify --key "${ARMADA_SIGNING_PUBLIC_KEY}" "${IMAGE_REF}"
         env:
           HAVE_SIGNING_SECRET: ${{ secrets.SIGNING_SECRET != '' }}
           TAGS: ${{ steps.push.outputs.digest }}

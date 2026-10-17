@@ -70,3 +70,7 @@ to a commit, or `armada` if it's original; a URL source with no `notes` is verba
   source: https://github.com/enij90/armada-tb321fu/commit/8d4b5530ab8afbc41d35e6577fa91e77ee872c3a
   notes: Rebased to the PR665 + Y705 tree; the two production hunks are only relocated, and the Y700 mode-list test expectation is adapted. EDID DTD metadata clamps pixel clocks above 655.35 MHz while preserving geometry; the actual scanout modes remain the kernel modes. This does NOT fix physical 165 Hz, change panel clocks, or fix the 90 Hz physical corruption. No new tests or physical fixes are claimed.
   The patch header's "not executed" statement dates from artifact generation. The unchanged patch was subsequently built in the ARM64 RPM; 17 related tests / 113 assertions passed. This sync verifies it against that RPM's source package and reuses the recorded build results. See the TB323FU status record for device acceptance and remaining issues.
+
+- `patches/0035-wlserver-associate-spi-touchscreens-with-internal-display.patch`
+  source: armada
+  The connector heuristic only mapped i2c to the internal connector and usb to the external one. An SPI digitizer (TB322FC: input -> spi -> spi_master -> platform) matched neither, so touch stayed unassociated and skipped the connector's orientation transform. spi is now handled like i2c. No angle is hardcoded; calibration, DPI, kernel, UI, Steam arguments and the USB path are unchanged. Not built or device-tested here.

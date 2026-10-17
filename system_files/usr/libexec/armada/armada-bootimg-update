@@ -1,7 +1,42 @@
 #!/bin/bash
 # Rebuild the ESP /KERNEL (Android boot.img) for the next-boot deployment so a
 # bootc upgrade/rollback takes effect — ostree is bootloader=none and won't.
+# On a kShimC device (installer-authored /etc/armada/boot-method=kshimc) the
+# tested armada-kshim-state tool owns the same lifecycle below boot_a; this
+# script only dispatches to it and never touches the ESP, the bootimg lock or
+# the bootimg args. An absent file (existing ABL device) or the literal abl
+# keeps the historical /KERNEL path untouched.
 set -euo pipefail
+
+BOOT_METHOD_FILE=/etc/armada/boot-method
+
+# Read the method before any legacy check, lock or ESP write: the state tool
+# takes its own locks and its failures are final, never an ABL fallback.
+boot_method=abl
+if [ -e "${BOOT_METHOD_FILE}" ] || [ -L "${BOOT_METHOD_FILE}" ]; then
+    boot_method=$(cat "${BOOT_METHOD_FILE}") || {
+        echo "armada-bootimg-update: cannot read ${BOOT_METHOD_FILE}" >&2
+        exit 1
+    }
+fi
+case "${boot_method}" in
+    abl)
+        ;;
+    kshimc)
+        if [ "$#" -eq 0 ]; then
+            exec /usr/libexec/armada/armada-kshim-state sync
+        fi
+        if [ "$#" -eq 1 ] && [ "${1}" = "--snapshot-prev" ]; then
+            exec /usr/libexec/armada/armada-kshim-state record-boot
+        fi
+        echo "armada-bootimg-update: kshimc takes no arguments or exactly --snapshot-prev, got: $*" >&2
+        exit 1
+        ;;
+    *)
+        echo "armada-bootimg-update: unknown boot method '${boot_method}' in ${BOOT_METHOD_FILE}" >&2
+        exit 1
+        ;;
+esac
 
 ESP="${ESP:-/boot/efi}"
 BOOTROOT="${BOOTROOT:-/boot}"

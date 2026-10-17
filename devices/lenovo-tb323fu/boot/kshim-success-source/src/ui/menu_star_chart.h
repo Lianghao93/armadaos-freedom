@@ -151,6 +151,7 @@ static inline void KshimStarIcon(lv_event_t *e,kshim_design_rect_t r,uint32_t ro
         break;
     case KSHIM_MENU_ROLE_INTERNAL:
     case KSHIM_MENU_ROLE_BASE:
+    case KSHIM_MENU_ROLE_DEFAULT:
         q=KshimStarSub(r,120,240,760,520);
         KshimSymbolRect(e,ink,opa,q.x,q.y,q.w,q.h,q.h/4,stroke);
         KshimSymbolLine(e,ink,opa,q.x+q.w/8,q.y+q.h*58/100,q.x+q.w*7/8,q.y+q.h*58/100,stroke,true);
@@ -165,7 +166,8 @@ static inline void KshimStarIcon(lv_event_t *e,kshim_design_rect_t r,uint32_t ro
         KshimSymbolLine(e,ink,opa,KshimStarMapX(r,260),KshimStarMapY(r,620),KshimStarMapX(r,640),KshimStarMapY(r,620),stroke,true);
         break;
     }
-    case KSHIM_MENU_ROLE_ADVANCED: {
+    case KSHIM_MENU_ROLE_ADVANCED:
+    case KSHIM_MENU_ROLE_SETTINGS: {
         static const int32_t tooth[6]={0,2,4,6,8,10};
         int32_t i, ri=KshimStarMapR(r,240), ro=KshimStarMapR(r,440);
         for(i=0;i<6;i++) {
@@ -229,6 +231,18 @@ static inline void KshimStarIcon(lv_event_t *e,kshim_design_rect_t r,uint32_t ro
             KshimStarMapX(r,600),KshimStarMapY(r,120),stroke,true);
         KshimSymbolLine(e,ink,opa,KshimStarMapX(r,500),KshimStarMapY(r,700),
             KshimStarMapX(r,500),KshimStarMapY(r,880),stroke,true);
+        break;
+    case KSHIM_MENU_ROLE_DEVICE_INFO:
+    case KSHIM_MENU_ROLE_DEVICE:
+    case KSHIM_MENU_ROLE_DEVICE_AUTO:
+    case KSHIM_MENU_ROLE_DEVICE_TB322FC:
+    case KSHIM_MENU_ROLE_DEVICE_TB323FU:
+        /* Simple info tablet: an outlined rounded frame with a dot-and-stem i,
+         * drawn from the existing outline primitives only. */
+        q=KshimStarSub(r,220,150,560,700);
+        KshimSymbolRect(e,ink,opa,q.x,q.y,q.w,q.h,q.h/8,stroke);
+        KshimSymbolRect(e,accent,opa,q.x+q.w/2-q.w/16,q.y+q.h/7,q.w/8,q.h/10,q.w/16,0);
+        KshimSymbolLine(e,ink,opa,q.x+q.w/2,q.y+q.h*2/5,q.x+q.w/2,q.y+q.h*5/6,stroke,true);
         break;
     default:
         q=KshimStarSub(r,180,140,640,720);
@@ -417,7 +431,9 @@ static inline void KshimStarRowDraw(lv_event_t *event,size_t index) {
         ir.w=metrics.icon.w; ir.h=metrics.icon.h;
         KshimStarIcon(event,ir,role,mMenuStyle.Text,gold,opa,stroke);
     }
-    if(role==KSHIM_MENU_ROLE_ADVANCED || role==KSHIM_MENU_ROLE_LANGUAGE) {
+    if(role==KSHIM_MENU_ROLE_ADVANCED || role==KSHIM_MENU_ROLE_LANGUAGE ||
+        role==KSHIM_MENU_ROLE_SETTINGS || role==KSHIM_MENU_ROLE_DEVICE || role==KSHIM_MENU_ROLE_DEFAULT ||
+        (role==KSHIM_MENU_ROLE_DEVICE_INFO && mContext->ActionLabels[index]!=NULL && strcmp(mContext->ActionLabels[index], KSHIM_MENU_ACTION_ENTER)==0)) {
         cx=a.x2-KshimDesignPx(10); cy=(a.y1+a.y2)/2; ch=KshimDesignPx(5);
         KshimSymbolLine(event,gold,opa,cx-ch,cy-ch,cx,cy,thin,true);
         KshimSymbolLine(event,gold,opa,cx,cy,cx-ch,cy+ch,thin,true);

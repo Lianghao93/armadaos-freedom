@@ -163,13 +163,20 @@ def print_status(only=None):
                     else:
                         values = {"IP Address": ", ".join(ip for _, ip in values["addresses"]) or "No network address available"}
                 elif title == "Operating System":
-                    pending = values["rollback"] if values["rollback_queued"] else values["staged"]
-                    values = {"Current Version": values["booted"]["version"],
-                              "Previous Version": (values["rollback"] or {}).get("version", "No previous version available"),
-                              "Update Channel": values["channel"] or "Unavailable"}
+                    state = values
+                    values = {"Current Version": state["booted"]["version"],
+                              "Previous Version": (state["rollback"] or {}).get("version", "No previous version available"),
+                              "Update Channel": state["channel"] or "Unavailable"}
                     channel = values.pop("Update Channel")
-                    if pending:
-                        values["After Restart"] = pending["version"]
+                    if state["rollback_queued"] and state["rollback"]:
+                        # An explicit rollback always wins and names its target.
+                        values["After Restart"] = state["rollback"]["version"]
+                    elif state["staged"] and state["reboot_ready"]:
+                        # The backend has already validated the staged source/channel.
+                        values["After Restart"] = state["staged"]["version"]
+                    elif state["staged"]:
+                        values["Pending Update"] = (
+                            f"Unsupported pending update from {state['staged']['image']}")
                     values["Update Channel"] = channel
                 for key, value in values.items():
                     print(f"  {key}: {value}")

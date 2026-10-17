@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT
- * TB323FU reboot targets: stock hardware DT + Qualcomm's published SM8850
- * NVMEM and SCM protocols. No address, vendor RESET2 tuple or dump-mode guess.
+ * TB322FC/TB323FU reboot targets: stock hardware DT + Qualcomm's published
+ * SM8750/SM8850 NVMEM and SCM protocols. No address, vendor RESET2 tuple or
+ * dump-mode guess.
  */
 #if !defined(KSHIM_HOST_TEST)
 #include <config.h>
@@ -49,7 +50,8 @@ int kshim_qcom_reboot_parse(const void *fdt,
      * are accepted only if the actual hardware descriptions below exist. */
     if (fdt_node_check_compatible(fdt, 0, "qcom,canoep") &&
         fdt_node_check_compatible(fdt, 0, "lenovo,tb323fu") &&
-        fdt_node_check_compatible(fdt, 0, "lenovo,baldur"))
+        fdt_node_check_compatible(fdt, 0, "lenovo,baldur") &&
+        fdt_node_check_compatible(fdt, 0, "qcom,sunp"))
         return KSHIM_QCOM_REBOOT_UNSUPPORTED;
 
     int scm = unique_compatible(fdt, "qcom,scm");

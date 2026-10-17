@@ -72,6 +72,96 @@ assert_eq "$(device_env_value 'AYN Odin 2' ARMADA_DEVICE_ID)" ayn-odin-2 'odin d
 assert_eq "$odin_calibration" '' 'odin calibration empty'
 assert_eq "$odin_touchscreen" '' 'odin touchscreen empty'
 
+# --- device-env: Lenovo Legion Y700 Gen4 devicetree identification ----------
+# The Gen4 board is identified from a real devicetree directory: an exact
+# NUL-separated compatible entry, or the exact model string. Every check runs
+# the real device-env against a temporary DT root and decodes one emitted
+# value; no source-text inspection and no mocked selector.
+dt_root="$TEST_ROOT/devicetree"
+
+write_dt_model() {
+    rm -rf "$dt_root"
+    mkdir -p "$dt_root"
+    printf '%s\000' "$1" > "$dt_root/model"
+}
+
+write_dt_compatible() {
+    local entry
+
+    : > "$dt_root/compatible"
+    for entry in "$@"; do
+        printf '%s\000' "$entry" >> "$dt_root/compatible"
+    done
+}
+
+# Prints one emitted variable from a device-env run against the DT root. With a
+# nonempty model argument ARMADA_MODEL is set (explicit override); otherwise it
+# is cleared so the devicetree is consulted.
+dt_value() {
+    local var="$1" model="${2-}"
+    local line raw value out
+
+    if [[ -n "$model" ]]; then
+        out="$(ARMADA_MODEL="$model" ARMADA_DT_ROOT="$dt_root" \
+            ARMADA_DEVICE_DIR="$DEVICES_DIR" bash "$DEVICE_ENV")"
+    else
+        out="$(env -u ARMADA_MODEL ARMADA_DT_ROOT="$dt_root" \
+            ARMADA_DEVICE_DIR="$DEVICES_DIR" bash "$DEVICE_ENV")"
+    fi
+
+    while IFS= read -r line; do
+        [[ "$line" == "$var="* ]] || continue
+        raw="${line#"$var"=}"
+        eval "value=${raw}"
+        printf '%s' "$value"
+    done <<<"$out"
+}
+
+# The exact compatible entry, first position, with an unrecognized board model.
+write_dt_model 'Some Unrecognized Board'
+write_dt_compatible 'lenovo,elden' 'qcom,sm8750'
+assert_eq "$(dt_value ARMADA_DEVICE_ID)" lenovo-tb322fc 'elden compatible device id'
+assert_eq "$(dt_value ARMADA_DEVICE_NAME)" 'Lenovo Legion Y700 Gen4' 'elden compatible device name'
+assert_eq "$(dt_value ARMADA_SOC_CLASS)" SM8750 'elden compatible soc class'
+assert_eq "$(dt_value ARMADA_PRIMARY_TOUCHSCREEN)" "$TOUCHSCREEN" 'elden compatible touchscreen'
+# Orientation and calibration defaults stay unchanged, but Gen4 uses the
+# accepted rotation shader fallback.
+assert_eq "$(dt_value ARMADA_PANEL_ORIENTATION)" normal 'elden orientation default'
+assert_eq "$(dt_value ARMADA_GAMESCOPE_USE_ROTATION_SHADER)" 1 'elden rotation shader fallback'
+assert_eq "$(dt_value ARMADA_DESKTOP_TOUCHSCREEN_CALIBRATION)" '' 'elden calibration empty'
+
+# The exact entry also matches when it is not the first compatible.
+write_dt_model 'Some Unrecognized Board'
+write_dt_compatible 'qcom,sm8750' 'lenovo,elden'
+assert_eq "$(dt_value ARMADA_DEVICE_ID)" lenovo-tb322fc 'elden second compatible device id'
+
+# Near-miss compatibles must not select the Gen4 profile.
+write_dt_model 'Some Unrecognized Board'
+write_dt_compatible 'lenovo,elden-rev2'
+assert_eq "$(dt_value ARMADA_DEVICE_ID)" unknown 'elden-rev2 is not an exact match'
+write_dt_model 'Some Unrecognized Board'
+write_dt_compatible 'qcom,sm8750'
+assert_eq "$(dt_value ARMADA_DEVICE_ID)" unknown 'generic sm8750 is not an elden match'
+
+# A known model still resolves through the existing model cases.
+write_dt_model 'AYN Odin 3'
+write_dt_compatible 'qcom,sm8750'
+assert_eq "$(dt_value ARMADA_DEVICE_ID)" ayn-odin-3 'odin3 model over generic compatible'
+
+# The exact compatible wins over a matching model when nothing overrides it.
+write_dt_model 'AYN Odin 3'
+write_dt_compatible 'lenovo,elden'
+assert_eq "$(dt_value ARMADA_DEVICE_ID)" lenovo-tb322fc 'compatible wins over model'
+
+# An explicit nonempty ARMADA_MODEL keeps priority over an Elden compatible.
+write_dt_model 'Some Unrecognized Board'
+write_dt_compatible 'lenovo,elden'
+assert_eq "$(dt_value ARMADA_DEVICE_ID 'AYN Odin 3')" ayn-odin-3 'explicit model over elden compatible'
+
+# The exact Gen4 model string is a fallback when no compatible is present.
+write_dt_model 'Lenovo Legion Y700 Gen4'
+assert_eq "$(dt_value ARMADA_DEVICE_ID)" lenovo-tb322fc 'gen4 fallback device id'
+
 # --- fixtures ---------------------------------------------------------------
 stub_bin="$TEST_ROOT/bin"
 mkdir -p "$stub_bin"

@@ -166,7 +166,11 @@ class UpdatesGroup(Adw.PreferencesGroup):
         elif state["rollback_queued"]:
             self.show_message("Rollback ready. Restart to apply.")
         elif state["staged"]:
-            self.show_message("Update installed. Restart to apply.")
+            if state["reboot_ready"]:
+                self.show_message("Update installed. Restart to apply.")
+            else:
+                self.show_message(
+                    f"Unsupported pending update from {state['staged']['image']}.")
         else:
             self.show_message("")
         if hasattr(self.window, "repair_button"):

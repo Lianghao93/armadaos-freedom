@@ -202,26 +202,28 @@ static void RenderStarMain(const char *Directory, kshim_lvgl_t *Ui,
                            uint32_t LogicalWidth, uint32_t LogicalHeight,
                            const char *Tag)
 {
-    static const kshim_menu_role_t Roles[7] = {
+    static const kshim_menu_role_t Roles[8] = {
         KSHIM_MENU_ROLE_ANDROID, KSHIM_MENU_ROLE_INTERNAL, KSHIM_MENU_ROLE_TF,
         KSHIM_MENU_ROLE_ADVANCED, KSHIM_MENU_ROLE_LANGUAGE,
+        KSHIM_MENU_ROLE_DEVICE_INFO,
         KSHIM_MENU_ROLE_RESTART, KSHIM_MENU_ROLE_OFF,
     };
-    const char *Names[7];
-    const char *Descriptions[7];
-    const char *Actions[7];
-    StarFillRoles(Roles, 7U, Names, Descriptions);
+    const char *Names[8];
+    const char *Descriptions[8];
+    const char *Actions[8];
+    StarFillRoles(Roles, 8U, Names, Descriptions);
     Actions[0] = KSHIM_MENU_ACTION_BOOT;
     Actions[1] = KSHIM_MENU_ACTION_BOOT;
     Actions[2] = KSHIM_MENU_ACTION_BOOT;
     Actions[3] = KSHIM_MENU_ACTION_ENTER;
     Actions[4] = KSHIM_MENU_ACTION_ENTER;
-    Actions[5] = KSHIM_MENU_ACTION_RESTART;
-    Actions[6] = KSHIM_MENU_ACTION_OFF;
+    Actions[5] = KSHIM_MENU_ACTION_ENTER;
+    Actions[6] = KSHIM_MENU_ACTION_RESTART;
+    Actions[7] = KSHIM_MENU_ACTION_OFF;
     assert(kshim_lvgl_set_entries_described(Ui, (const char *const *)Names,
-        (const char *const *)Descriptions, (const char *const *)Actions, 7U, 1U) == 0);
-    kshim_lvgl_set_entry_roles(Ui, Roles, 7U);
-    kshim_lvgl_set_countdown(Ui, 8000U);
+        (const char *const *)Descriptions, (const char *const *)Actions, 8U, 1U) == 0);
+    kshim_lvgl_set_entry_roles(Ui, Roles, 8U);
+    kshim_lvgl_set_countdown(Ui, Ui->ElapsedMs + 8000U);
     Advance(Ui, 16U);
     AssertDescription(Ui, Names[1], Descriptions[1], Actions[1]);
     char Countdown[128];
@@ -293,6 +295,114 @@ static void RenderStarLanguagePage(const char *Directory, kshim_lvgl_t *Ui,
     (void)WriteLogicalPpm(Directory, Stage, Framebuffer, LogicalWidth, LogicalHeight);
 }
 
+/* The STAR Device info page keeps the whole home list and renders one localized
+ * multi-line summary on the selected Device info row.  A shorter model and the
+ * overlong truncated variants are both captured; the values are synthetic and
+ * claim no captured stock FDT. */
+static void RenderStarDeviceInfo(const char *Directory, kshim_lvgl_t *Ui,
+                                 const kshim_framebuffer_t *Framebuffer,
+                                 uint32_t LogicalWidth, uint32_t LogicalHeight,
+                                 const char *Tag)
+{
+    static const kshim_menu_role_t Roles[8] = {
+        KSHIM_MENU_ROLE_ANDROID, KSHIM_MENU_ROLE_INTERNAL, KSHIM_MENU_ROLE_TF,
+        KSHIM_MENU_ROLE_ADVANCED, KSHIM_MENU_ROLE_LANGUAGE,
+        KSHIM_MENU_ROLE_DEVICE_INFO, KSHIM_MENU_ROLE_RESTART, KSHIM_MENU_ROLE_OFF,
+    };
+    static const kshim_menu_text_id FieldLabels[7] = {
+        KSHIM_TEXT_INFO_BOARD, KSHIM_TEXT_INFO_SOC, KSHIM_TEXT_INFO_MODEL,
+        KSHIM_TEXT_INFO_COMPATIBLE, KSHIM_TEXT_INFO_RAM,
+        KSHIM_TEXT_INFO_FRAMEBUFFER, KSHIM_TEXT_INFO_VERSION,
+    };
+    enum { InfoRow = 5 };
+    const char *Names[8];
+    const char *Descriptions[8];
+    const char *Actions[8];
+    StarFillRoles(Roles, 8U, Names, Descriptions);
+    Actions[0] = KSHIM_MENU_ACTION_BOOT;
+    Actions[1] = KSHIM_MENU_ACTION_BOOT;
+    Actions[2] = KSHIM_MENU_ACTION_BOOT;
+    Actions[3] = KSHIM_MENU_ACTION_ENTER;
+    Actions[4] = KSHIM_MENU_ACTION_ENTER;
+    Actions[5] = KSHIM_MENU_ACTION_BACK;
+    Actions[6] = KSHIM_MENU_ACTION_RESTART;
+    Actions[7] = KSHIM_MENU_ACTION_OFF;
+
+    /* The ordinary fixture ends the compatible list on the shared ellipsis. */
+    const char *NormalValues[7] = {
+        "TB322FC", "SM8750", "Lenovo TB322FC (fixture)",
+        "lenovo,elden\nqcom,sm8750\nqcom,sun\xe2\x80\xa6",
+        "8192 MiB", "1904x3040 stride 7616", "0.0.1",
+    };
+    char Normal[1024];
+    size_t Off = 0;
+    for (size_t Index = 0; Index < 7U; Index++) {
+        int Length = snprintf(Normal + Off, sizeof(Normal) - Off, "%s: %s%s",
+                              kshim_menu_text(FieldLabels[Index]),
+                              NormalValues[Index], (Index + 1U < 7U) ? "\n" : "");
+        assert(Length > 0 && (size_t)Length < sizeof(Normal) - Off);
+        Off += (size_t)Length;
+    }
+
+    /* An overlong model and three overlong compatible lines, each truncated
+     * with the shared ellipsis and never shortened to fit. */
+    char Model[160];
+    memset(Model, 'M', 120);
+    memcpy(Model + 120, "\xe2\x80\xa6", 4);
+    char Compat[200];
+    size_t CompatLength = 0;
+    for (int Line = 0; Line < 3; Line++) {
+        memset(Compat + CompatLength, 'W', 44);
+        CompatLength += 44;
+        memcpy(Compat + CompatLength, "\xe2\x80\xa6", 3);
+        CompatLength += 3;
+        if (Line < 2) Compat[CompatLength++] = '\n';
+    }
+    Compat[CompatLength] = '\0';
+    const char *ExtremeValues[7] = {
+        "TB322FC", "SM8750", Model, Compat,
+        "8192 MiB", "1904x3040 stride 7616", "0.0.1",
+    };
+    char Extreme[1024];
+    Off = 0;
+    for (size_t Index = 0; Index < 7U; Index++) {
+        int Length = snprintf(Extreme + Off, sizeof(Extreme) - Off, "%s: %s%s",
+                              kshim_menu_text(FieldLabels[Index]),
+                              ExtremeValues[Index], (Index + 1U < 7U) ? "\n" : "");
+        assert(Length > 0 && (size_t)Length < sizeof(Extreme) - Off);
+        Off += (size_t)Length;
+    }
+
+    Descriptions[InfoRow] = Normal;
+    assert(kshim_lvgl_set_entries_described(Ui, (const char *const *)Names,
+        (const char *const *)Descriptions, (const char *const *)Actions, 8U,
+        (size_t)InfoRow) == 0);
+    kshim_lvgl_set_entry_roles(Ui, Roles, 8U);
+    kshim_lvgl_set_countdown(Ui, 0U);
+    kshim_lvgl_set_status(Ui, "");
+    Advance(Ui, 400U);
+    AssertDescription(Ui, Names[InfoRow], Normal, Actions[InfoRow]);
+    char Stage[64];
+    int Length = snprintf(Stage, sizeof(Stage), "star-%s-device-info", Tag);
+    assert(Length > 0 && (size_t)Length < sizeof(Stage));
+    (void)WriteLogicalPpm(Directory, Stage, Framebuffer, LogicalWidth, LogicalHeight);
+
+    /* The truncated model/compatible variant fills the summary; the image is
+     * reviewed by eye and the initial title is still the Device info row. */
+    Descriptions[InfoRow] = Extreme;
+    assert(kshim_lvgl_set_entries_described(Ui, (const char *const *)Names,
+        (const char *const *)Descriptions, (const char *const *)Actions, 8U,
+        (size_t)InfoRow) == 0);
+    kshim_lvgl_set_entry_roles(Ui, Roles, 8U);
+    kshim_lvgl_set_countdown(Ui, 0U);
+    kshim_lvgl_set_status(Ui, "");
+    Advance(Ui, 400U);
+    AssertDescription(Ui, Names[InfoRow], Extreme, Actions[InfoRow]);
+    Length = snprintf(Stage, sizeof(Stage), "star-%s-device-compatible", Tag);
+    assert(Length > 0 && (size_t)Length < sizeof(Stage));
+    (void)WriteLogicalPpm(Directory, Stage, Framebuffer, LogicalWidth, LogicalHeight);
+}
+
 static void RenderStarLanguageSet(const char *Directory, kshim_lvgl_t *Ui,
                                   const kshim_framebuffer_t *Framebuffer,
                                   uint32_t LogicalWidth, uint32_t LogicalHeight,
@@ -303,6 +413,7 @@ static void RenderStarLanguageSet(const char *Directory, kshim_lvgl_t *Ui,
     RenderStarAdvanced(Directory, Ui, Framebuffer, LogicalWidth, LogicalHeight, Tag);
     RenderStarLanguagePage(Directory, Ui, Framebuffer, LogicalWidth, LogicalHeight,
                            Language, Tag);
+    RenderStarDeviceInfo(Directory, Ui, Framebuffer, LogicalWidth, LogicalHeight, Tag);
 }
 
 static void RenderStarSize(const char *Directory, uint32_t PhysicalWidth,

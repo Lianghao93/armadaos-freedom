@@ -53,7 +53,7 @@ static const char *const kshim_menu_text_table[2][KSHIM_TEXT_COUNT] = {
         [KSHIM_TEXT_DESC_INTERNAL]  = "启动安装在机身存储中的 ArmadaOS。",
         [KSHIM_TEXT_DESC_TF]        = "启动安装在 TF 卡中的 ArmadaOS，请先插入对应 TF 卡。",
         [KSHIM_TEXT_DESC_DIAGNOSTIC] = "启动 Linux 诊断环境，用于检查启动和硬件问题。",
-        [KSHIM_TEXT_DESC_ADVANCED]  = "进入 Linux 诊断、恢复或刷机模式。",
+        [KSHIM_TEXT_DESC_ADVANCED]  = "查看可用的高级启动模式。",
         [KSHIM_TEXT_DESC_RESTART]   = "重新启动设备。",
         [KSHIM_TEXT_DESC_OFF]       = "关闭设备电源。",
         [KSHIM_TEXT_DESC_RECOVERY]  = "进入 Android 恢复模式，进行系统维护。",
@@ -95,6 +95,40 @@ static const char *const kshim_menu_text_table[2][KSHIM_TEXT_COUNT] = {
         [KSHIM_TEXT_LANG_ZH_NAME]     = "简体中文",
         [KSHIM_TEXT_LANG_EN_NAME]     = "English",
         [KSHIM_TEXT_CREDIT]           = "适配维护：B站「单翼」｜免费使用，谨防收费诈骗。",
+
+        [KSHIM_TEXT_INFO_LABEL]       = "设备信息",
+        [KSHIM_TEXT_INFO_DESC]        = "查看设备硬件信息（只读）。",
+        [KSHIM_TEXT_INFO_BOARD]       = "机型",
+        [KSHIM_TEXT_INFO_SOC]         = "SoC",
+        [KSHIM_TEXT_INFO_MODEL]       = "DT 型号",
+        [KSHIM_TEXT_INFO_COMPATIBLE]  = "DT 兼容列表",
+        [KSHIM_TEXT_INFO_RAM]         = "DT 报告内存",
+        [KSHIM_TEXT_INFO_FRAMEBUFFER] = "帧缓冲",
+        [KSHIM_TEXT_INFO_VERSION]     = "kShimC 版本",
+        [KSHIM_TEXT_INFO_RAM_PREFIX]  = "DT 报告",
+        [KSHIM_TEXT_UNKNOWN]          = "未知",
+
+        [KSHIM_TEXT_SETTINGS_LABEL]   = "设置",
+        [KSHIM_TEXT_SETTINGS_DESC]    = "本次启动有效。",
+        [KSHIM_TEXT_DEVICE_LABEL]     = "设备",
+        [KSHIM_TEXT_DEVICE_DESC]      = "选择本次启动使用的机型。",
+        [KSHIM_TEXT_DEFAULT_LABEL]    = "默认启动项",
+        [KSHIM_TEXT_DEFAULT_DESC]     = "选择本次启动的默认系统。",
+        [KSHIM_TEXT_DEVICE_AUTO_NAME] = "自动识别",
+        [KSHIM_TEXT_DEVICE_AUTO_DESC] = "按实际检测到的机型启动。",
+        [KSHIM_TEXT_DEVICE_TB322FC_NAME] = "Y700 四代 TB322FC",
+        [KSHIM_TEXT_DEVICE_TB322FC_DESC] = "按 TB322FC 机型启动。",
+        [KSHIM_TEXT_DEVICE_TB323FU_NAME] = "Y700 五代 TB323FU",
+        [KSHIM_TEXT_DEVICE_TB323FU_DESC] = "按 TB323FU 机型启动。",
+        [KSHIM_TEXT_BOARD_TB322FC_NAME]  = "Y700 四代",
+        [KSHIM_TEXT_BOARD_TB323FU_NAME]  = "Y700 五代",
+        [KSHIM_TEXT_SETTINGS_DEVICE_AUTO_FMT]   = "设备：自动（%s）",
+        [KSHIM_TEXT_SETTINGS_DEVICE_MANUAL_FMT] = "设备：%s",
+        [KSHIM_TEXT_SETTINGS_DEFAULT_FMT]       = "默认启动项：%s",
+        [KSHIM_TEXT_DEFAULT_MANIFEST] = "镜像默认",
+        [KSHIM_TEXT_UNAVAILABLE]      = "镜像未提供对应启动内容。",
+        [KSHIM_TEXT_ACTION_UNAVAILABLE] = "不可用",
+        [KSHIM_TEXT_DESC_BACK_PARENT] = "返回上一级。",
     },
     [KSHIM_MENU_LANG_EN] = {
         [KSHIM_TEXT_TITLE]          = "KShimC Launcher",
@@ -113,7 +147,7 @@ static const char *const kshim_menu_text_table[2][KSHIM_TEXT_COUNT] = {
         [KSHIM_TEXT_DESC_INTERNAL]  = "Start ArmadaOS installed on internal storage.",
         [KSHIM_TEXT_DESC_TF]        = "Start ArmadaOS installed on the TF card. Insert the matching card first.",
         [KSHIM_TEXT_DESC_DIAGNOSTIC] = "Start the Linux diagnostic environment to investigate boot and hardware problems.",
-        [KSHIM_TEXT_DESC_ADVANCED]  = "Enter Linux diagnostics, recovery or flashing modes.",
+        [KSHIM_TEXT_DESC_ADVANCED]  = "Choose an available advanced boot mode.",
         [KSHIM_TEXT_DESC_RESTART]   = "Restart the device.",
         [KSHIM_TEXT_DESC_OFF]       = "Turn off the device.",
         [KSHIM_TEXT_DESC_RECOVERY]  = "Enter Android recovery mode for system maintenance.",
@@ -155,11 +189,45 @@ static const char *const kshim_menu_text_table[2][KSHIM_TEXT_COUNT] = {
         [KSHIM_TEXT_LANG_ZH_NAME]     = "简体中文",
         [KSHIM_TEXT_LANG_EN_NAME]     = "English",
         [KSHIM_TEXT_CREDIT]           = "Adapted by Danyi on Bilibili · Free to use. Beware of paid scams.",
+
+        [KSHIM_TEXT_INFO_LABEL]       = "Device info",
+        [KSHIM_TEXT_INFO_DESC]        = "View read-only device hardware information.",
+        [KSHIM_TEXT_INFO_BOARD]       = "Device model",
+        [KSHIM_TEXT_INFO_SOC]         = "SoC",
+        [KSHIM_TEXT_INFO_MODEL]       = "DT model",
+        [KSHIM_TEXT_INFO_COMPATIBLE]  = "DT compatible",
+        [KSHIM_TEXT_INFO_RAM]         = "DT-reported RAM",
+        [KSHIM_TEXT_INFO_FRAMEBUFFER] = "Framebuffer",
+        [KSHIM_TEXT_INFO_VERSION]     = "kShimC version",
+        [KSHIM_TEXT_INFO_RAM_PREFIX]  = "DT reported",
+        [KSHIM_TEXT_UNKNOWN]          = "Unknown",
+
+        [KSHIM_TEXT_SETTINGS_LABEL]   = "Settings",
+        [KSHIM_TEXT_SETTINGS_DESC]    = "Applies to this boot only.",
+        [KSHIM_TEXT_DEVICE_LABEL]     = "Device",
+        [KSHIM_TEXT_DEVICE_DESC]      = "Choose the device used for this boot.",
+        [KSHIM_TEXT_DEFAULT_LABEL]    = "Default boot entry",
+        [KSHIM_TEXT_DEFAULT_DESC]     = "Choose the default system for this boot.",
+        [KSHIM_TEXT_DEVICE_AUTO_NAME] = "Auto detect",
+        [KSHIM_TEXT_DEVICE_AUTO_DESC] = "Boot for the actually detected device.",
+        [KSHIM_TEXT_DEVICE_TB322FC_NAME] = "Y700 Gen4 TB322FC",
+        [KSHIM_TEXT_DEVICE_TB322FC_DESC] = "Boot for the TB322FC device.",
+        [KSHIM_TEXT_DEVICE_TB323FU_NAME] = "Y700 Gen5 TB323FU",
+        [KSHIM_TEXT_DEVICE_TB323FU_DESC] = "Boot for the TB323FU device.",
+        [KSHIM_TEXT_BOARD_TB322FC_NAME]  = "Y700 Gen4",
+        [KSHIM_TEXT_BOARD_TB323FU_NAME]  = "Y700 Gen5",
+        [KSHIM_TEXT_SETTINGS_DEVICE_AUTO_FMT]   = "Device: Auto (%s)",
+        [KSHIM_TEXT_SETTINGS_DEVICE_MANUAL_FMT] = "Device: %s",
+        [KSHIM_TEXT_SETTINGS_DEFAULT_FMT]       = "Default boot entry: %s",
+        [KSHIM_TEXT_DEFAULT_MANIFEST] = "Image default",
+        [KSHIM_TEXT_UNAVAILABLE]      = "No matching image content is provided.",
+        [KSHIM_TEXT_ACTION_UNAVAILABLE] = "Unavailable",
+        [KSHIM_TEXT_DESC_BACK_PARENT] = "Return to the previous menu.",
     },
 };
 
 /* Role -> name id; KSHIM_TEXT_COUNT means "use the caller fallback". */
-static const kshim_menu_text_id kshim_menu_role_name_table[KSHIM_MENU_ROLE_LANG_EN + 1] = {
+static const kshim_menu_text_id kshim_menu_role_name_table[KSHIM_MENU_ROLE_MAX + 1] = {
     [KSHIM_MENU_ROLE_UNKNOWN]    = KSHIM_TEXT_COUNT,
     [KSHIM_MENU_ROLE_BASE]       = KSHIM_TEXT_COUNT,
     [KSHIM_MENU_ROLE_ANDROID]    = KSHIM_TEXT_NAME_ANDROID,
@@ -176,10 +244,17 @@ static const kshim_menu_text_id kshim_menu_role_name_table[KSHIM_MENU_ROLE_LANG_
     [KSHIM_MENU_ROLE_BACK]       = KSHIM_TEXT_BACK,
     [KSHIM_MENU_ROLE_LANG_ZH]    = KSHIM_TEXT_LANG_ZH_NAME,
     [KSHIM_MENU_ROLE_LANG_EN]    = KSHIM_TEXT_LANG_EN_NAME,
+    [KSHIM_MENU_ROLE_DEVICE_INFO] = KSHIM_TEXT_INFO_LABEL,
+    [KSHIM_MENU_ROLE_SETTINGS]   = KSHIM_TEXT_SETTINGS_LABEL,
+    [KSHIM_MENU_ROLE_DEVICE]     = KSHIM_TEXT_DEVICE_LABEL,
+    [KSHIM_MENU_ROLE_DEFAULT]    = KSHIM_TEXT_DEFAULT_LABEL,
+    [KSHIM_MENU_ROLE_DEVICE_AUTO] = KSHIM_TEXT_DEVICE_AUTO_NAME,
+    [KSHIM_MENU_ROLE_DEVICE_TB322FC] = KSHIM_TEXT_DEVICE_TB322FC_NAME,
+    [KSHIM_MENU_ROLE_DEVICE_TB323FU] = KSHIM_TEXT_DEVICE_TB323FU_NAME,
 };
 
 /* Role -> description id; KSHIM_TEXT_COUNT means "use the caller fallback". */
-static const kshim_menu_text_id kshim_menu_role_desc_table[KSHIM_MENU_ROLE_LANG_EN + 1] = {
+static const kshim_menu_text_id kshim_menu_role_desc_table[KSHIM_MENU_ROLE_MAX + 1] = {
     [KSHIM_MENU_ROLE_UNKNOWN]    = KSHIM_TEXT_COUNT,
     [KSHIM_MENU_ROLE_BASE]       = KSHIM_TEXT_DESC_BASE,
     [KSHIM_MENU_ROLE_ANDROID]    = KSHIM_TEXT_DESC_ANDROID,
@@ -196,6 +271,13 @@ static const kshim_menu_text_id kshim_menu_role_desc_table[KSHIM_MENU_ROLE_LANG_
     [KSHIM_MENU_ROLE_BACK]       = KSHIM_TEXT_DESC_BACK,
     [KSHIM_MENU_ROLE_LANG_ZH]    = KSHIM_TEXT_DESC_LANG_ZH,
     [KSHIM_MENU_ROLE_LANG_EN]    = KSHIM_TEXT_DESC_LANG_EN,
+    [KSHIM_MENU_ROLE_DEVICE_INFO] = KSHIM_TEXT_INFO_DESC,
+    [KSHIM_MENU_ROLE_SETTINGS]   = KSHIM_TEXT_SETTINGS_DESC,
+    [KSHIM_MENU_ROLE_DEVICE]     = KSHIM_TEXT_DEVICE_DESC,
+    [KSHIM_MENU_ROLE_DEFAULT]    = KSHIM_TEXT_DEFAULT_DESC,
+    [KSHIM_MENU_ROLE_DEVICE_AUTO] = KSHIM_TEXT_DEVICE_AUTO_DESC,
+    [KSHIM_MENU_ROLE_DEVICE_TB322FC] = KSHIM_TEXT_DEVICE_TB322FC_DESC,
+    [KSHIM_MENU_ROLE_DEVICE_TB323FU] = KSHIM_TEXT_DEVICE_TB323FU_DESC,
 };
 
 kshim_menu_language_t kshim_menu_get_language(void)
@@ -227,7 +309,7 @@ const char *kshim_menu_role_name(kshim_menu_role_t role, const char *fallback)
 {
     kshim_menu_text_id id;
 
-    if ((unsigned)role > (unsigned)KSHIM_MENU_ROLE_LANG_EN) {
+    if ((unsigned)role > (unsigned)KSHIM_MENU_ROLE_MAX) {
         return fallback;
     }
     id = kshim_menu_role_name_table[role];
@@ -241,7 +323,7 @@ const char *kshim_menu_role_description(kshim_menu_role_t role, const char *fall
 {
     kshim_menu_text_id id;
 
-    if ((unsigned)role > (unsigned)KSHIM_MENU_ROLE_LANG_EN) {
+    if ((unsigned)role > (unsigned)KSHIM_MENU_ROLE_MAX) {
         return fallback;
     }
     id = kshim_menu_role_desc_table[role];

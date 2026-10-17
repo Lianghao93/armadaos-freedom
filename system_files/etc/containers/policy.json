@@ -6,6 +6,11 @@
     ],
     "transports": {
         "docker": {
+            "ghcr.io/mydanyi/armadaos-freedom": [
+                {
+                    "type": "reject"
+                }
+            ],
             "ghcr.io/virtudude/armada": [
                 {
                     "type": "sigstoreSigned",

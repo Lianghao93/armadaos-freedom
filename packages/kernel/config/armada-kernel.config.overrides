@@ -121,6 +121,7 @@ CONFIG_DRM_PANEL_AYANEO_WT0600_2K=y         # AYN Thor
 CONFIG_DRM_PANEL_AYANEO_WT0600_1K=y         # AYANEO Pocket S 1K
 CONFIG_DRM_PANEL_MANGMI_AIR_Y_PRO=y         # MANGMI Air Y Pro
 CONFIG_DRM_PANEL_AYANEO_AR18=y              # AYANEO Pocket MICRO 2
+CONFIG_DRM_PANEL_NOVATEK_NT36536=y          # Lenovo Y700 Gen4 (TB322FC)
 
 # ============== Input ==============
 CONFIG_INPUT_JOYSTICK=y
@@ -141,6 +142,7 @@ CONFIG_RMI4_F11=y
 CONFIG_RMI4_F12=y
 CONFIG_RMI4_F30=y
 CONFIG_TOUCHSCREEN_SYNAPTICS_DSX=m
+CONFIG_TOUCHSCREEN_NOVATEK_NVT36XXX_SPI=m # Lenovo Y700 Gen4 (TB322FC)
 
 # ============== LEDs / RGB ==============
 CONFIG_LEDS_HTR3212=y
@@ -160,7 +162,7 @@ CONFIG_REGULATOR_SGM3804=y
 CONFIG_REGULATOR_QCOM_LCDB=y             # MANGMI Air Y Pro panel bias
 CONFIG_BACKLIGHT_SY7758=y
 CONFIG_BACKLIGHT_ODIN2MINI=y
-CONFIG_BACKLIGHT_AW99706=y                # KONKR Pocket FIT Elite
+CONFIG_BACKLIGHT_AW99706=y                # KONKR Pocket FIT Elite + Y700 Gen4
 # =y not =m: a modular backlight PWM provider makes the panel bind late (from
 # the rootfs). Gated by LEDS_CLASS_MULTICOLOR, which must be =y too.
 CONFIG_LEDS_CLASS_MULTICOLOR=y
@@ -184,6 +186,7 @@ CONFIG_JOYSTICK_XPAD_LEDS=y
 # ============== Audio ==============
 CONFIG_SND_SOC_AW88166=m
 CONFIG_SND_SOC_AW88261=m               # KONKR Pocket FIT Elite speaker amp
+CONFIG_SND_SOC_AW88461=m               # Lenovo Y700 Gen4 (TB322FC) speaker amp
 # absent snd-seq spams udev at boot — Fedora's snd-pcm modprobe rule pulls it in
 CONFIG_SND_SEQUENCER=m
 

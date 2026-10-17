@@ -1,17 +1,21 @@
 #!/usr/bin/python3
 """Run with root and bootc/OSTree/PyGObject in a disposable Armada container."""
+import errno
 import hashlib
 import io
 import json
 import os
 from pathlib import Path
+import platform
+import re
 import runpy
 import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import Mock
+import weakref
+from unittest.mock import Mock, patch
 
 import gi
 gi.require_version("OSTree", "1.0")
@@ -24,13 +28,15 @@ SourceImage = module["SourceImage"]
 Error = module["Error"]
 EXT = ["bootc", "internals", "ostree-ext", "container", "image"]
 ORIGIN = "ostree-image-signed:docker://ghcr.io/armada-os/armada:beta"
+FREEDOM = "ghcr.io/mydanyi/armadaos-freedom"
+FREEDOM_ORIGIN = "ostree-image-signed:docker://" + FREEDOM + ":testing"
 
 
 def run(*args):
     return subprocess.check_output([str(arg) for arg in args], text=True, stderr=subprocess.STDOUT).strip()
 
 
-def oci(dest, marker):
+def oci(dest, marker, arch='arm64'):
     (dest / 'blobs/sha256').mkdir(parents=True)
 
     def blob(data, media):
@@ -43,7 +49,13 @@ def oci(dest, marker):
         {'usr/lib/os-release': b'ID=armada-audit\nVERSION_ID=1\n',
          'usr/share/audit/base': b'base layer\n',
          'usr/lib/modules/6.1.0/vmlinuz': b'FAKE KERNEL FOR METADATA TEST ONLY\n',
-         'usr/lib/modules/6.1.0/initramfs.img': b'FAKE INITRAMFS\n'},
+         'usr/lib/modules/6.1.0/initramfs.img': b'FAKE INITRAMFS\n',
+         'usr/lib/modules/6.1.0/dtb/test.dtb': b'FAKE DTB\n',
+         'usr/lib/bootc/kargs.d/10-armada.toml':
+             b'match-architectures = ["aarch64"]\n'
+             b'kargs = ["source-only-flag", "quiet", "root=UUID=filtered", "boot=UUID=filtered", '
+             b'"rootflags=subvol=filtered", "ostree=filtered"]\n',
+         'var/lib/audit/seeded': b'seeded var content\n'},
         {'usr/share/audit/content': marker.encode(),
          'usr/etc/audit.conf': b'factory=true\n'},
     ]:
@@ -62,7 +74,7 @@ def oci(dest, marker):
                 info.size = len(data)
                 tar.addfile(info, io.BytesIO(data))
         layers.append(blob(stream.getvalue(), 'application/vnd.oci.image.layer.v1.tar'))
-    config = {'architecture': 'arm64', 'os': 'linux', 'config': {
+    config = {'architecture': arch, 'os': 'linux', 'config': {
         'Labels': {'containers.bootc': '1', 'ostree.bootable': 'true'}},
         'rootfs': {'type': 'layers', 'diff_ids': [x['digest'] for x in layers]}}
     config_desc = blob(json.dumps(config).encode(), 'application/vnd.oci.image.config.v1+json')
@@ -73,6 +85,11 @@ def oci(dest, marker):
     (dest / 'index.json').write_text(json.dumps({'schemaVersion': 2, 'manifests': [desc]}))
     (dest / 'oci-layout').write_text('{"imageLayoutVersion":"1.0.0"}')
     return f'ostree-unverified-image:oci:{dest}:latest'
+
+
+def seed_manifest_digest(fixture):
+    """Expected OCI manifest digest read directly from the fixture index.json."""
+    return json.loads((fixture / "index.json").read_text())["manifests"][0]["digest"]
 
 
 class SourceTests(unittest.TestCase):
@@ -100,7 +117,7 @@ class SourceTests(unittest.TestCase):
     def prepare(self):
         self.source = SourceImage.read(self.repo, self.deployment)
 
-    def target(self):
+    def target(self, origin=ORIGIN):
         target = self.work / "target"
         target.mkdir()
         run("ostree", "admin", "init-fs", "--modern", target)
@@ -122,7 +139,7 @@ class SourceTests(unittest.TestCase):
                              run("ostree", "refs", f"--repo={repo}").splitlines()))
         origins = list((target / "ostree/deploy/default/deploy").glob("*.origin"))
         self.assertEqual(len(origins), 1)
-        self.assertIn(ORIGIN, origins[0].read_text())
+        self.assertIn(origin, origins[0].read_text())
         self.assertEqual((origins[0].with_suffix("") / "etc/audit.conf").read_text(), "factory=true\n")
         module["configure_deployment"](target, self.source, dict(root="root-uuid", boot="boot-uuid", esp="esp-uuid"), ["quiet"])
         entry = next((target / "boot/loader/entries").glob("*.conf")).read_text()
@@ -332,6 +349,317 @@ class SourceTests(unittest.TestCase):
         self.prepare()
         self.assertEqual(self.source.origin.get_string("origin", "container-image-reference"), ORIGIN)
         self.assertEqual(self.deployment.get_origin().get_string("origin", "container-image-reference"), unsigned)
+
+    def test_seed_copies_and_deploys_with_freedom_origin(self):
+        self.source = SourceImage.from_seed(
+            self.repo, self.commit, FREEDOM_ORIGIN, seed_manifest_digest(self.work / "v1"))
+        self.assertEqual(self.source.checksum, self.commit)
+        self.assertIsInstance(self.source.origin, GLib.KeyFile)
+        self.assertEqual(self.source.origin.get_string("origin", "container-image-reference"), FREEDOM_ORIGIN)
+        self.target(origin=FREEDOM_ORIGIN)
+
+    def test_seed_accepts_supported_channel_origins_exactly(self):
+        digest = seed_manifest_digest(self.work / "v1")
+        for tag in ("stable", "beta", "testing"):
+            origin = f"ostree-image-signed:docker://{FREEDOM}:{tag}"
+            source = SourceImage.from_seed(self.repo, self.commit, origin, digest)
+            self.assertEqual(source.checksum, self.commit)
+            self.assertEqual(source.origin.get_string("origin", "container-image-reference"), origin)
+        pinned = f"ostree-image-signed:docker://{FREEDOM}:testing@{digest}"
+        source = SourceImage.from_seed(self.repo, self.commit, pinned, digest)
+        self.assertEqual(source.origin.get_string("origin", "container-image-reference"), pinned)
+
+    def test_seed_rejects_bad_commit(self):
+        digest = seed_manifest_digest(self.work / "v1")
+        for checksum in (None, "", "abc", "z" * 64, "0" * 64, "sha256:" + self.commit, self.commit + "0"):
+            with self.assertRaises(Error):
+                SourceImage.from_seed(self.repo, checksum, FREEDOM_ORIGIN, digest)
+
+    def test_seed_rejects_bad_expected_digest(self):
+        good = seed_manifest_digest(self.work / "v1")
+        hexpart = good.split(":", 1)[1]
+        for digest in (None, "", self.commit, "sha256:" + "z" * 64, "sha256:" + hexpart.upper(),
+                       "sha256:" + "0" * 64, good[:12]):
+            with self.assertRaises(Error):
+                SourceImage.from_seed(self.repo, self.commit, FREEDOM_ORIGIN, digest)
+
+    def test_seed_selects_explicit_commit_over_newer_import(self):
+        run(*EXT, "pull", self.path, oci(self.work / "v2", "newer image"))
+        newer_ref = next(r for r in self.refs() if "/v2_3A_latest" in r)
+        newer = run("ostree", "rev-parse", f"--repo={self.path}", newer_ref)
+        self.assertNotEqual(newer, self.commit)
+        self.source = SourceImage.from_seed(
+            self.repo, self.commit, FREEDOM_ORIGIN, seed_manifest_digest(self.work / "v1"))
+        self.assertEqual(self.source.checksum, self.commit)
+        target_repo = self.target(origin=FREEDOM_ORIGIN)
+        self.assertEqual(run("ostree", "cat", f"--repo={target_repo}",
+                             self.commit, "/usr/share/audit/content"), "running image")
+
+    def test_seed_rejects_invalid_origins(self):
+        digest = seed_manifest_digest(self.work / "v1")
+        hexpart = digest.split(":", 1)[1]
+        invalid = [
+            None, "", " ",
+            FREEDOM,
+            f"docker://{FREEDOM}:testing",
+            f"ostree-image-signed:docker://{FREEDOM}",
+            f"ostree-image-signed:docker://{FREEDOM}@{digest}",
+            f"ostree-image-signed:docker://{FREEDOM}:latest",
+            f"ostree-image-signed:docker://{FREEDOM}:Testing",
+            "ostree-image-signed:docker://ghcr.io/armada-os/armada:testing",
+            "ostree-image-signed:docker://ghcr.io/virtudude/armada:testing",
+            f"ostree-unverified-registry:{FREEDOM}:testing",
+            f"ostree-unverified-image:docker://{FREEDOM}:testing",
+            f"ostree-image-signed:docker://{FREEDOM}:testing@sha256:1234",
+            f"ostree-image-signed:docker://{FREEDOM}:testing@{hexpart}",
+            f"ostree-image-signed:docker://{FREEDOM}:testing@sha256:{hexpart.upper()}",
+            f"ostree-image-signed:docker://{FREEDOM}:testing ",
+            f"ostree-image-signed:docker://{FREEDOM}:testing\n",
+            f"ostree-image-signed:docker://{FREEDOM}:testing?x=1",
+            f"ostree-image-signed:docker://{FREEDOM}:testing/extra",
+            f"ostree-image-signed:docker://{FREEDOM}:testing:extra",
+            f"ostree-image-signed:docker://{FREEDOM}:testing@{digest}&x=1",
+        ]
+        for origin in invalid:
+            with self.assertRaises(Error):
+                SourceImage.from_seed(self.repo, self.commit, origin, digest)
+
+    def test_seed_rejects_missing_layer_reference(self):
+        digest = seed_manifest_digest(self.work / "v1")
+        layer = next(r for r in self.refs() if r.startswith("ostree/container/blob/"))
+        run("ostree", "refs", f"--repo={self.path}", "--delete", layer)
+        with self.assertRaises(Error):
+            SourceImage.from_seed(self.repo, self.commit, FREEDOM_ORIGIN, digest)
+
+    def test_seed_rejects_derived_commit_without_container_metadata(self):
+        digest = seed_manifest_digest(self.work / "v1")
+        derived = run("ostree", "commit", f"--repo={self.path}", "--branch=derived",
+                      f"--parent={self.commit}", f"--tree=ref={self.commit}")
+        with self.assertRaises(Error):
+            SourceImage.from_seed(self.repo, derived, FREEDOM_ORIGIN, digest)
+
+    def test_seed_origins_are_independent(self):
+        digest = seed_manifest_digest(self.work / "v1")
+        beta = f"ostree-image-signed:docker://{FREEDOM}:beta"
+        first = SourceImage.from_seed(self.repo, self.commit, FREEDOM_ORIGIN, digest)
+        second = SourceImage.from_seed(self.repo, self.commit, beta, digest)
+        self.assertIsNot(first.origin, second.origin)
+        first.origin.set_string("origin", "container-image-reference",
+                                "ostree-image-signed:docker://mutated.invalid/x:stable")
+        self.assertEqual(second.origin.get_string("origin", "container-image-reference"), beta)
+        third = SourceImage.from_seed(self.repo, self.commit, FREEDOM_ORIGIN, digest)
+        self.assertEqual(third.origin.get_string("origin", "container-image-reference"), FREEDOM_ORIGIN)
+        self.assertEqual(self.deployment.get_origin().get_string("origin", "container-image-reference"), ORIGIN)
+
+    def assert_closed_fd(self, fd):
+        with self.assertRaises(OSError) as closed:
+            os.fstat(fd)
+        self.assertEqual(closed.exception.errno, errno.EBADF)
+
+    @staticmethod
+    def traceback_frame_names(trace):
+        names = []
+        while trace is not None:
+            names.append(trace.tb_frame.f_code.co_name)
+            trace = trace.tb_next
+        return names
+
+    def test_seed_source_releases_independent_repo_and_closes_native_fd(self):
+        digest = seed_manifest_digest(self.work / "v1")
+        with module["seed_source"](self.path, self.commit, FREEDOM_ORIGIN, digest) as source:
+            fd = source.repo.get_dfd()
+            os.fstat(fd)
+            self.assertEqual(source.checksum, self.commit)
+        # The yielded object is kept strongly bound so a naive implementation that only
+        # drops its own local alias cannot pass; the repo must be invalidated on exit.
+        self.assertIsNone(source.repo)
+        self.assert_closed_fd(fd)
+        # The borrowed fixture Repo is untouched: we must not close what we did not open.
+        os.fstat(self.repo.get_dfd())
+
+    def test_seed_source_validation_failure_preserves_retained_exception_chain(self):
+        digest = seed_manifest_digest(self.work / "v1")
+        wrong = "sha256:" + "0" * 64
+        self.assertNotEqual(wrong, digest)
+        observed = []
+        retained = []
+        real_from_seed = SourceImage.from_seed
+
+        def observer(cls, repo, checksum, origin_ref, expected_manifest_digest):
+            # Record only the raw fd and a weak handle; never retain the repo itself.
+            observed.append(repo.get_dfd())
+            retained.append(weakref.ref(repo))
+            return real_from_seed(repo, checksum, origin_ref, expected_manifest_digest)
+
+        error = None
+        with patch.object(SourceImage, "from_seed", classmethod(observer)):
+            try:
+                with module["seed_source"](self.path, self.commit, FREEDOM_ORIGIN, wrong):
+                    self.fail("seed_source accepted a mismatched manifest digest")
+            except Error as caught:
+                error = caught
+
+        self.assertTrue(observed, "source repo was never opened for validation")
+        # Check the observed fd before touching the traceback, so no incidental file IO can reuse it.
+        self.assert_closed_fd(observed[0])
+        os.fstat(self.repo.get_dfd())
+        self.assertIsNotNone(error)
+        self.assertIsInstance(error, Error)
+        self.assertIn("manifest digest does not match the expected seed", str(error))
+        self.assertIsInstance(error.__cause__, ValueError)
+        self.assertIsNotNone(error.__traceback__)
+        names = self.traceback_frame_names(error.__traceback__)
+        self.assertIn("_validated", names)
+        self.assertIn("from_seed", names)
+        self.assertIn("observer", names)
+        self.assertIsNone(retained[0]())
+
+    def test_seed_source_copy_failure_releases_frame_held_repo_alias(self):
+        digest = seed_manifest_digest(self.work / "v1")
+        error = None
+        # The try must sit OUTSIDE the seed_source context: the failure has to propagate
+        # across the context boundary (and its unwind) before we observe it, exactly as
+        # the deploy_existing path does.
+        try:
+            with module["seed_source"](self.path, self.commit, FREEDOM_ORIGIN, digest) as source:
+                fd = source.repo.get_dfd()
+                os.fstat(fd)
+                copy_globals = SourceImage.copy.__globals__
+                real_run = copy_globals["run"]
+                intercepted = []
+
+                def fail_copy_cause():
+                    # Hold the raw repo in a frame distinct from the top Error traceback,
+                    # so clearing only the top frame cannot accidentally pass this test.
+                    repo_alias = source.repo
+                    self.assertEqual(repo_alias.get_dfd(), fd)
+                    raise ValueError("copy-cause")
+
+                def failing_run(*args, **kwargs):
+                    if not intercepted and "pull-local" in [str(arg) for arg in args]:
+                        intercepted.append(True)
+                        try:
+                            fail_copy_cause()
+                        except ValueError as cause:
+                            raise Error("copy-injected") from cause
+                    return real_run(*args, **kwargs)
+
+                with patch.dict(copy_globals, {"run": failing_run}):
+                    source.copy(self.work / "copy-target")
+        except Error as caught:
+            error = caught
+
+        self.assertTrue(intercepted, "the real copy path did not reach the first pull-local")
+        self.assertIsNone(source.repo)
+        self.assert_closed_fd(fd)
+        os.fstat(self.repo.get_dfd())
+        self.assertIsNotNone(error)
+        self.assertIsInstance(error, Error)
+        self.assertIn("copy-injected", str(error))
+        self.assertIsInstance(error.__cause__, ValueError)
+        self.assertIn("copy-cause", str(error.__cause__))
+        self.assertIsNotNone(error.__traceback__)
+        self.assertIn("failing_run", self.traceback_frame_names(error.__traceback__))
+        self.assertNotIn("fail_copy_cause", self.traceback_frame_names(error.__traceback__))
+        # The cause must still hold its own unwound frame (and hence the raw repo alias)
+        # after the fd has been closed by the context unwind.
+        self.assertIsNotNone(error.__cause__.__traceback__)
+        self.assertIn("fail_copy_cause", self.traceback_frame_names(error.__cause__.__traceback__))
+
+    def boot_asset(self, target, value):
+        text = str(value)
+        relative = text[len("/boot/"):] if text.startswith("/boot/") else text.lstrip("/")
+        return target / "boot" / relative
+
+    def test_seed_kargs_prefers_source_architecture_over_host(self):
+        self.prepare()
+        with patch.object(platform, "machine", return_value="x86_64"):
+            kargs = module["seed_kargs"](self.source, self.work / "seed-kargs")
+        self.assertIn("source-only-flag", kargs)
+        self.assertIn("quiet", kargs)
+        self.assertFalse(any(k.startswith(("root=", "boot=", "rootflags=", "ostree=")) for k in kargs))
+
+    def test_deploy_tree_kshimc_needs_only_boot_and_root(self):
+        self.source = SourceImage.from_seed(self.repo, self.commit, FREEDOM_ORIGIN,
+                                            seed_manifest_digest(self.work / "v1"))
+        target = self.work / "tree-target"
+        target.mkdir()
+        run("ostree", "admin", "init-fs", "--modern", target)
+        # With real mounts target/var and target/var/home are separate btrfs subvolumes.
+        (target / "var").mkdir(exist_ok=True)
+        (target / "var/home").mkdir(exist_ok=True)
+        job = module["Installation"](None)
+        job.work = self.work / "tree-work"
+        job.work.mkdir()
+        observer = []
+        globals_map = module["Installation"].deploy_tree.__globals__
+        real_run = globals_map["run"]
+
+        def spy(*args, **kwargs):
+            args = [str(arg) for arg in args]
+            observer.append(args)
+            if args[0] == str(module["BOOTIMG"]):
+                raise AssertionError("boot image update must not run for kshimc")
+            return real_run(*args, **kwargs)
+
+        with patch.dict(globals_map, {"run": spy}):
+            result = job.deploy_tree(target, self.source, {"boot": "boot-uuid", "root": "root-uuid"},
+                                     ["quiet"], boot_method="kshimc")
+        self.assertEqual(result["deployment_checksum"], self.commit)
+        self.assertEqual(result["filesystem_uuids"], {"boot": "boot-uuid", "root": "root-uuid"})
+        origin_file = next((target / "ostree/deploy/default/deploy").glob("*.origin"))
+        self.assertIn(FREEDOM_ORIGIN, origin_file.read_text())
+        self.assertTrue((target / "var/lib/audit/seeded").is_file())
+        deploy = origin_file.with_suffix("")
+        self.assertEqual((deploy / "etc/armada/boot-method").read_text(), "kshimc\n")
+        for name in ("etc/systemd/system/armada-bootimg-sync.service",
+                     "etc/systemd/system/armada-esp-rename.service",
+                     "etc/systemd/system/ostree-finalize-staged.service.d/10-armada-bootimg.conf"):
+            link = deploy / name
+            self.assertTrue(link.is_symlink(), name)
+            self.assertEqual(os.readlink(link), "/dev/null")
+        self.assertFalse((deploy / "etc/systemd/system/ostree-finalize-staged.service").is_symlink())
+        fstab = (deploy / "etc/fstab").read_text()
+        self.assertIn("UUID=boot-uuid /boot ", fstab)
+        self.assertIn("UUID=root-uuid /var ", fstab)
+        self.assertNotIn("/boot/efi", fstab)
+        self.assertFalse((target / "boot/efi").exists())
+        entries = list((target / "boot/loader/entries").glob("*.conf"))
+        self.assertEqual(len(entries), 1)
+        fields = dict(line.split(None, 1) for line in entries[0].read_text().splitlines() if line.strip())
+        self.assertIn("root=UUID=root-uuid", fields["options"])
+        self.assertIn("boot=UUID=boot-uuid", fields["options"])
+        self.assertIn("ostree=", fields["options"])
+        # result images are boot-relative while the on-disk entry uses a /boot/ prefix.
+        self.assertFalse(Path(result["image"]).is_absolute())
+        self.assertEqual((target / "boot" / result["image"]).resolve(),
+                         self.boot_asset(target, fields["linux"]).resolve())
+        boot_root = (target / "boot").resolve()
+        for key in ("bls", "image", "initrd", "fdtdir"):
+            value = Path(result[key])
+            self.assertFalse(value.is_absolute(), key)
+            self.assertNotIn("..", value.parts, key)
+            node = (target / "boot" / value).resolve()
+            self.assertTrue(node.exists(), key)
+            self.assertTrue(str(node).startswith(str(boot_root) + os.sep), key)
+        for command in observer:
+            self.assertNotIn(command[0], ("sfdisk", "dd", "mkfs.btrfs", "mkfs.ext4", "systemd-inhibit"), command)
+            self.assertNotEqual(command[0], str(module["BOOTIMG"]))
+
+    def test_configure_kshimc_rejects_escaping_or_missing_boot_assets(self):
+        self.prepare()
+        self.target()
+        target = self.work / "target"
+        entry = next((target / "boot/loader/entries").glob("*.conf"))
+        good = entry.read_text()
+        uuids = {"boot": "boot-uuid", "root": "root-uuid"}
+        module["configure_deployment"](target, self.source, uuids, ["quiet"], boot_method="kshimc")
+        entry.write_text(good)
+        for bad in ("/boot/../../etc/hostname", "/boot/ostree/absent/vmlinuz"):
+            with self.subTest(asset=bad):
+                entry.write_text(re.sub(r"(?m)^linux .*$", "linux " + bad, good))
+                with self.assertRaises(Error):
+                    module["configure_deployment"](target, self.source, uuids, ["quiet"], boot_method="kshimc")
 
 
 if __name__ == "__main__":

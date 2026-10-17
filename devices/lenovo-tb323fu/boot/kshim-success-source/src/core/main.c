@@ -7,8 +7,10 @@
 #include <manifest.h>
 #include <platform.h>
 #include <menu_text.h>
+#include <device_info.h>
 #include <boot_metrics.h>
 #include <dt.h>
+#include <initrd.h>
 #include <qcom_dt.h>
 #include <dt_handoff.h>
 #include <dt_simplefb.h>
@@ -18,6 +20,8 @@
 #include <diag_placement.h>
 void arm64_diag_head_tail(uint64_t kernel_base, uint64_t dtb, uint64_t android_entry, uint64_t android_dtb, uint64_t flag_address) __attribute__((noreturn));
 #endif
+extern unsigned char __image_start_address__[];
+extern unsigned char __runtime_end_address__[];
 static uint64_t HandoffDtb[256 * 1024 / sizeof(uint64_t)]; /* bounded private DT scratch; 4 MiB linker assert applies */
 /* Early, independent packed runtime-memory snapshot (32 KiB) and the DT
  * overlay/apply scratch (64 KiB); both bounded, aligned for FDT access, and
@@ -242,18 +246,25 @@ static void print_entry_name(const MANIFEST_ENTRY *entry)
     }
 }
 
-static uint32_t select_image(const MANIFEST_VIEW *view, uint64_t fdt, uint64_t linux_base)
+static uint32_t select_image(const MANIFEST_VIEW *view, uint64_t fdt, uint64_t linux_base,
+                             const struct device_info *info)
 {
     uint32_t indexes[MANIFEST_MAX_ENTRIES];
     char labels[MANIFEST_MAX_ENTRIES][96];
     const char *names[MANIFEST_MAX_ENTRIES];
     const char *descriptions[MANIFEST_MAX_ENTRIES];
     kshim_menu_role_t roles[MANIFEST_MAX_ENTRIES];
+#if defined(CONFIG_KSHIM_MENU_SESSION_SETTINGS) && CONFIG_KSHIM_MENU_SESSION_SETTINGS
+    enum device_board payload_boards[MANIFEST_MAX_ENTRIES];
+#endif
     uint64_t advanced_mask = 0;
     size_t count = 0, initial = 0, selected = 0;
     for (uint32_t i = 0; i + 1 < view->manifest->header.entry_count; ++i) {
         const MANIFEST_ENTRY *entry = view->entries[i];
         if (!(entry->flags & MF_ENTRY_FLAG_EXECUTABLE)) continue;
+#if defined(CONFIG_KSHIM_MENU_SESSION_SETTINGS) && CONFIG_KSHIM_MENU_SESSION_SETTINGS
+        payload_boards[count] = DEVICE_BOARD_UNKNOWN;
+#endif
         size_t n = entry->name_len < sizeof(labels[0]) ? entry->name_len : sizeof(labels[0]) - 1;
         memcpy(labels[count], entry->name, n); labels[count][n] = 0;
         indexes[count] = i; names[count] = labels[count];
@@ -273,6 +284,11 @@ static uint32_t select_image(const MANIFEST_VIEW *view, uint64_t fdt, uint64_t l
         if ((entry->flags & MF_ENTRY_FLAG_HAS_DEVICE_TREE_BLOB) != 0) {
             const MANIFEST_ENTRY *dtb = view->entries[entry->device_tree_blob_entry];
             const void *blob = (const void *)(uintptr_t)(linux_base + dtb->offset);
+#if defined(CONFIG_KSHIM_MENU_SESSION_SETTINGS) && CONFIG_KSHIM_MENU_SESSION_SETTINGS
+            struct device_info payload_info;
+            device_info_read(blob, &payload_info);
+            payload_boards[count] = payload_info.board;
+#endif
             int chosen = fdt_path_offset(blob, "/chosen");
             const char *stage = chosen >= 0 ? dt_string(blob, chosen, "armada,boot-stage") : NULL;
             const char *medium = chosen >= 0 ? dt_string(blob, chosen, "armada,root-medium") : NULL;
@@ -293,8 +309,14 @@ static uint32_t select_image(const MANIFEST_VIEW *view, uint64_t fdt, uint64_t l
         if (i == view->manifest->header.default_entry) initial = count;
         ++count;
     }
-    if (kshim_platform_select_localized(fdt, names, descriptions, roles, count, initial,
+#if defined(CONFIG_KSHIM_MENU_SESSION_SETTINGS) && CONFIG_KSHIM_MENU_SESSION_SETTINGS
+    if (kshim_platform_select_localized_settings(fdt, names, descriptions, roles, info,
+            payload_boards, count, initial, view->manifest->header.timeout_ms,
+            advanced_mask, &selected)) {
+#else
+    if (kshim_platform_select_localized_info(fdt, names, descriptions, roles, info, count, initial,
             view->manifest->header.timeout_ms, advanced_mask, &selected)) {
+#endif
         printf("Unsafe UI shutdown; refusing payload handoff\n");
         for (;;) (void)delay(100000);
     }
@@ -322,6 +344,22 @@ int kshim_main(
     uint64_t manifest_size)
 {
     kshim_boot_metrics_record_once(KSHIM_BOOT_STAGE_ENTRY);
+#if KSHIM_DIAGNOSTIC_DT_ONLY
+    /* DT-only diagnostic: preserve the exact incoming DT pointer before the
+     * shared validation below can clear device_tree_address to 0.  The
+     * handoff must forward the original pointer even when the blob is not a
+     * valid FDT. */
+    const uint64_t dt_only_device_tree = device_tree_address;
+#endif
+#if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
+    /* Resource-only diagnostic: preserve the exact incoming DT pointer before
+     * the shared validation below can clear device_tree_address to 0, plus an
+     * entry timestamp for the millisecond resource-probe delta.  The handoff
+     * must forward the original pointer even when the blob is not a valid
+     * FDT. */
+    const uint64_t resources_only_device_tree = device_tree_address;
+    const uint64_t resources_only_entry_time = get_current_time();
+#endif
 #if KSHIM_DIAGNOSTIC_BASE_ONLY
     /* Diagnostic only: hand off to the packed Linux base image immediately,
      * before any DT, console, or peripheral work.  No menu is shown and no
@@ -338,6 +376,12 @@ int kshim_main(
         runtime_fdt = NULL;
         device_tree_address = 0;
     }
+    /* Read-only device info from the already validated runtime DT, collected
+     * once here and handed to the menu. A NULL runtime FDT stays all-unknown;
+     * there is no extra FDT probing or validation path. */
+    struct device_info device_info = {0};
+    if (runtime_fdt)
+        device_info_read(runtime_fdt, &device_info);
     /* Early, read-only ramoops capture from the validated runtime DT, taken
      * exactly once before the memory snapshot/console/resources work.  The
      * layout starts zeroed (valid == false) so a failed capture never leaves a
@@ -385,11 +429,63 @@ int kshim_main(
         runtime_fdt ? fdt_totalsize(runtime_fdt) : 0,
         RuntimeMemorySnapshot,
         sizeof(RuntimeMemorySnapshot));
+#if KSHIM_DIAGNOSTIC_DT_ONLY
+    /* DT-only diagnostic entry (compile-time): the runtime DT was already
+     * validated, read-only device info was read, the ramoops layout was
+     * captured read-only and the memory snapshot was taken exactly once, in
+     * the original order.  From here only two ASCII reports are formatted in
+     * local buffers and offered once to the new two-slot DT API; every
+     * failure (missing/invalid slots, bad FDT, report API error) is ignored
+     * for boot, so an unavailable report still returns to Android rather
+     * than halting.  Nothing here initializes the console, probes resources,
+     * touches MMU/UI, reads the ramoops region or changes x1..x3.  The
+     * original incoming DT pointer is forwarded unchanged even when DT
+     * validation zeroed the local copy.  arm64_boot_image() is noreturn, so
+     * console/resources/MMIO/MMU/UI are never reached in this build. */
+    if (runtime_fdt) {
+        char probe_report[81];
+        char s0_report[81];
+        int np = snprintf(probe_report, sizeof(probe_report),
+                          "dt1:b=%u:s=%u:sz=%u:mem=%d:ro=%d",
+                          (unsigned)device_info.board,
+                          (unsigned)device_info.soc,
+                          (unsigned)fdt_totalsize(runtime_fdt),
+                          memory_status, ramoops_capture_status);
+        int ns = snprintf(s0_report, sizeof(s0_report),
+                          "dt1:known=%u:ram=%llu",
+                          (unsigned)device_info.ram_known,
+                          (unsigned long long)device_info.dt_reported_ram_bytes);
+        if (np > 0 && np < (int)sizeof(probe_report) &&
+            ns > 0 && ns < (int)sizeof(s0_report))
+            (void)dt_diagnostic_report_slots((void *)runtime_fdt,
+                                             probe_report, s0_report);
+    }
+    if (linux_base)
+        arm64_boot_image(linux_base + 4, dt_only_device_tree,
+                         kernel_arg1, kernel_arg2, kernel_arg3);
+    for (;;)
+        asm volatile("wfe");
+#endif
     (void)kshim_console_init(runtime_fdt);
+#if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
+    /* Resource-only diagnostic checkpoint: capture the millisecond timestamps
+     * at the actual resources_init boundary and retain the init status.  A
+     * missing or invalid runtime FDT is never probed and records a negative
+     * status instead.  This build never consumes the permanent resources
+     * failure delay loop; every non-diagnostic build keeps the original call
+     * order and error handling below byte-for-byte. */
+    const uint64_t resources_only_before_time = get_current_time();
+    int resources_only_status = -1;
+    if (runtime_fdt)
+        resources_only_status = kshim_resources_init(
+            runtime_fdt, fdt_totalsize(runtime_fdt));
+    const uint64_t resources_only_after_time = get_current_time();
+#else
     if (runtime_fdt && kshim_resources_init(runtime_fdt, fdt_totalsize(runtime_fdt))) {
         printf("Invalid runtime device resources\n");
         for (;;) (void)delay(100000);
     }
+#endif
     kshim_boot_metrics_record_once(KSHIM_BOOT_STAGE_RESOURCES);
 #if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
     /* Diagnostic checkpoint after DT/console/resource probing: optional
@@ -399,7 +495,9 @@ int kshim_main(
     if (runtime_fdt && linux_base) {
         const struct kshim_resources *r = kshim_resources_get();
         char report[81];
+        char res_report[81];
         int n;
+        int nres;
 #if CONFIG_KSHIM_FRAMEBUFFER
         n = kshim_splash_trace_report(kshim_splash_trace_get(), r->splash_status,
                                       report, sizeof(report));
@@ -407,6 +505,28 @@ int kshim_main(
         n = snprintf(report, sizeof(report),
             "r14:s=%d:n=0:o=0:v=0,0,0,0,0", r->splash_status);
 #endif
+        /* Second diagnostic value: resources_init status and counts plus the
+         * entry->before and before->after millisecond deltas (get_current_time
+         * is milliseconds). */
+        nres = snprintf(res_report, sizeof(res_report),
+                        "res1:rc=%d:sp=%d:n=%u:m=%u:dt=%llu:res=%llu",
+                        resources_only_status, r->spmi_status,
+                        (unsigned)r->spmi_count, (unsigned)r->mapping_count,
+                        (unsigned long long)(resources_only_before_time -
+                                             resources_only_entry_time),
+                        (unsigned long long)(resources_only_after_time -
+                                             resources_only_before_time));
+        /* FIRST: atomically convert the two ordinary source placeholders and
+         * fill both values in one call; any report failure is ignored for
+         * boot. */
+        if (n > 0 && n < (int)sizeof(report) &&
+            nres > 0 && nres < (int)sizeof(res_report))
+            (void)dt_diagnostic_report_slots((void *)runtime_fdt, report,
+                                             res_report);
+        /* THEN: the prior Gen5 diagnostic write-once path is retained
+         * unchanged.  On a new source-slot image it harmlessly refuses the
+         * already-written targets; with older androidboot pending slots the
+         * legacy report continues as before. */
         if (n > 0 && n < (int)sizeof(report))
             (void)dt_probe_report((void *)runtime_fdt, report);
 #if defined(KSHIM_DIAGNOSTIC_MENU_MMU) && KSHIM_DIAGNOSTIC_MENU_MMU
@@ -518,8 +638,13 @@ int kshim_main(
 #endif
 #endif
     }
-    if (runtime_fdt && linux_base && kshim_console_quiesce() == 0) {
-        arm64_boot_image(linux_base + 4, device_tree_address,
+    /* Tail: quiesce as before, then hand off to base+4 with the ORIGINAL
+     * incoming DT pointer and the original x1..x3 even if FDT validation or
+     * report writing failed.  runtime_fdt is not required here; only a missing
+     * base image or a quiesce failure keeps the existing terminal wfe.  No
+     * prepare_boot and no MMU work. */
+    if (linux_base && kshim_console_quiesce() == 0) {
+        arm64_boot_image(linux_base + 4, resources_only_device_tree,
                          kernel_arg1, kernel_arg2, kernel_arg3);
     }
     for (;;)
@@ -541,7 +666,8 @@ int kshim_main(
             arm64_boot_linux(linux_base, device_tree_address, 4);
         }
 
-        uint32_t selected_index = select_image(&view, device_tree_address, linux_base);
+        uint32_t selected_index = select_image(&view, device_tree_address, linux_base,
+                                               &device_info);
         kshim_boot_metrics_record_once(KSHIM_BOOT_STAGE_HANDOFF);
         const MANIFEST_ENTRY *entry = view.entries[selected_index];
         if ((entry->flags & MF_ENTRY_FLAG_BASE_IMAGE) &&
@@ -594,37 +720,47 @@ int kshim_main(
                                "continuing Linux path\n",
                                ramoops_capture_status);
                     }
-                    /* Retain the EXISTING builtin-initramfs profile: drop any
-                     * inherited linux,initrd-start/end.  A missing /chosen
-                     * node or missing properties are ignored; other negative
-                     * errors propagate. */
+                    /* Local handoff blob, reused by the following simplefb
+                     * apply, metrics export and pack/validate steps. */
                     void *blob = (void *)(uintptr_t)HandoffDtb;
-                    int chosen = fdt_path_offset(blob, "/chosen");
-                    if (chosen == -FDT_ERR_NOTFOUND) {
-                        chosen = -1;
-                    } else if (chosen < 0) {
-                        status = chosen;
-                    }
-                    if (status == 0 && chosen >= 0) {
-                        int drop =
-                            fdt_delprop(blob, chosen, "linux,initrd-start");
-                        if (drop != 0 && drop != -FDT_ERR_NOTFOUND)
-                            status = drop;
-                    }
-                    if (status == 0 && chosen >= 0) {
-                        /* Refresh the /chosen offset before the second delete:
-                         * the first deletion may have moved it. */
-                        chosen = fdt_path_offset(blob, "/chosen");
-                        if (chosen == -FDT_ERR_NOTFOUND) {
-                            chosen = -1;
-                        } else if (chosen < 0) {
-                            status = chosen;
-                        } else {
-                            int drop =
-                                fdt_delprop(blob, chosen, "linux,initrd-end");
-                            if (drop != 0 && drop != -FDT_ERR_NOTFOUND)
-                                status = drop;
-                        }
+                    if (status == 0) {
+                        /* The selected Linux target may reference an external
+                         * BLOB through /chosen/kshim,initrd-entry.  When it
+                         * does not, kshim_initrd_apply() retains the prior
+                         * builtin deletion of any inherited linux,initrd-start
+                         * / linux,initrd-end; a present reference instead
+                         * advertises the referenced manifest BLOB interval.
+                         * A rejection or mutation failure routes into the
+                         * existing base fallback below.  get_manifest() has
+                         * already validated the entries and source bounds. */
+                        const struct kshim_initrd_context initrd_context = {
+                            .entries = view.entries,
+                            .entry_count = view.manifest->header.entry_count,
+                            .packed_base = linux_base,
+                            .packed_payload_size = manifest_address - linux_base,
+                            .entry = entry,
+                            .header =
+                                (const void *)(uintptr_t)(linux_base + entry->offset),
+                            .runtime =
+                                {
+                                    .base = (uint64_t)(uintptr_t)__image_start_address__,
+                                    .size =
+                                        (uint64_t)(uintptr_t)__runtime_end_address__ -
+                                        (uint64_t)(uintptr_t)__image_start_address__,
+                                },
+                            .runtime_fdt =
+                                {
+                                    .base = (uint64_t)(uintptr_t)runtime_fdt,
+                                    .size = runtime_fdt ? fdt_totalsize(runtime_fdt) : 0,
+                                },
+                            .payload_fdt =
+                                {
+                                    .base = payload_device_tree,
+                                    .size = dtb->size,
+                                },
+                        };
+                        status = kshim_initrd_apply(blob, sizeof(HandoffDtb),
+                                                    &initrd_context);
                     }
                     if (status == 0) {
                         struct kshim_resources *r = kshim_resources_get();

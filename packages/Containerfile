@@ -77,6 +77,15 @@ FROM scratch AS out-jupiter-hw-support
 COPY --from=pkg-jupiter-hw-support /work/out/ /rpms/
 
 
+FROM builder-base AS pkg-kshim-tools
+COPY kshim-tools/ /work/
+WORKDIR /work
+RUN ./build.sh && /src/scrub-scratch.sh
+
+FROM scratch AS out-kshim-tools
+COPY --from=pkg-kshim-tools /work/out/ /kshim-tools/
+
+
 FROM builder-base AS pkg-kwin
 COPY kwin/ /work/
 WORKDIR /work

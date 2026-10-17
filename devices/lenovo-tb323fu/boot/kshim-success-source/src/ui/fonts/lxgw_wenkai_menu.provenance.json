@@ -2,14 +2,14 @@
   "source": "https://raw.githubusercontent.com/lxgw/LxgwWenKai/e8b5b48b79f19f29aa68b0a178eab3472ea9f7e8/fonts/TTF/LXGWWenKai-Regular.ttf",
   "source_sha256": "39ad71264b588165b469e35e6afb162a378dacd1f95348160240ba9038ac3009",
   "license": "SIL Open Font License 1.1 (lxgw_wenkai_menu-OFL.txt)",
-  "coverage": "menu preset: ASCII, Latin-1, Latin Extended-A, general punctuation, CJK punctuation, full-width Latin/punctuation, plus the characters of /work/font-inputs/menu-required-text.txt",
+  "coverage": "menu preset: ASCII, Latin-1, Latin Extended-A, general punctuation, CJK punctuation, full-width Latin/punctuation, plus the characters of /task/inputs/menu-required-text.txt",
   "coverage_mode": "menu",
-  "glyphs": 686,
-  "raw_bytes": 132640,
-  "compressed_bytes": 86061,
-  "blob_sha256": "c27192c3e32d8744ced14adfc606ddd5557241f22c4f6a01ec0df24aefcc5d60",
+  "glyphs": 716,
+  "raw_bytes": 146116,
+  "compressed_bytes": 96877,
+  "blob_sha256": "c76da0918f669f5eff88df5aac56b5030849c7beb7088881048bc7af8cf5cc4c",
   "generator": "tools/gen_ui_font.py",
-  "requested_codepoints": 735,
+  "requested_codepoints": 765,
   "missing_codepoints": [
     "0x00AD",
     "0x200C",
@@ -73,5 +73,5 @@
     "0x3032",
     "0xFF00"
   ],
-  "required_characters": 233
+  "required_characters": 271
 }

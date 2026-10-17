@@ -16,9 +16,73 @@ HDR_SIZE = 1584
 MAGIC = b"ANDROID!"
 KERN_MAGIC = b"ARM\x64"
 
+# Fixed DT-probe diagnostic carrier. The cmdline field is Android boot header
+# bytes [44:1580] (1536 bytes): NUL-terminated text followed by zero padding.
+CMDLINE_START = 44
+CMDLINE_END = 1580
+CMDLINE_LEN = CMDLINE_END - CMDLINE_START
+PROBE_VALUE = "pending" + "_" * 73          # 80 ASCII bytes
+PROBE_PARAM_PROBE = "kshimreport.kshim_probe"
+PROBE_PARAM_S0 = "kshimreport.kshim_s0"
+# Exactly two ordinary cmdline parameters, single-space separated: 206 bytes.
+PROBE_SUFFIX = (PROBE_PARAM_PROBE + "=" + PROBE_VALUE + " " +
+                PROBE_PARAM_S0 + "=" + PROBE_VALUE).encode("ascii")
+PROBE_CONFLICT_KEYS = frozenset((
+    b"kshimreport.kshim_probe",
+    b"kshimreport.kshim_s0",
+    b"androidboot.kshim_probe",
+    b"androidboot.kshim_s0",
+))
+PROBE_CAVEAT = (
+    "DT-only diagnostic carrier: the ordinary kshimreport prefix is converted "
+    "in-place by runtime into an equal-length androidboot prefix; real hardware "
+    "report availability is unverified. It does not fix the boot menu or hardware."
+)
+
 
 def die(msg):
     raise SystemExit("error: " + msg)
+
+
+def build_probe_field(field):
+    """Validate the original cmdline field and return (new_field, original_text).
+
+    Diagnostic mode only. Never normalises the original bytes: the text up to
+    the first NUL is preserved verbatim (including whitespace) and the fixed
+    206-byte suffix is appended with a single separator when text is nonempty.
+    """
+    if len(field) != CMDLINE_LEN:
+        die("cmdline field length %d != %d" % (len(field), CMDLINE_LEN))
+    nul = field.find(b"\x00")
+    if nul < 0:
+        die("original cmdline has no NUL terminator")
+    if any(field[nul + 1:]):
+        die("original cmdline has nonzero bytes after the first NUL")
+    orig_text = bytes(field[:nul])
+    for token in orig_text.split():
+        key = token.split(b"=", 1)[0]
+        if key in PROBE_CONFLICT_KEYS:
+            die("original cmdline already defines %s"
+                % key.decode("ascii", "replace"))
+    new_text = (orig_text + b" " + PROBE_SUFFIX) if orig_text else PROBE_SUFFIX
+    if len(new_text) > CMDLINE_LEN - 1:
+        die("resulting cmdline text %d exceeds %d bytes"
+            % (len(new_text), CMDLINE_LEN - 1))
+    new_field = new_text + b"\x00" + b"\x00" * (CMDLINE_LEN - len(new_text) - 1)
+    return new_field, orig_text
+
+
+def probe_report_slots():
+    return {
+        "slots": {
+            PROBE_PARAM_PROBE: PROBE_VALUE,
+            PROBE_PARAM_S0: PROBE_VALUE,
+        },
+        "value_bytes": 80,
+        "allowed_header_changes": [[8, 12], [CMDLINE_START, CMDLINE_END]],
+        "hardware_tested": False,
+        "caveat": PROBE_CAVEAT,
+    }
 
 
 def align(n, a=4096):
@@ -87,7 +151,9 @@ def main():
     ap.add_argument("--output", required=True)
     ap.add_argument("--report", required=True)
     ap.add_argument("--avbtool", default=None)
+    ap.add_argument("--dt-probe-report-slots", action="store_true")
     a = ap.parse_args()
+    diagnostic = a.dt_probe_report_slots
 
     if os.path.realpath(a.output) == os.path.realpath(a.report):
         die("output and report paths are the same")
@@ -121,7 +187,15 @@ def main():
     if HDR + ks > len(orig):
         die("original kernel exceeds image bounds")
 
+    probe_field = None
+    probe_orig_text = None
+    if diagnostic:
+        probe_field, probe_orig_text = build_probe_field(
+            orig[CMDLINE_START:CMDLINE_END])
+
     footer_present = len(orig) >= 64 and orig[-64:-60] == b"AVBf"
+    if diagnostic and not footer_present:
+        die("--dt-probe-report-slots requires an AVB footer in the original")
     avb = {"footer_present": footer_present}
     limit = len(orig)
     avb_source = None
@@ -249,6 +323,8 @@ def main():
 
     header = bytearray(orig[:HDR])
     struct.pack_into("<I", header, 8, len(kern))
+    if diagnostic:
+        header[CMDLINE_START:CMDLINE_END] = probe_field
     pad = aligned - new_len
     raw = bytes(header) + kern + b"\x00" * pad
 
@@ -256,7 +332,15 @@ def main():
         die("internal length mismatch")
     if raw[:HDR] != bytes(header):
         die("output header does not match expected header")
-    if raw[:8] != orig[:8] or raw[12:HDR] != orig[12:HDR]:
+    if diagnostic:
+        if (raw[:8] != orig[:8] or raw[12:CMDLINE_START] != orig[12:CMDLINE_START]
+                or raw[CMDLINE_END:HDR] != orig[CMDLINE_END:HDR]):
+            die("output header differs outside kernel_size/cmdline fields")
+        if raw[CMDLINE_START:CMDLINE_END] != probe_field:
+            die("output cmdline field does not match the diagnostic field")
+        if probe_orig_text and raw[CMDLINE_START:CMDLINE_START + len(probe_orig_text)] != probe_orig_text:
+            die("output cmdline lost the original prefix")
+    elif raw[:8] != orig[:8] or raw[12:HDR] != orig[12:HDR]:
         die("output header differs beyond kernel_size field")
     if raw[HDR:HDR + len(kern)] != kern:
         die("output kernel payload mismatch")
@@ -367,6 +451,8 @@ def main():
             },
             "warning": "requires unlocked bootloader; hardware untested",
         }
+        if diagnostic:
+            report["dt_probe_report_slots"] = probe_report_slots()
         with open(a.report, "x", encoding="utf-8") as f:
             json.dump(report, f, indent=2, sort_keys=True)
             f.write("\n")

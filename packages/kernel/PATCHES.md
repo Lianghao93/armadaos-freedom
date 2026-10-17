@@ -143,6 +143,7 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
 - `patches/0057-backlight-aw99706-konkr-cfg7.patch`
   source: https://github.com/ROCKNIX/distribution/blob/bcf3b5bc574990b96543484575b06f912153a715/projects/ROCKNIX/devices/SM8750/patches/linux/0057-backlight-aw99706-konkr-cfg7.patch
   upstream: unknown
+  notes: Armada scopes the CFG7 write to the `konkr,pocket-fit-elite` compatible, so the existing KONKR behavior is kept and this board-specific value is not applied to Lenovo Elden.
 - `patches/0066-regulator-add-qcom-pm8150l-lcdb.patch`
   source: https://github.com/ROCKNIX/distribution/blob/807c74fc46c124891d8aa9b57a68533d38e9a6b2/projects/ROCKNIX/devices/SM8250/patches/linux/0066-regulator-add-qcom-pm8150l-lcdb.patch
   upstream: unknown
@@ -194,6 +195,10 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
 - `patches/0060-input-touchscreen-add-synaptics-dsx-driver.patch`
   source: https://github.com/ROCKNIX/distribution/blob/bcf3b5bc574990b96543484575b06f912153a715/projects/ROCKNIX/devices/SM8550/patches/linux/0060-input-touchscreen-add-synaptics-dsx-driver.patch
   upstream: unknown
+- `patches/0140-input-touchscreen-add-novatek-nvt36xxx-spi.patch`
+  source: https://github.com/h0cheung/tb322fc-linux-kernel/commit/6f97250ead155fc3b980856323e99a4623dae73d
+  upstream: unknown
+  notes: Verbatim import of the touchscreen driver and its binding plus the Kconfig/Makefile registration; no board DTS, panel, or firmware bundled.
 - `patches/0058-input-joystick-add-ayaneo-mcu-joystick.patch`
   source: https://github.com/ROCKNIX/distribution/blob/bcf3b5bc574990b96543484575b06f912153a715/projects/ROCKNIX/devices/SM8750/patches/linux/0058-input-joystick-add-ayaneo-mcu-joystick.patch
   upstream: unknown
@@ -799,3 +804,45 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
 - `patches/0505a-arm64-unaligned-atomics-cover-the-load128-store-exclusive.patch`
   source: armada
   upstream: local
+- `patches/0141-drm-panel-add-nt36536-and-dsc-packet-support.patch`
+  source: https://github.com/h0cheung/tb322fc-linux-kernel/commit/6f97250ead155fc3b980856323e99a4623dae73d
+  upstream: unknown
+  notes: Literal NT36536 panel plus an opt-in DSC packet flag and its host handling.
+- `patches/0142-drm-msm-elden-dsc12-10bpc.patch`
+  source: https://github.com/h0cheung/tb322fc-linux-kernel/commit/6f97250ead155fc3b980856323e99a4623dae73d
+  upstream: unknown
+  notes: Elden-only DSC 1.2 and 10bpc configuration with the DPU calculations, retaining the other-board paths.
+- `patches/0143-drm-msm-elden-cphy-link-clocks.patch`
+  source: https://github.com/h0cheung/tb322fc-linux-kernel/commit/6f97250ead155fc3b980856323e99a4623dae73d
+  upstream: unknown
+  notes: Elden-only CPHY timing and clock setup, semantically layered on the existing `0048`, `0048a`, and `0048b`.
+- `patches/0144-drm-msm-elden-bonded-command-dma.patch`
+  source: https://github.com/h0cheung/tb322fc-linux-kernel/commit/6f97250ead155fc3b980856323e99a4623dae73d
+  upstream: unknown
+  notes: Elden bonded DSI command and DMA synchronization and error handling, retaining the existing non-Elden path.
+- `patches/0145-dt-bindings-display-elden-nt36536-cphy.patch`
+  source: https://github.com/h0cheung/tb322fc-linux-kernel/commit/6f97250ead155fc3b980856323e99a4623dae73d
+  upstream: unknown
+  notes: Panel binding plus the 14-byte CPHY timing property.
+- `patches/0146-iommu-arm-smmu-elden-boot-handoff.patch`
+  source: armada
+  upstream: local
+  notes: Runtime SMMU handoff for the preserved Elden display. Imports the live firmware SMR/S2CR and context-bank state instead of resetting the SMMU, maps the runtime `/chosen` simple-framebuffer into the display VM before the SID switch, and reserves the same rounded range from the DMA allocator. Scoped to `lenovo,elden` with the non-Adreno SM8750 application SMMU carrying `qcom,preserve-boot-mappings`. Derived from GEEKiDoS <geek_ds@foxmail.com> commit `dc7d14dc64c8d4f86220b30cd126b17d805c8474` and the `6f97250ead155fc3b980856323e99a4623dae73d` tb322fc tree.
+- `dts/sm8750-lenovo-elden.dts`
+  source: https://github.com/h0cheung/tb322fc-linux-kernel/blob/6f97250ead155fc3b980856323e99a4623dae73d/arch/arm64/boot/dts/qcom/sm8750-lenovo-elden.dts
+  upstream: unknown
+- `dts/sm8750-lenovo-elden-camera.dtsi`
+  source: https://github.com/h0cheung/tb322fc-linux-kernel/blob/6f97250ead155fc3b980856323e99a4623dae73d/arch/arm64/boot/dts/qcom/sm8750.dtsi
+  upstream: unknown
+  notes: Extracts only the `cci0`, `cci1`, and `camss` nodes under `&soc` with one indentation normalization; it closes the labels the board DTS references and does not imply camera support.
+- `dts/sm8750-lenovo-elden.dts.patch`
+  source: armada
+  notes: Runtime RAM and simplefb template; disables the unverified fixed reservations and enables the runtime SMMU preserved-mapping handoff from `0146`.
+- `patches/0147-power-sequencing-qcom-wcn-add-wcn7861-pmu.patch`
+  source: https://github.com/h0cheung/tb322fc-linux-kernel/blob/6f97250ead155fc3b980856323e99a4623dae73d/drivers/power/sequencing/pwrseq-qcom-wcn.c
+  upstream: unknown
+  notes: Local adaptation of the tb322fc WCN7861 PMU provider. Adds a `qcom,wcn7861-pmu` platform-data entry and a 7861-only AOSS/PDC initialisation that runs before any supply or enable vote; votes seven external supplies by voltage range and load so the variable RPMh rails are not left at their floor. The existing WCN7860 path is untouched. Bounded scope: the reference's Bluetooth reset timing and its OL-CPR / QMI dynamic-map and mutex code are omitted. The msm PCIe endpoint waits on ldo9 until the 7861 PMU binds, so the patch must still be built and validated for PMU binding and PCI enumeration; no hardware success is claimed.
+- `patches/0153-drm-msm-elden-video-teardown.patch`
+  source: https://github.com/h0cheung/tb322fc-linux-kernel/commit/6f97250ead155fc3b980856323e99a4623dae73d
+  upstream: unknown
+  notes: Elden-only video teardown ordering, narrowed to `lenovo,elden`: the master issues the pipeline cleanup, whose CTL flush video mode only consumes at a frame boundary, before stopping the timing engine; the slave skips the shared teardown, and its enable half marks the slave enabled without restarting the timing engine. Every other board keeps the existing disable ordering, cleanup placement and kickoff path. Built from the pinned reference behaviour; a full ARM64 Image, dtbs and modules build passed, while the hardware restart fix remains unverified.

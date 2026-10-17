@@ -37,6 +37,7 @@
 #define KSHIM_MENU_DESC_FASTBOOT kshim_menu_text(KSHIM_TEXT_DESC_FASTBOOT)
 #define KSHIM_MENU_DESC_EDL kshim_menu_text(KSHIM_TEXT_DESC_EDL)
 #define KSHIM_MENU_DESC_BACK kshim_menu_text(KSHIM_TEXT_DESC_BACK)
+#define KSHIM_MENU_DESC_BACK_PARENT kshim_menu_text(KSHIM_TEXT_DESC_BACK_PARENT)
 #define KSHIM_MENU_TEXT_STATUS kshim_menu_text(KSHIM_TEXT_STATUS)
 #define KSHIM_MENU_TEXT_CREDIT kshim_menu_text(KSHIM_TEXT_CREDIT)
 #define KSHIM_MENU_TEXT_LANGUAGE_STATE kshim_menu_text(KSHIM_TEXT_LANGUAGE_STATE)
@@ -58,13 +59,14 @@
 #define KSHIM_MENU_DESC_INTERNAL "启动安装在机身存储中的 ArmadaOS。"
 #define KSHIM_MENU_DESC_TF "启动安装在 TF 卡中的 ArmadaOS，请先插入对应 TF 卡。"
 #define KSHIM_MENU_DESC_DIAGNOSTIC "启动 Linux 诊断环境，用于检查启动和硬件问题。"
-#define KSHIM_MENU_DESC_ADVANCED "进入 Linux 诊断、恢复或刷机模式。"
+#define KSHIM_MENU_DESC_ADVANCED "查看可用的高级启动模式。"
 #define KSHIM_MENU_DESC_RESTART "重新启动设备。"
 #define KSHIM_MENU_DESC_OFF "关闭设备电源。"
 #define KSHIM_MENU_DESC_RECOVERY "进入 Android 恢复模式，进行系统维护。"
 #define KSHIM_MENU_DESC_FASTBOOT "进入 Fastboot，通过 USB 连接电脑进行维护或刷写。"
 #define KSHIM_MENU_DESC_EDL "进入高通 9008 下载模式，供电脑端工具恢复或刷写。"
 #define KSHIM_MENU_DESC_BACK "返回系统启动选项。"
+#define KSHIM_MENU_DESC_BACK_PARENT "返回上一级。"
 #define KSHIM_MENU_TEXT_STATUS "选择要启动的系统"
 #define KSHIM_MENU_TEXT_CREDIT "适配维护：B站「单翼」｜免费使用，谨防收费诈骗。"
 #define KSHIM_MENU_TEXT_LANGUAGE_STATE "简体中文"
@@ -85,13 +87,14 @@
 #define KSHIM_MENU_DESC_INTERNAL "Start ArmadaOS installed on internal storage."
 #define KSHIM_MENU_DESC_TF "Start ArmadaOS installed on the TF card. Insert the matching card first."
 #define KSHIM_MENU_DESC_DIAGNOSTIC "Start the Linux diagnostic environment to investigate boot and hardware problems."
-#define KSHIM_MENU_DESC_ADVANCED "Enter Linux diagnostics, recovery or flashing modes."
+#define KSHIM_MENU_DESC_ADVANCED "Choose an available advanced boot mode."
 #define KSHIM_MENU_DESC_RESTART "Restart the device."
 #define KSHIM_MENU_DESC_OFF "Turn off the device."
 #define KSHIM_MENU_DESC_RECOVERY "Enter Android recovery mode for system maintenance."
 #define KSHIM_MENU_DESC_FASTBOOT "Enter Fastboot and connect to a computer over USB for maintenance or flashing."
 #define KSHIM_MENU_DESC_EDL "Enter Qualcomm 9008 download mode for recovery or flashing with a computer."
 #define KSHIM_MENU_DESC_BACK "Return to the system boot options."
+#define KSHIM_MENU_DESC_BACK_PARENT "Return to the previous menu."
 #define KSHIM_MENU_TEXT_STATUS "选择要启动的系统"
 #define KSHIM_MENU_TEXT_CREDIT "Adapted by Danyi on Bilibili · Free to use. Beware of paid scams."
 #define KSHIM_MENU_TEXT_LANGUAGE_STATE "English"

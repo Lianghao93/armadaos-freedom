@@ -16,6 +16,7 @@
 #include <lvgl.h>
 #include <lvgl_port.h>
 #include <menu_text.h>
+#include <menu_locale.h>
 #include "framebuffer.h"
 
 /* ------------------------------------------------------------------ fixture */
@@ -937,6 +938,262 @@ static void test_limits(void)
     puts("test_limits passed");
 }
 
+/* --------------------------------------------- test_device_info_summary */
+
+#if defined(CONFIG_KSHIM_MENU_STYLE_STAR_CHART) && CONFIG_KSHIM_MENU_STYLE_STAR_CHART
+/* The STAR Device info page keeps the whole home list and turns the selected
+ * Device info row into one localized multi-line summary.  Against the ordinary
+ * single-line entry the title and detail grow upward while the confirm button
+ * keeps its geometry.  Real LVGL is exercised at both supported scanouts and
+ * both locales; the values come from a synthetic fixture that claims no
+ * captured stock FDT. */
+static void test_device_info_summary(void)
+{
+    static const kshim_menu_role_t Roles[8] = {
+        KSHIM_MENU_ROLE_ANDROID, KSHIM_MENU_ROLE_INTERNAL, KSHIM_MENU_ROLE_TF,
+        KSHIM_MENU_ROLE_ADVANCED, KSHIM_MENU_ROLE_LANGUAGE,
+        KSHIM_MENU_ROLE_DEVICE_INFO, KSHIM_MENU_ROLE_RESTART, KSHIM_MENU_ROLE_OFF,
+    };
+    static const kshim_menu_text_id FieldLabels[7] = {
+        KSHIM_TEXT_INFO_BOARD, KSHIM_TEXT_INFO_SOC, KSHIM_TEXT_INFO_MODEL,
+        KSHIM_TEXT_INFO_COMPATIBLE, KSHIM_TEXT_INFO_RAM,
+        KSHIM_TEXT_INFO_FRAMEBUFFER, KSHIM_TEXT_INFO_VERSION,
+    };
+    static const uint32_t Sizes[2][2] = {{1904U, 3040U}, {1080U, 1920U}};
+    static const kshim_menu_language_t Locales[2] = {
+        KSHIM_MENU_LANG_ZH_CN, KSHIM_MENU_LANG_EN,
+    };
+    enum { InfoRow = 5 };
+
+    /* A 120-character model and a three-line compatible list, each truncated
+     * with the shared ellipsis.  They are never shortened to fit a legacy
+     * single-line implementation. */
+    char Model[160];
+    memset(Model, 'M', 120);
+    memcpy(Model + 120, "\xe2\x80\xa6", 4);
+    char Compat[200];
+    size_t CompatLength = 0;
+    for (int Line = 0; Line < 3; Line++) {
+        memset(Compat + CompatLength, 'W', 44);
+        CompatLength += 44;
+        memcpy(Compat + CompatLength, "\xe2\x80\xa6", 3);
+        CompatLength += 3;
+        if (Line < 2) Compat[CompatLength++] = '\n';
+    }
+    Compat[CompatLength] = '\0';
+
+    for (size_t L = 0; L < 2U; L++) {
+        for (size_t S = 0; S < 2U; S++) {
+            kshim_lvgl_t Ui;
+            kshim_framebuffer_t Fb;
+            uint32_t *Pix;
+            QcomKeyDescriptor Desc[3];
+            QcomKeys Keys;
+            FixtureInitSize(&Ui, &Fb, &Pix, Desc, &Keys, Sizes[S][0], Sizes[S][1]);
+            assert(Ui.LogicalWidth == Sizes[S][1] && Ui.LogicalHeight == Sizes[S][0]);
+            assert(kshim_menu_set_language(Locales[L]) == 0);
+
+            const char *Names[8];
+            const char *Descriptions[8];
+            const char *Actions[8];
+            for (size_t I = 0; I < 8U; I++) {
+                Names[I] = kshim_menu_role_name(Roles[I], "");
+                Descriptions[I] = kshim_menu_role_description(Roles[I], "");
+            }
+            Actions[0] = KSHIM_MENU_ACTION_BOOT;
+            Actions[1] = KSHIM_MENU_ACTION_BOOT;
+            Actions[2] = KSHIM_MENU_ACTION_BOOT;
+            Actions[3] = KSHIM_MENU_ACTION_ENTER;
+            Actions[4] = KSHIM_MENU_ACTION_ENTER;
+            Actions[5] = KSHIM_MENU_ACTION_ENTER;
+            Actions[6] = KSHIM_MENU_ACTION_RESTART;
+            Actions[7] = KSHIM_MENU_ACTION_OFF;
+
+            /* One localized "label: value" block per field, version last. */
+            char Framebuffer[48];
+            int FbLength = snprintf(Framebuffer, sizeof(Framebuffer),
+                                    "%ux%u stride %u", (unsigned)Sizes[S][0],
+                                    (unsigned)Sizes[S][1], (unsigned)(Sizes[S][0] * 4U));
+            assert(FbLength > 0 && (size_t)FbLength < sizeof(Framebuffer));
+            const char *Values[7] = {
+                "TB323FU", "SM8750", Model, Compat,
+                "8192 MiB", Framebuffer, "0.0.1",
+            };
+            char Summary[1024];
+            size_t Off = 0;
+            for (size_t I = 0; I < 7U; I++) {
+                int N = snprintf(Summary + Off, sizeof(Summary) - Off, "%s: %s%s",
+                                 kshim_menu_text(FieldLabels[I]), Values[I],
+                                 (I + 1U < 7U) ? "\n" : "");
+                assert(N > 0 && (size_t)N < sizeof(Summary) - Off);
+                Off += (size_t)N;
+            }
+
+            /* Ordinary entry: the Device info row keeps ENTER and its own
+             * localized description. */
+            assert(kshim_lvgl_set_entries_described(&Ui, Names, Descriptions,
+                    Actions, 8U, (size_t)InfoRow) == 0);
+            kshim_lvgl_set_entry_roles(&Ui, Roles, 8U);
+            kshim_lvgl_set_countdown(&Ui, 0U);
+            kshim_lvgl_set_status(&Ui, "");
+            Advance(&Ui, 400U);
+
+            lv_obj_t *HeadN = FindChromeLabel(&Ui, Names[InfoRow]);
+            lv_obj_t *DetailN = FindChromeLabel(&Ui, Descriptions[InfoRow]);
+            assert(HeadN && DetailN && HeadN != DetailN);
+            CheckGlyphs(HeadN, Names[InfoRow]);
+            lv_area_t HeadAreaN, DetailAreaN, BootAreaN;
+            lv_obj_get_coords(HeadN, &HeadAreaN);
+            lv_obj_get_coords(DetailN, &DetailAreaN);
+            lv_obj_get_coords(Ui.BootButton, &BootAreaN);
+
+            /* Summary page: the same eight rows, the Device info row now holds
+             * the summary and Back, and the initial focus already selects it so
+             * no refocus is needed. */
+            Descriptions[InfoRow] = Summary;
+            Actions[InfoRow] = KSHIM_MENU_ACTION_BACK;
+            assert(kshim_lvgl_set_entries_described(&Ui, Names, Descriptions,
+                    Actions, 8U, (size_t)InfoRow) == 0);
+            kshim_lvgl_set_entry_roles(&Ui, Roles, 8U);
+            kshim_lvgl_set_countdown(&Ui, 0U);
+            kshim_lvgl_set_status(&Ui, "");
+            Advance(&Ui, 400U);
+
+            lv_obj_t *HeadS = FindChromeLabel(&Ui, Names[InfoRow]);
+            lv_obj_t *DetailS = FindChromeLabel(&Ui, Summary);
+            assert(HeadS && DetailS && HeadS != DetailS);
+            CheckGlyphs(HeadS, Names[InfoRow]);
+            CheckGlyphs(DetailS, Summary);
+            lv_area_t HeadAreaS, DetailAreaS, BootAreaS;
+            lv_obj_get_coords(HeadS, &HeadAreaS);
+            lv_obj_get_coords(DetailS, &DetailAreaS);
+            lv_obj_get_coords(Ui.BootButton, &BootAreaS);
+
+            /* The confirm button shows the localized Back action. */
+            lv_obj_t *Button[4];
+            int ButtonCount = GatherLabels(Ui.BootButton, Button, 4);
+            assert(ButtonCount == 1);
+            assert(strcmp(lv_label_get_text(Button[0]), KSHIM_MENU_ACTION_BACK) == 0);
+
+            /* The whole home list stays: eight rows, pending index untouched. */
+            assert(lv_group_get_obj_count(Ui.Group) == 8U);
+            for (size_t I = 0; I < 8U; I++)
+                assert(FindLabel(Ui.List, Names[I]));
+            assert(kshim_lvgl_take_index(&Ui) == -1);
+
+            /* Measure the summary with the detail label's own typography. */
+            const lv_font_t *DetailFont =
+                lv_obj_get_style_text_font(DetailS, LV_PART_MAIN);
+            assert(DetailFont);
+            lv_point_t TextSize;
+            lv_text_get_size(&TextSize, lv_label_get_text(DetailS), DetailFont,
+                             lv_obj_get_style_text_letter_space(DetailS, LV_PART_MAIN),
+                             lv_obj_get_style_text_line_space(DetailS, LV_PART_MAIN),
+                             lv_obj_get_content_width(DetailS), LV_TEXT_FLAG_NONE);
+            printf("device-info logical=%ux%u locale=%d font_line=%d text_height=%d "
+                   "detail_height=%d\n", (unsigned)Ui.LogicalWidth,
+                   (unsigned)Ui.LogicalHeight, (int)Locales[L],
+                   (int)DetailFont->line_height, (int)TextSize.y,
+                   (int)lv_obj_get_height(DetailS));
+            assert(TextSize.y <= lv_obj_get_content_height(DetailS));
+            assert(DetailAreaS.y2 < BootAreaS.y1);
+
+            /* The summary grows upward and leaves the button geometry alone. */
+            assert(HeadAreaS.y1 < HeadAreaN.y1);
+            assert(DetailAreaS.y1 < DetailAreaN.y1);
+            assert(BootAreaS.x1 == BootAreaN.x1 && BootAreaS.y1 == BootAreaN.y1);
+            assert(BootAreaS.x2 == BootAreaN.x2 && BootAreaS.y2 == BootAreaN.y2);
+
+            /* Focusing Android restores the ordinary description, action and
+             * geometry; focusing Device info brings the summary geometry back. */
+            lv_group_focus_obj(lv_group_get_obj_by_index(Ui.Group, 0U));
+            Advance(&Ui, 400U);
+            lv_obj_t *HeadA = FindChromeLabel(&Ui, Names[0]);
+            lv_obj_t *DetailA = FindChromeLabel(&Ui, Descriptions[0]);
+            assert(HeadA && DetailA);
+            CheckGlyphs(HeadA, Names[0]);
+            CheckGlyphs(DetailA, Descriptions[0]);
+            ButtonCount = GatherLabels(Ui.BootButton, Button, 4);
+            assert(ButtonCount == 1);
+            assert(strcmp(lv_label_get_text(Button[0]), KSHIM_MENU_ACTION_BOOT) == 0);
+            assert(!FindChromeLabel(&Ui, Summary));
+            lv_area_t HeadAreaA, DetailAreaA;
+            lv_obj_get_coords(HeadA, &HeadAreaA);
+            lv_obj_get_coords(DetailA, &DetailAreaA);
+            assert(HeadAreaA.y1 == HeadAreaN.y1 && HeadAreaA.y2 == HeadAreaN.y2);
+            assert(DetailAreaA.y1 == DetailAreaN.y1 && DetailAreaA.y2 == DetailAreaN.y2);
+
+            lv_group_focus_obj(lv_group_get_obj_by_index(Ui.Group, (uint32_t)InfoRow));
+            Advance(&Ui, 400U);
+            lv_obj_t *HeadS2 = FindChromeLabel(&Ui, Names[InfoRow]);
+            lv_obj_t *DetailS2 = FindChromeLabel(&Ui, Summary);
+            assert(HeadS2 && DetailS2);
+            lv_area_t HeadAreaS2, DetailAreaS2;
+            lv_obj_get_coords(HeadS2, &HeadAreaS2);
+            lv_obj_get_coords(DetailS2, &DetailAreaS2);
+            assert(HeadAreaS2.y1 == HeadAreaS.y1 && HeadAreaS2.y2 == HeadAreaS.y2);
+            assert(DetailAreaS2.y1 == DetailAreaS.y1 && DetailAreaS2.y2 == DetailAreaS.y2);
+
+            /* Rebuilding the ordinary home restores the info ENTER entry and the
+             * ordinary geometry. */
+            Descriptions[InfoRow] = kshim_menu_role_description(
+                KSHIM_MENU_ROLE_DEVICE_INFO, "");
+            Actions[InfoRow] = KSHIM_MENU_ACTION_ENTER;
+            assert(kshim_lvgl_set_entries_described(&Ui, Names, Descriptions,
+                    Actions, 8U, (size_t)InfoRow) == 0);
+            kshim_lvgl_set_entry_roles(&Ui, Roles, 8U);
+            kshim_lvgl_set_countdown(&Ui, 0U);
+            kshim_lvgl_set_status(&Ui, "");
+            Advance(&Ui, 400U);
+            lv_obj_t *HeadS3 = FindChromeLabel(&Ui, Names[InfoRow]);
+            lv_obj_t *DetailS3 = FindChromeLabel(&Ui, Descriptions[InfoRow]);
+            assert(HeadS3 && DetailS3);
+            ButtonCount = GatherLabels(Ui.BootButton, Button, 4);
+            assert(ButtonCount == 1);
+            assert(strcmp(lv_label_get_text(Button[0]), KSHIM_MENU_ACTION_ENTER) == 0);
+            lv_area_t HeadAreaS3, DetailAreaS3;
+            lv_obj_get_coords(HeadS3, &HeadAreaS3);
+            lv_obj_get_coords(DetailS3, &DetailAreaS3);
+            assert(HeadAreaS3.y1 == HeadAreaN.y1 && HeadAreaS3.y2 == HeadAreaN.y2);
+            assert(DetailAreaS3.y1 == DetailAreaN.y1 && DetailAreaS3.y2 == DetailAreaN.y2);
+
+            /* Optional coordinator probe (KSHIM_INFO_FONT_SCAN on 1920-wide
+             * hosts): sweep candidate summary font sizes on DetailS3's own
+             * (ordinary body) font and report measured text height against the
+             * expanded detail limit. Measurement only; production typography is
+             * restored to 30px before the fixture teardown. */
+            if ((unsigned)Ui.LogicalWidth == 1920U &&
+                getenv("KSHIM_INFO_FONT_SCAN")) {
+                const lv_font_t *InfoFont =
+                    lv_obj_get_style_text_font(DetailS3, LV_PART_MAIN);
+                assert(InfoFont);
+                const lv_coord_t ScanLetterSpace =
+                    lv_obj_get_style_text_letter_space(DetailS3, LV_PART_MAIN);
+                const lv_coord_t ScanLineSpace =
+                    lv_obj_get_style_text_line_space(DetailS3, LV_PART_MAIN);
+                const lv_coord_t ScanWidth = lv_obj_get_content_width(DetailS3);
+                const int ScanLimit = (int)(DetailAreaS.y2 - DetailAreaS.y1 + 1);
+                for (int Pixel = 21; Pixel <= 30; Pixel++) {
+                    lv_tiny_ttf_set_size((lv_font_t *)InfoFont, (uint32_t)Pixel);
+                    lv_point_t ScanSize;
+                    lv_text_get_size(&ScanSize, Summary, InfoFont,
+                                     ScanLetterSpace, ScanLineSpace, ScanWidth,
+                                     LV_TEXT_FLAG_NONE);
+                    printf("font-scan locale=%d pixel=%d font_line=%d "
+                           "text_height=%d limit=%d\n", (int)Locales[L], Pixel,
+                           (int)InfoFont->line_height, (int)ScanSize.y,
+                           ScanLimit);
+                }
+                lv_tiny_ttf_set_size((lv_font_t *)InfoFont, 30U);
+            }
+
+            FixtureDeinit(&Ui, Pix);
+        }
+    }
+    puts("test_device_info_summary passed");
+}
+#endif
+
 /* -------------------------------------------------------------- main */
 
 int main(void)
@@ -950,6 +1207,9 @@ int main(void)
     test_menu_levels();
     test_small_landscape_scroll();
     test_limits();
+#if defined(CONFIG_KSHIM_MENU_STYLE_STAR_CHART) && CONFIG_KSHIM_MENU_STYLE_STAR_CHART
+    test_device_info_summary();
+#endif
     puts("all tb323fu menu tests passed");
     return 0;
 }
