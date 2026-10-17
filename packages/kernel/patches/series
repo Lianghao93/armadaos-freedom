@@ -241,3 +241,5 @@ v2_20260420_neil_armstrong_arm64_qcom_sm8650_misc_enhancements.patch
 0151-ASoC-codecs-add-aw88461-speaker-amplifier.patch
 0152-usb-dwc3-shared-connector-role-mux.patch
 0153-drm-msm-elden-video-teardown.patch
+0154-clk-qcom-elden-reset-live-display.patch
+0155-drm-msm-elden-pll-digital-power.patch
