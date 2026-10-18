@@ -1,0 +1,119 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * TB323FU ("baldur"): the panel, as this device's ABL devicetree describes it:
+ *
+ *	panel      CSOT NT36523, 1904x3040, dual-DSI (952/link),
+ *	           video mode burst, DSC 1.2, 4 lanes
+ *	vddio      pmh0101 ldo12   1.2-1.8 V
+ *	vdd        pmh0101 ldo11   1.0-1.292 V
+ *	vci        pmh0101 ldo13   3.0 V
+ *	reset      pmh0110 SID 5 (F) gpio 10
+ *	TE         TLMM 86
+ *	dsi ctrl   vdda-1p2  pmh0110_d ldo1
+ *	dsi phy    vdda-0p9  pmh0110_d ldo3
+ */
+
+&mdss {
+	status = "okay";
+};
+
+&mdss_dsi0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	vdda-supply = <&vreg_l1d_1p2>;
+
+	/* one panel on two links: DSI1 runs off DSI0's PLL */
+	qcom,dual-dsi-mode;
+	qcom,sync-dual-dsi;
+	qcom,master-dsi;
+
+	status = "okay";
+
+	panel0: panel@0 {
+		compatible = "lenovo,baldur-csot-nt36523";
+		reg = <0>;
+
+		/*
+		 * Reset is on a PMIC GPIO, not TLMM: pmh0110 at SPMI SID 5,
+		 * pin 10. The vendor reset sequence ends with the line high,
+		 * and the nt36523 driver ends its own reset at logical 0, so
+		 * the line is active low here.
+		 */
+		reset-gpios = <&pmh0110_f_e0_gpios 10 GPIO_ACTIVE_LOW>;
+
+		vddio-supply = <&vreg_l12b_1p8>;
+		vdd-supply = <&vreg_l11b_1p0>;
+		vci-supply = <&vreg_l13b_3p0>;
+
+		/* external AW99706 on I2C12, baldur-backlight.dtsi */
+		backlight = <&panel_backlight>;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				panel0_in: endpoint {
+					remote-endpoint = <&mdss_dsi0_out>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				panel1_in: endpoint {
+					remote-endpoint = <&mdss_dsi1_out>;
+				};
+			};
+		};
+	};
+};
+
+&mdss_dsi0_out {
+	remote-endpoint = <&panel0_in>;
+	data-lanes = <0 1 2 3>;
+};
+
+&mdss_dsi0_phy {
+	vdds-supply = <&vreg_l3d_0p8>;
+	status = "okay";
+};
+
+&mdss_dsi1 {
+	vdda-supply = <&vreg_l1d_1p2>;
+
+	qcom,dual-dsi-mode;
+	qcom,sync-dual-dsi;
+	/*
+	 * DSI 2.9 reparents byte_src/pixel_src to the clocks named
+	 * dsi_pll_byte and dsi_pll_pixel, and dispcc has no DSI1 PHY
+	 * input: point both at DSI0's PHY.
+	 */
+	clocks = <&dispcc DISP_CC_MDSS_BYTE1_CLK>,
+		 <&dispcc DISP_CC_MDSS_BYTE1_INTF_CLK>,
+		 <&dispcc DISP_CC_MDSS_PCLK1_CLK>,
+		 <&dispcc DISP_CC_MDSS_ESC1_CLK>,
+		 <&dispcc DISP_CC_MDSS_AHB_CLK>,
+		 <&gcc GCC_DISP_HF_AXI_CLK>,
+		 <&mdss_dsi0_phy DSI_PIXEL_PLL_CLK>,
+		 <&mdss_dsi0_phy DSI_BYTE_PLL_CLK>,
+		 <&dispcc DISP_CC_ESYNC1_CLK>,
+		 <&dispcc DISP_CC_OSC_CLK>,
+		 <&dispcc DISP_CC_MDSS_BYTE1_CLK_SRC>,
+		 <&dispcc DISP_CC_MDSS_PCLK1_CLK_SRC>;
+
+	status = "okay";
+};
+
+&mdss_dsi1_out {
+	remote-endpoint = <&panel1_in>;
+	data-lanes = <0 1 2 3>;
+};
+
+&mdss_dsi1_phy {
+	vdds-supply = <&vreg_l3d_0p8>;
+	status = "okay";
+};

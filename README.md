@@ -39,11 +39,12 @@
 
 ArmadaOS Freedom 是基于 [ArmadaOS](https://github.com/armada-os/armada)、由社区维护的平板适配分支。我们保留上游的游戏和桌面系统基础，针对平板硬件调整启动、显示、电源、外设及 Armada Control。
 
-当前主要适配 **联想拯救者 Y700 五代 / Legion Tab Gen 5（TB323FU，SM8850P）**。
+当前适配 **联想拯救者 Y700 四代（TB322FC，SM8750）** 和 **Y700 五代 / Legion Tab Gen 5（TB323FU，SM8850P）**。两代共用统一的 Linux **7.2.6** 内核，板级支持分别按机型匹配；状态见[四代设备文档](devices/lenovo-tb322fc/README.md)和[五代设备文档](devices/lenovo-tb323fu/README.md)。
 
 目前已接入的功能：
 
 - Steam 游戏模式与 KDE Plasma 桌面，沿用 ArmadaOS 的 FEX 和 Proton 支持。
+- `packages/kernel` 统一构建 7.2.6 内核、完整模块树及四／五代设备树，包含五代驱动回移和配套功放模块。
 - kShimC 多系统启动，可分别选择机身存储和 TF 卡中的 Linux 系统。
 - 按设备型号匹配的 30／60／90／120／165 Hz 显示档位。
 - 双 USB 路由、音频、5 GHz Wi-Fi，以及电池和温度数据采集。

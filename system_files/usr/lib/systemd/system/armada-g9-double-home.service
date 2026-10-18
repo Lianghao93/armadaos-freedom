@@ -1,5 +1,5 @@
 [Unit]
-Description=double-Home to Steam Quick Access Menu helper (TB323FU + GameSir G9 2026)
+Description=double-Home to Steam Quick Access Menu helper (TB323FU Gen5 G9 2026 / TB322FC Gen4 G9)
 After=inputplumber.service
 
 [Service]

@@ -1,0 +1,279 @@
+From: Armada <noreply@armada.local>
+Date: Sun, 18 Oct 2026 00:00:00 +0800
+Subject: [PATCH] drm/msm: add Baldur DSC 1.2 video support
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Baldur (Lenovo Y700 Gen5 / TB323FU) drives a CSOT NT36523 panel in
+video mode with DSC 1.2 at 10 bpc over two bonded DSI links.  The
+existing Elden paths in 0142 cover the same class of panel; extend
+that gated programming to Baldur without changing any other machine.
+
+- dsi_host: select the DSC 1.2 4:4:4 RC table and the existing
+  first-line bpg offset for Baldur video mode (no native 4:2:0/4:2:2).
+- dpu_encoder: add the downstream DCE initial-line calculation, using
+  the active soft-slice count and bits_per_pixel >> 4.
+- dpu_encoder_phys_vid: round the compressed timing width up, matching
+  the DSI host (952 * 8 / 30 = 254, not the old floor of 253).
+- dpu_hw_dsc_1_2: enable FULL_ICH_PREC for Baldur as well as Elden.
+- dpu_13_0_kaanapali: advertise FULL_ICH_PREC on every DSC block.
+
+Every new branch is gated on of_machine_is_compatible("lenovo,baldur")
+plus DSC 1.2 / bpc > 8 where the corresponding Elden path uses those
+conditions.  The Elden predicates and both existing helpers are kept
+byte-for-byte.
+
+The DSI RC/first-line handling, the extended initial-line algorithm and
+the 10-bpc video line rounding are derived from the GPL-2.0-only
+tb323fu-linux tree at commit
+11a25bf89b65fff48112a91a0b25bc247e7736d8 (patches 0007, 0008 and 0023).
+The Baldur-specific changes are original Armada work; no third-party
+sign-off is implied.
+
+---
+ 5 files changed, 109 insertions(+), 16 deletions(-)
+---
+
+diff --git a/drivers/gpu/drm/msm/dsi/dsi_host.c b/drivers/gpu/drm/msm/dsi/dsi_host.c
+index 22e01726a2f1..4734774fdb29 100644
+--- a/drivers/gpu/drm/msm/dsi/dsi_host.c
++++ b/drivers/gpu/drm/msm/dsi/dsi_host.c
+@@ -2051,6 +2051,7 @@
+ {
+ 	enum drm_dsc_params_type params_type = DRM_DSC_1_1_PRE_SCR;
+ 	bool elden_dsc_1_2;
++	bool baldur_dsc_1_2;
+ 	int ret;
+ 
+ 	if (dsc->bits_per_pixel & 0xf) {
+@@ -2084,14 +2085,23 @@
+ 
+ 	/*
+ 	 * DSC 1.2 panels need version-specific RC tables and an explicit
+-	 * first-line bpg offset. Gate the new programming on the Elden panel
+-	 * (single-packet multi-slice DSC); every other panel keeps the
+-	 * historical pre-SCR behaviour.
++	 * first-line bpg offset. Gate the new programming on the Elden and
++	 * Baldur panels; every other panel keeps the historical pre-SCR
++	 * behaviour.
+ 	 */
+ 	elden_dsc_1_2 = of_machine_is_compatible("lenovo,elden") &&
+ 			(msm_host->mode_flags &
+ 			 MIPI_DSI_MODE_DSC_ALL_SLICES_IN_PKT) &&
+ 			dsc->dsc_version_minor == 2;
++
++	/*
++	 * Baldur is a video-mode DSC 1.2 4:4:4 panel.  Keep the native
++	 * 4:2:0/4:2:2 paths on their existing pre-SCR programming.
++	 */
++	baldur_dsc_1_2 = of_machine_is_compatible("lenovo,baldur") &&
++			dsc->dsc_version_minor == 2 &&
++			(msm_host->mode_flags & MIPI_DSI_MODE_VIDEO) &&
++			!dsc->native_422 && !dsc->native_420;
+ 
+ 	if (elden_dsc_1_2) {
+ 		if (dsc->native_422)
+@@ -2100,6 +2110,8 @@
+ 			params_type = DRM_DSC_1_2_420;
+ 		else
+ 			params_type = DRM_DSC_1_2_444;
++	} else if (baldur_dsc_1_2) {
++		params_type = DRM_DSC_1_2_444;
+ 	}
+ 
+ 	ret = drm_dsc_setup_rc_params(dsc, params_type);
+@@ -2108,7 +2120,7 @@
+ 		return ret;
+ 	}
+ 
+-	if (elden_dsc_1_2)
++	if (elden_dsc_1_2 || baldur_dsc_1_2)
+ 		dsc->first_line_bpg_offset =
+ 			dsi_dsc_1_2_first_line_bpg_offset(dsc);
+ 
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
+index 0ff0e093693b..592aff1c9b0b 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
+@@ -2099,6 +2099,62 @@
+ 		container_slice_width);
+ }
+ 
++/*
++	 * Baldur uses the downstream DCE initial-line calculation. The number of
++	 * active soft slices, not the INTF width, sets the sub-stream-mux latency;
++	 * split plus multiplexed DSC adds the multi-hard-slice chunk budget.
++	 */
++static u32
++dpu_encoder_dsc_initial_line_calc_baldur(struct drm_dsc_config *dsc,
++					 u32 dsc_common_mode)
++{
++	const int rtl_max_bpc = 10, rtl_output_data_width = 64;
++	const int pipeline_latency = 28;
++	int bpc = dsc->bits_per_component;
++	bool native_422 = dsc->native_422;
++	bool native_420 = dsc->native_420;
++	bool split = dsc_common_mode & DSC_MODE_SPLIT_PANEL;
++	bool mux = dsc_common_mode & DSC_MODE_MULTIPLEX;
++	int num_active_ss_per_enc = mux ? dsc->slice_count >> 1 :
++		dsc->slice_count;
++	int container_slice_width = native_422 ?
++			dsc->slice_width / 2 : dsc->slice_width;
++	int max_muxword_size = (rtl_max_bpc >= 12) ? 64 : 48;
++	int max_se_size = 4 * (rtl_max_bpc + 1);
++	int max_ssm_delay = max_se_size + max_muxword_size - 1;
++	int mux_word_size = (bpc >= 12) ? 64 : 48;
++	int compress_bpp_group = dsc->bits_per_pixel >> 4;
++	int input_ssm_out_latency = pipeline_latency +
++			3 * (max_ssm_delay + 2) * num_active_ss_per_enc;
++	int rtl_num_components = (native_420 || native_422) ? 4 : 3;
++	int ob_data_width_4comps = (rtl_output_data_width >=
++			(2 * max_muxword_size)) ? rtl_output_data_width :
++			(2 * rtl_output_data_width);
++	int ob_data_width_3comps = (rtl_output_data_width >= max_muxword_size) ?
++			rtl_output_data_width : (2 * rtl_output_data_width);
++	int ob_data_width = (rtl_num_components == 4) ?
++			ob_data_width_4comps : ob_data_width_3comps;
++	int obuf_latency = DIV_ROUND_UP((9 * ob_data_width + mux_word_size),
++			compress_bpp_group) + 1;
++	int base_hs_latency = dsc->initial_xmit_delay +
++			input_ssm_out_latency + obuf_latency;
++	int chunk_bits = 8 * dsc->slice_chunk_size;
++	int output_rate_ratio_complement = ob_data_width - compress_bpp_group;
++	int output_rate_extra_budget_bits =
++			(output_rate_ratio_complement * chunk_bits) >>
++			((ob_data_width == 128) ? 7 : 6);
++	int multi_hs_c = split && mux;
++	int multi_hs_d = (num_active_ss_per_enc > 1) &&
++			(ob_data_width > compress_bpp_group);
++	int multi_hs_extra_budget_bits = multi_hs_c ? chunk_bits :
++			(multi_hs_d ? chunk_bits : output_rate_extra_budget_bits);
++	int multi_hs_extra_latency = DIV_ROUND_UP(multi_hs_extra_budget_bits,
++			compress_bpp_group);
++
++	return DIV_ROUND_UP(base_hs_latency + multi_hs_extra_latency,
++		container_slice_width);
++}
++
+ static void dpu_encoder_dsc_pipe_cfg(struct dpu_hw_ctl *ctl,
+ 				     struct dpu_hw_dsc *hw_dsc,
+ 				     struct dpu_hw_pingpong *hw_pp,
+@@ -2168,6 +2224,10 @@
+ 	    dsc->dsc_version_minor == 2 && dsc->bits_per_component > 8)
+ 		initial_lines = dpu_encoder_dsc_initial_line_calc_elden(dsc,
+ 						enc_ip_w, dsc_common_mode);
++	else if (of_machine_is_compatible("lenovo,baldur") &&
++	    dsc->dsc_version_minor == 2 && dsc->bits_per_component > 8)
++		initial_lines = dpu_encoder_dsc_initial_line_calc_baldur(dsc,
++						dsc_common_mode);
+ 	else
+ 		initial_lines = dpu_encoder_dsc_initial_line_calc(dsc, enc_ip_w);
+ 
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder_phys_vid.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder_phys_vid.c
+index 60bc079c23c4..98cc88de0bf3 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder_phys_vid.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder_phys_vid.c
+@@ -148,6 +148,18 @@
+ 			 */
+ 			timing->width =
+ 				DIV_ROUND_UP(timing->dce_bytes_per_line * 8,
++					     dsc->bits_per_component * 3);
++		} else if (of_machine_is_compatible("lenovo,baldur") &&
++			   dsc->dsc_version_minor == 2 &&
++			   dsc->bits_per_component > 8) {
++			/*
++			 * Baldur's compressed line is carried in whole bytes; round up
++			 * exactly as the DSI host does so both blocks agree on the
++			 * active pixel-clock width (952 * 8 / 30 -> 254, not 253).
++			 */
++			timing->width =
++				DIV_ROUND_UP(timing->width *
++					     drm_dsc_get_bpp_int(dsc),
+ 					     dsc->bits_per_component * 3);
+ 		} else {
+ 			/*
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_dsc_1_2.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_dsc_1_2.c
+index b3ce432931f4..e28fe060379d 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_dsc_1_2.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_dsc_1_2.c
+@@ -125,11 +125,12 @@
+ 		data |= BIT(9);
+ 
+ 	/*
+-	 * SM8750 DPU 12.x hardened DSC needs full ICH error precision for
+-	 * 10/12-bpc streams. Enable it only for the Elden panel so other
+-	 * DPU_DSC_FULL_ICH_PREC capable configurations are unaffected.
++	 * The hardened DSC blocks need full ICH error precision for
++	 * 10/12-bpc streams. Enable it only for the Elden and Baldur
++	 * panels; other DPU_DSC_FULL_ICH_PREC configurations are unaffected.
+ 	 */
+-	if (of_machine_is_compatible("lenovo,elden") &&
++	if ((of_machine_is_compatible("lenovo,elden") ||
++	     of_machine_is_compatible("lenovo,baldur")) &&
+ 	    test_bit(DPU_DSC_FULL_ICH_PREC, &hw_dsc->caps->features) &&
+ 	    dsc->dsc_version_minor == 0x2 &&
+ 	    dsc->bits_per_component > 8)
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/catalog/dpu_13_0_kaanapali.h b/drivers/gpu/drm/msm/disp/dpu1/catalog/dpu_13_0_kaanapali.h
+index 85f455a9f29c..3c25771cee48 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/catalog/dpu_13_0_kaanapali.h
++++ b/drivers/gpu/drm/msm/disp/dpu1/catalog/dpu_13_0_kaanapali.h
+@@ -314,42 +314,50 @@
+ 	{
+ 		.name = "dce_0_0", .id = DSC_0,
+ 		.base = 0x181000, .len = 0x8,
+-		.features = BIT(DPU_DSC_NATIVE_42x_EN),
++		.features = BIT(DPU_DSC_NATIVE_42x_EN) |
++			    BIT(DPU_DSC_FULL_ICH_PREC),
+ 		.sblk = &sm8750_dsc_sblk_0,
+ 	}, {
+ 		.name = "dce_0_1", .id = DSC_1,
+ 		.base = 0x181000, .len = 0x8,
+-		.features = BIT(DPU_DSC_NATIVE_42x_EN),
++		.features = BIT(DPU_DSC_NATIVE_42x_EN) |
++			    BIT(DPU_DSC_FULL_ICH_PREC),
+ 		.sblk = &sm8750_dsc_sblk_1,
+ 	}, {
+ 		.name = "dce_1_0", .id = DSC_2,
+ 		.base = 0x183000, .len = 0x8,
+-		.features = BIT(DPU_DSC_NATIVE_42x_EN),
++		.features = BIT(DPU_DSC_NATIVE_42x_EN) |
++			    BIT(DPU_DSC_FULL_ICH_PREC),
+ 		.sblk = &sm8750_dsc_sblk_0,
+ 	}, {
+ 		.name = "dce_1_1", .id = DSC_3,
+ 		.base = 0x183000, .len = 0x8,
+-		.features = BIT(DPU_DSC_NATIVE_42x_EN),
++		.features = BIT(DPU_DSC_NATIVE_42x_EN) |
++			    BIT(DPU_DSC_FULL_ICH_PREC),
+ 		.sblk = &sm8750_dsc_sblk_1,
+ 	}, {
+ 		.name = "dce_2_0", .id = DSC_4,
+ 		.base = 0x185000, .len = 0x8,
+-		.features = BIT(DPU_DSC_NATIVE_42x_EN),
++		.features = BIT(DPU_DSC_NATIVE_42x_EN) |
++			    BIT(DPU_DSC_FULL_ICH_PREC),
+ 		.sblk = &sm8750_dsc_sblk_0,
+ 	}, {
+ 		.name = "dce_2_1", .id = DSC_5,
+ 		.base = 0x185000, .len = 0x8,
+-		.features = BIT(DPU_DSC_NATIVE_42x_EN),
++		.features = BIT(DPU_DSC_NATIVE_42x_EN) |
++			    BIT(DPU_DSC_FULL_ICH_PREC),
+ 		.sblk = &sm8750_dsc_sblk_1,
+ 	}, {
+ 		.name = "dce_3_0", .id = DSC_6,
+ 		.base = 0x187000, .len = 0x8,
+-		.features = BIT(DPU_DSC_NATIVE_42x_EN),
++		.features = BIT(DPU_DSC_NATIVE_42x_EN) |
++			    BIT(DPU_DSC_FULL_ICH_PREC),
+ 		.sblk = &sm8750_dsc_sblk_0,
+ 	}, {
+ 		.name = "dce_3_1", .id = DSC_7,
+ 		.base = 0x187000, .len = 0x8,
+-		.features = BIT(DPU_DSC_NATIVE_42x_EN),
++		.features = BIT(DPU_DSC_NATIVE_42x_EN) |
++			    BIT(DPU_DSC_FULL_ICH_PREC),
+ 		.sblk = &sm8750_dsc_sblk_1,
+ 	},
+ };

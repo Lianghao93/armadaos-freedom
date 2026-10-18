@@ -1,9 +1,11 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dt.h"
 #include "dt_handoff.h"
+#include "dt_simplefb.h"
 
 /*
  * memory_overlay_test.c
@@ -18,6 +20,17 @@
  *
  * All trees are synthesized in-process with libfdt; there are no external
  * fixtures and no large stack frames. Buffers are 64 KiB each.
+ *
+ * The one opt-in exception is the optional
+ *   --fdt-pair <runtime.dtb> <payload.dtb>
+ * mode, which replays capture/apply over two trusted local blobs using the
+ * exact production buffer sizes. The no-argument run never touches files.
+ *
+ * The second opt-in mode,
+ *   --fdt-pair-simplefb <old-accepted-source.dtb> <payload.dtb>
+ * runs the same capture/apply replay and then promotes the target's disabled
+ * simple-framebuffer template using a descriptor decoded from the source's
+ * /chosen node. It writes no DT file; the target output stays in-process.
  */
 
 #define WORDS 8192u
@@ -645,8 +658,298 @@ static void test_zero_placeholders_skipped(void)
     assert(d != NULL && fdt32_ld(d) == 0x12345678);
 }
 
-int main(void)
+/* ---- optional real FDT pair mode ---------------------------------------- */
+
+/*
+ * Production-sized workspaces, exactly as the device path sizes them, so a
+ * pass here can never be an artifact of a roomier test-only capacity. The
+ * three arrays are uint64_t, hence 8-byte aligned, and static, so no large
+ * stack frames are created. Capture/apply must not touch the two blobs; each
+ * blob is copied and compared after the calls.
+ */
+#define PAIR_SNAPSHOT_BYTES DT_MEMORY_SNAPSHOT_BYTES           /* 32 KiB */
+#define PAIR_OUTPUT_BYTES   (256u * 1024u)
+#define PAIR_OVERLAY_BYTES  DT_MEMORY_OVERLAY_BYTES            /* 64 KiB */
+
+static uint64_t pair_snapshot[PAIR_SNAPSHOT_BYTES / sizeof(uint64_t)];
+static uint64_t pair_output[PAIR_OUTPUT_BYTES / sizeof(uint64_t)];
+static uint64_t pair_overlay[PAIR_OVERLAY_BYTES / sizeof(uint64_t)];
+
+static int read_blob(const char *path, void **blob, size_t *len)
 {
+    FILE *f = fopen(path, "rb");
+    long size;
+    void *buf;
+
+    if (f == NULL) {
+        fprintf(stderr, "cannot open %s\n", path);
+        return -1;
+    }
+    if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) <= 0 ||
+        fseek(f, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "cannot size %s\n", path);
+        fclose(f);
+        return -1;
+    }
+    buf = malloc((size_t)size);
+    if (buf == NULL) {
+        fprintf(stderr, "out of memory for %s\n", path);
+        fclose(f);
+        return -1;
+    }
+    if (fread(buf, 1, (size_t)size, f) != (size_t)size) {
+        fprintf(stderr, "short read on %s\n", path);
+        free(buf);
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+
+    *blob = buf;
+    *len = (size_t)size;
+    return 0;
+}
+
+/*
+ * Build the simplefb descriptor from the old accepted source tree. The FDT
+ * reg property supplies a 64-bit physical address and a 64-bit visible span;
+ * both are decoded from the four big-endian cells without unaligned casts.
+ * This mode models the visible-span bound recorded by the old accepted FDT,
+ * not the current raw ABL framebuffer allocation, so buffer_size is only a
+ * known lower-bound backing and not a claim about the live reservation.
+ */
+static int simplefb_source_descriptor(const void *source, size_t len,
+                                      kshim_framebuffer_config_t *fb)
+{
+    int chosen, node, found = -1, reg_len = 0;
+    uint32_t ac, sc, width, height, stride;
+    const fdt32_t *reg;
+    const char *format;
+    uint64_t physical, span;
+
+    if (dt_validate(source, len) != 0)
+        return -1;
+    chosen = fdt_path_offset(source, "/chosen");
+    if (chosen < 0)
+        return -1;
+    if (dt_u32(source, chosen, "#address-cells", &ac) != 0 || ac != 2)
+        return -1;
+    if (dt_u32(source, chosen, "#size-cells", &sc) != 0 || sc != 2)
+        return -1;
+
+    for (node = fdt_first_subnode(source, chosen); node >= 0;
+         node = fdt_next_subnode(source, node)) {
+        if (fdt_node_check_compatible(source, node, "simple-framebuffer") == 0) {
+            if (found >= 0)
+                return -1;
+            found = node;
+        }
+    }
+    if (found < 0)
+        return -1;
+
+    reg = fdt_getprop(source, found, "reg", &reg_len);
+    if (reg == NULL || reg_len != 16)
+        return -1;
+    physical = ((uint64_t)fdt32_ld(reg + 0) << 32) | fdt32_ld(reg + 1);
+    span = ((uint64_t)fdt32_ld(reg + 2) << 32) | fdt32_ld(reg + 3);
+    if (span == 0 || (uint64_t)(size_t)span != span)
+        return -1;
+
+    if (dt_u32(source, found, "width", &width) != 0 || width == 0)
+        return -1;
+    if (dt_u32(source, found, "height", &height) != 0 || height == 0)
+        return -1;
+    if (dt_u32(source, found, "stride", &stride) != 0 || stride == 0)
+        return -1;
+    format = dt_string(source, found, "format");
+    if (format == NULL || strcmp(format, "a8r8g8b8") != 0)
+        return -1;
+
+    memset(fb, 0, sizeof(*fb));
+    fb->render_address = (uintptr_t)physical;
+    fb->width = width;
+    fb->height = height;
+    fb->stride = stride;
+    fb->bpp = 32;
+    fb->format = KSHIM_FB_FORMAT_ARGB8888;
+    fb->buffer_size = (size_t)span;
+    return 0;
+}
+
+/* The promoted node must keep the descriptor's geometry and physical base. */
+static int simplefb_output_ok(const void *blob,
+                              const kshim_framebuffer_config_t *fb)
+{
+    int chosen, node, found = -1, reg_len = 0;
+    const fdt32_t *reg;
+    const char *status, *format;
+    uint32_t width, height, stride;
+    uint64_t physical;
+
+    chosen = fdt_path_offset(blob, "/chosen");
+    if (chosen < 0)
+        return -1;
+    for (node = fdt_first_subnode(blob, chosen); node >= 0;
+         node = fdt_next_subnode(blob, node)) {
+        if (fdt_node_check_compatible(blob, node, "simple-framebuffer") == 0) {
+            if (found >= 0)
+                return -1;
+            found = node;
+        }
+    }
+    if (found < 0)
+        return -1;
+
+    status = dt_string(blob, found, "status");
+    if (status == NULL || strcmp(status, "okay") != 0)
+        return -1;
+    if (dt_u32(blob, found, "width", &width) != 0 || width != fb->width)
+        return -1;
+    if (dt_u32(blob, found, "height", &height) != 0 || height != fb->height)
+        return -1;
+    if (dt_u32(blob, found, "stride", &stride) != 0 || stride != fb->stride)
+        return -1;
+    format = dt_string(blob, found, "format");
+    if (format == NULL || strcmp(format, "a8r8g8b8") != 0)
+        return -1;
+    reg = fdt_getprop(blob, found, "reg", &reg_len);
+    if (reg == NULL || reg_len != 16)
+        return -1;
+    physical = ((uint64_t)fdt32_ld(reg + 0) << 32) | fdt32_ld(reg + 1);
+    if (physical != (uint64_t)fb->render_address)
+        return -1;
+    return 0;
+}
+
+/*
+ * Replays the real device sequence over an accepted runtime tree and a
+ * candidate target tree: capture(source) then apply(snapshot, target).
+ * Emits the numeric statuses as "c=<capture> a=<apply>" and only the literal
+ * marker on success. Returns 0 only when both calls return 0 and neither blob
+ * was modified.
+ *
+ * The simplefb variant additionally promotes the target template with a
+ * descriptor decoded from the source tree, then reports sf and the
+ * output/pack/validate statuses. The source and target blobs remain immutable;
+ * only pair_output is mutated.
+ */
+static int fdt_pair(const char *runtime_path, const char *payload_path,
+                    int with_simplefb)
+{
+    void *runtime = NULL;
+    void *payload = NULL;
+    void *runtime_keep = NULL;
+    void *payload_keep = NULL;
+    size_t runtime_len = 0;
+    size_t payload_len = 0;
+    int cap = 0;
+    int app = 0;
+    int sf_ok = 1;
+    int status = 1;
+
+    if (read_blob(runtime_path, &runtime, &runtime_len) != 0 ||
+        read_blob(payload_path, &payload, &payload_len) != 0) {
+        printf("real-fdt-pair FAIL (read)\n");
+        goto out;
+    }
+
+    if (dt_validate(runtime, runtime_len) != 0 ||
+        dt_validate(payload, payload_len) != 0) {
+        printf("real-fdt-pair FAIL (validate)\n");
+        goto out;
+    }
+
+    runtime_keep = malloc(runtime_len);
+    payload_keep = malloc(payload_len);
+    if (runtime_keep == NULL || payload_keep == NULL) {
+        printf("real-fdt-pair FAIL (read)\n");
+        goto out;
+    }
+    memcpy(runtime_keep, runtime, runtime_len);
+    memcpy(payload_keep, payload, payload_len);
+
+    cap = dt_memory_capture(runtime, runtime_len, pair_snapshot,
+                            sizeof(pair_snapshot));
+    if (cap == 0) {
+        app = dt_memory_apply(pair_snapshot, sizeof(pair_snapshot),
+                              payload, payload_len,
+                              pair_output, sizeof(pair_output),
+                              pair_overlay, sizeof(pair_overlay));
+        printf("real-fdt-pair c=%d a=%d\n", cap, app);
+    } else {
+        printf("real-fdt-pair c=%d a=not-run\n", cap);
+    }
+
+    if (with_simplefb) {
+        int sf = -1;
+
+        if (cap != 0) {
+            printf("real-fdt-pair-simplefb c=%d a=not-run sf=not-run\n", cap);
+            sf_ok = 0;
+        } else if (app != 0) {
+            printf("real-fdt-pair-simplefb c=%d a=%d sf=not-run\n", cap, app);
+            sf_ok = 0;
+        } else {
+            kshim_framebuffer_config_t fb;
+
+            if (simplefb_source_descriptor(runtime, runtime_len, &fb) == 0)
+                sf = dt_simplefb_apply(pair_output, sizeof(pair_output), &fb);
+            printf("real-fdt-pair-simplefb c=%d a=%d sf=%d\n", cap, app, sf);
+
+            if (sf == 0) {
+                int out_ok = simplefb_output_ok(pair_output, &fb);
+                int packed = fdt_pack(pair_output);
+                int valid = dt_validate(pair_output, sizeof(pair_output));
+
+                printf("real-fdt-pair-simplefb out=%d pack=%d valid=%d\n",
+                       out_ok, packed, valid);
+                if (out_ok != 0 || packed != 0 || valid != 0)
+                    sf_ok = 0;
+            } else {
+                sf_ok = 0;
+            }
+        }
+    }
+
+    status = 0;
+    if (memcmp(runtime, runtime_keep, runtime_len) != 0) {
+        printf("immutability violation: runtime\n");
+        status = 1;
+    }
+    if (memcmp(payload, payload_keep, payload_len) != 0) {
+        printf("immutability violation: payload\n");
+        status = 1;
+    }
+    if (cap != 0 || app != 0 || !sf_ok)
+        status = 1;
+
+    if (status == 0)
+        printf("real-fdt-pair%s PASS\n", with_simplefb ? "-simplefb" : "");
+
+out:
+    free(runtime);
+    free(payload);
+    free(runtime_keep);
+    free(payload_keep);
+    return status;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 1) {
+        if (argc == 4 && strcmp(argv[1], "--fdt-pair") == 0)
+            return fdt_pair(argv[2], argv[3], 0);
+        if (argc == 4 && strcmp(argv[1], "--fdt-pair-simplefb") == 0)
+            return fdt_pair(argv[2], argv[3], 1);
+        fprintf(stderr,
+                "usage: %s [--fdt-pair <runtime.dtb> <payload.dtb>]\n"
+                "       %s --fdt-pair-simplefb <old-accepted-source.dtb>"
+                " <payload.dtb>\n",
+                argv[0], argv[0]);
+        return 2;
+    }
+
     test_zero_placeholders_skipped();
     test_snapshot_independence();
     test_banks_over_4g();

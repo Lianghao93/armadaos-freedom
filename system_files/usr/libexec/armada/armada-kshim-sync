@@ -1,0 +1,713 @@
+#!/usr/bin/env python3
+"""Native deployment -> verified kShimC boot_a transaction orchestrator.
+
+This layer joins the tested T020/T022 selection+preparation path and the T023
+raw writer. It matches the currently booted OSTree deployment by
+(checksum, stateroot, serial), maps it to exactly one native BLS entry, builds
+that entry first as the explicit fallback, then builds the native default entry
+as the candidate and writes it with the T023 writer.
+
+Native finalization can already have moved boot.0/boot.1 symlinks, so a raw
+before.img is not treated as a bootable fallback: the fallback is always a
+freshly prepared image for the booted deployment's current BLS.
+
+This tool does not mount, format, reboot, call bootc/ostree admin mutation,
+touch boot_b/misc, use the network, or alter native BLS ordering. The raw
+write is not atomic and this layer makes no full-lifecycle claim; the caller
+keeps the work directory and must not enable automatic OTA use before the
+native lifecycle has been validated.
+"""
+import argparse
+import fcntl
+import hashlib
+import importlib.util
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import time
+
+HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+OSTREE = "/usr/bin/ostree"
+BASH = "/bin/bash"
+LOCK_PATH = "/run/armada-bootimg.lock"
+LOCK_WAIT_SECONDS = 5.0
+COMPATIBLE_PATH = "/sys/firmware/devicetree/base/compatible"
+REQUIRED_COMPATIBLE = ("lenovo,elden", "qcom,sm8750")
+TOOL_FILES = {
+    "packer": "MultiBootKernelPatcher",
+    "unpacker": "UnpackTool",
+    "repacker": "repack_boot_v4.py",
+    "avbtool": "avbtool.py",
+}
+
+
+class SyncError(Exception):
+    pass
+
+
+def need(condition, message):
+    if not condition:
+        raise SyncError(message)
+
+
+def checksum_text(value, label):
+    need(isinstance(value, str) and HEX64.fullmatch(value) is not None,
+         "%s must be 64 lowercase hex characters: %r" % (label, value))
+    return value
+
+
+def load_module(path, name):
+    need(os.path.isfile(path), "module not found: %s" % path)
+    spec = importlib.util.spec_from_file_location(name, path)
+    need(spec is not None and spec.loader is not None,
+         "module is not importable: %s" % path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_selector(libexec):
+    return load_module(os.path.join(libexec, "kshim-select-boot.py"),
+                       "armada_kshim_sync_select")
+
+
+def load_writer(libexec):
+    return load_module(os.path.join(libexec, "kshim-write-boot.py"),
+                       "armada_kshim_sync_writer")
+
+
+def writer_call(writer, function, *args):
+    """Run one writer helper, converting its WriteError to SyncError."""
+    try:
+        return function(*args)
+    except writer.WriteError as error:
+        raise SyncError(str(error))
+
+
+def require_root():
+    need(os.geteuid() == 0, "must run as root")
+
+
+def check_profile(path=COMPATIBLE_PATH):
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError as error:
+        raise SyncError("device profile unreadable: %s: %s" % (path, error))
+    values = [part.decode("ascii", "replace")
+              for part in raw.split(b"\0") if part]
+    missing = [value for value in REQUIRED_COMPATIBLE if value not in values]
+    need(not missing,
+         "device profile is not Elden/SM8750; FDT compatible is missing %s"
+         % ", ".join(missing))
+
+
+def read_native_status():
+    try:
+        proc = subprocess.run([OSTREE, "admin", "status", "--json"],
+                              capture_output=True, text=True, check=False)
+    except OSError as error:
+        raise SyncError("ostree admin status could not run: %s" % error)
+    need(proc.returncode == 0,
+         "ostree admin status --json failed (%d): %s"
+         % (proc.returncode, proc.stderr.strip()))
+    try:
+        document = json.loads(proc.stdout)
+    except ValueError as error:
+        raise SyncError("ostree admin status JSON unreadable: %s" % error)
+    need(isinstance(document, dict), "ostree admin status is not a JSON object")
+    need(isinstance(document.get("deployments"), list),
+         "ostree admin status has no deployments list")
+    return document
+
+
+def deployment_identity(record, label):
+    need(isinstance(record, dict), "%s record is not an object" % label)
+    checksum = record.get("checksum")
+    need(isinstance(checksum, str) and HEX64.fullmatch(checksum) is not None,
+         "%s checksum is not 64 lowercase hex: %r" % (label, checksum))
+    stateroot = record.get("stateroot")
+    need(isinstance(stateroot, str) and stateroot != "",
+         "%s stateroot is not a non-empty string: %r" % (label, stateroot))
+    serial = record.get("serial")
+    need(type(serial) is int and serial >= 0,
+         "%s serial is not a non-negative integer: %r" % (label, serial))
+    return {"checksum": checksum, "stateroot": stateroot, "serial": serial}
+
+
+def select_deployments(document):
+    """Return (booted identity, index-0 identity) from native status."""
+    deployments = document["deployments"]
+    booted_records = [record for record in deployments
+                      if isinstance(record, dict) and record.get("booted") is True]
+    need(len(booted_records) == 1,
+         "expected exactly one booted deployment, found %d" % len(booted_records))
+    booted_record = booted_records[0]
+    booted = deployment_identity(booted_record, "booted deployment")
+    for record in deployments:
+        if isinstance(record, dict) and record.get("staged") is True:
+            staged = deployment_identity(record, "staged deployment")
+            raise SyncError(
+                "staged deployment %s; finalized native BLS is not ready for "
+                "kShimC sync" % identity_text(staged))
+
+    index_zero = [record for record in deployments
+                  if isinstance(record, dict)
+                  and type(record.get("index")) is int
+                  and record.get("index") == 0]
+    need(len(index_zero) == 1,
+         "expected exactly one deployment at index 0, found %d" % len(index_zero))
+    default_record = index_zero[0]
+    default = deployment_identity(default_record, "default deployment at index 0")
+    return booted, default
+
+
+def default_bls_entry(args_file, boot):
+    """Call the existing armada_default_bls_entry() under bash."""
+    need(os.path.isfile(args_file), "bootimg args file missing: %s" % args_file)
+    command = [BASH, "-c", '. "$1"; armada_default_bls_entry "$2"',
+               "armada-kshim-sync", args_file, boot]
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, check=False)
+    except OSError as error:
+        raise SyncError("armada_default_bls_entry could not run: %s" % error)
+    need(proc.returncode == 0,
+         "armada_default_bls_entry failed (%d): %s"
+         % (proc.returncode, proc.stderr.strip()))
+    entry = proc.stdout.strip()
+    need(entry != "", "armada_default_bls_entry returned no BLS entry")
+    return entry
+
+
+def read_entry(selector, boot, sysroot, entry):
+    """Read one BLS entry read-only, bridging selector ExportError."""
+    try:
+        return read_entry_checked(selector, boot, sysroot, entry)
+    except selector.ExportError as error:
+        raise SyncError(str(error))
+
+
+def read_entry_checked(selector, boot, sysroot, entry):
+    """Read one BLS entry read-only, with the selector's validation rules."""
+    need(os.path.isdir(boot), "boot dir missing: %s" % boot)
+    need(os.path.isdir(sysroot), "sysroot missing: %s" % sysroot)
+    bls, conf = selector.resolve_entry(boot, entry)
+    fields = selector.parse_fields(conf)
+    for key in ("linux", "initrd", "fdtdir", "options"):
+        need(len(fields[key]) == 1,
+             "expected exactly one %r line in %s, found %d"
+             % (key, conf, len(fields[key])))
+
+    options = fields["options"][0]
+    image, image_real = selector.boot_asset(boot, fields["linux"][0], "linux")
+    initrd, initrd_real = selector.boot_asset(boot, fields["initrd"][0], "initrd")
+    fdtdir, fdtdir_real = selector.boot_asset(boot, fields["fdtdir"][0], "fdtdir")
+    need(os.path.isfile(image_real), "image missing: %s" % image)
+    need(os.path.isfile(initrd_real), "initrd missing: %s" % initrd)
+    need(os.path.isdir(fdtdir_real), "fdtdir missing: %s" % fdtdir)
+    dtb = os.path.realpath(os.path.join(fdtdir_real, selector.DTB_REL))
+    need(selector.inside(boot, dtb) and os.path.isfile(dtb),
+         "Elden DT missing or outside boot: %s/%s"
+         % (fdtdir, selector.DTB_REL))
+
+    tokens = options.split()
+    ostree_values = [token[len("ostree="):] for token in tokens
+                     if token.startswith("ostree=")]
+    need(len(ostree_values) == 1,
+         "expected exactly one ostree= in %s, found %d"
+         % (conf, len(ostree_values)))
+    deploy_real, checksum = selector.deployment_from_link(ostree_values[0], sysroot)
+    parts = os.path.relpath(deploy_real, sysroot).split(os.sep)
+    need(len(parts) == 5 and parts[0] == "ostree" and parts[1] == "deploy"
+         and parts[3] == "deploy",
+         "deployment path is not ostree/deploy/<stateroot>/deploy/<name>: %s"
+         % deploy_real)
+    match = selector.DEPLOYMENT_RE.fullmatch(parts[4])
+    need(match is not None,
+         "deployment name is not <64 lowercase hex>.<numeric serial>: %r"
+         % parts[4])
+    stateroot = parts[2]
+
+    for prefix in ("root=", "boot="):
+        values = [token[len(prefix):] for token in tokens
+                  if token.startswith(prefix)]
+        need(len(values) == 1,
+             "expected exactly one %s, found %d in %s"
+             % (prefix, len(values), conf))
+        need(values[0].startswith("UUID=") and len(values[0]) > len("UUID="),
+             "%s must be UUID=<uuid>: %r" % (prefix, values[0]))
+
+    return {
+        "bls": bls,
+        "identity": {"checksum": checksum, "stateroot": stateroot,
+                     "serial": int(match.group(2))},
+        "options": options,
+        "ostree": ostree_values[0],
+        "image": image,
+        "initrd": initrd,
+        "fdtdir": fdtdir,
+    }
+
+
+def same_identity(left, right):
+    return ((left["checksum"], left["stateroot"], left["serial"])
+            == (right["checksum"], right["stateroot"], right["serial"]))
+
+
+def identity_text(identity):
+    return "%s/%s/%d" % (identity["checksum"], identity["stateroot"],
+                         identity["serial"])
+
+
+def build_plan(args, selector):
+    boot = os.path.realpath(args.boot_dir)
+    sysroot = os.path.realpath(args.sysroot)
+    need(os.path.isdir(boot), "boot dir missing: %s" % boot)
+    need(os.path.isdir(sysroot), "sysroot missing: %s" % sysroot)
+    check_profile()
+    booted, default = select_deployments(read_native_status())
+
+    default_path = default_bls_entry(args.args_file, boot)
+    candidate = read_entry(selector, boot, sysroot, default_path)
+    need(same_identity(candidate["identity"], default),
+         "default BLS entry %s resolves to %s and does not match native "
+         "default deployment at index 0 (%s)"
+         % (candidate["bls"], identity_text(candidate["identity"]),
+            identity_text(default)))
+
+    entries_dir = os.path.join(boot, "loader", "entries")
+    need(os.path.isdir(entries_dir), "BLS entries directory missing: %s" % entries_dir)
+    matches = []
+    for name in sorted(os.listdir(entries_dir)):
+        if not name.endswith(".conf"):
+            continue
+        try:
+            entry = read_entry(selector, boot, sysroot,
+                               os.path.join(entries_dir, name))
+        except SyncError:
+            continue
+        if same_identity(entry["identity"], booted):
+            matches.append(entry)
+    need(len(matches) == 1,
+         "booted deployment %s maps to %d BLS entries under %s; expected "
+         "exactly one" % (identity_text(booted), len(matches), entries_dir))
+
+    return {
+        "booted": booted,
+        "candidate": {
+            "identity": candidate["identity"],
+            "entry": candidate["bls"],
+            "options": candidate["options"],
+            "ostree": candidate["ostree"],
+            "image": candidate["image"],
+            "initrd": candidate["initrd"],
+            "fdtdir": candidate["fdtdir"],
+        },
+        "fallback": {
+            "identity": matches[0]["identity"],
+            "entry": matches[0]["bls"],
+            "options": matches[0]["options"],
+            "ostree": matches[0]["ostree"],
+            "image": matches[0]["image"],
+            "initrd": matches[0]["initrd"],
+            "fdtdir": matches[0]["fdtdir"],
+        },
+    }
+
+
+def file_sha256(path, label):
+    try:
+        info = os.stat(path)
+    except OSError as error:
+        raise SyncError("%s missing: %s: %s" % (label, path, error))
+    need(stat.S_ISREG(info.st_mode), "%s is not a regular file: %s" % (label, path))
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            while True:
+                chunk = handle.read(1 << 20)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    except OSError as error:
+        raise SyncError("%s unreadable: %s: %s" % (label, path, error))
+    return digest.hexdigest()
+
+
+def validate_work(path):
+    if os.path.exists(path):
+        need(os.path.isdir(path), "work path is not a directory: %s" % path)
+        need(os.listdir(path) == [], "work directory is not empty: %s" % path)
+
+
+def prepare_work(path):
+    validate_work(path)
+    if not os.path.exists(path):
+        os.makedirs(path, mode=0o700)
+    need(os.path.isdir(path), "work directory unusable: %s" % path)
+
+
+def write_json(path, document):
+    payload = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    temp = path + ".tmp"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC, 0o600)
+    try:
+        view = memoryview(payload)
+        while view:
+            written = os.write(fd, view)
+            need(written > 0, "short write: %s" % temp)
+            view = view[written:]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(temp, path)
+
+
+def acquire_lock():
+    fd = os.open(LOCK_PATH, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError as error:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                raise SyncError("updater lock busy: %s (%s)" % (LOCK_PATH, error))
+            time.sleep(0.1)
+
+
+def validate_full_args(args):
+    for flag in ("stock_boot", "stock_sha256", "runtime", "runtime_sha256",
+                 "partuuid", "expected_current_sha256", "work"):
+        need(getattr(args, flag),
+             "--%s is required for a full sync" % flag.replace("_", "-"))
+    expected = checksum_text(args.expected_current_sha256,
+                             "--expected-current-sha256")
+    stock = checksum_text(args.stock_sha256, "--stock-sha256")
+    runtime = checksum_text(args.runtime_sha256, "--runtime-sha256")
+    actual = file_sha256(args.stock_boot, "stock boot")
+    need(actual == stock,
+         "--stock-sha256 %s does not match %s (%s)"
+         % (stock, args.stock_boot, actual))
+    actual = file_sha256(args.runtime, "runtime")
+    need(actual == runtime,
+         "--runtime-sha256 %s does not match %s (%s)"
+         % (runtime, args.runtime, actual))
+    for key in sorted(TOOL_FILES):
+        path = os.path.join(args.tools_dir, TOOL_FILES[key])
+        need(os.path.isfile(path), "kShimC tool missing (%s): %s" % (key, path))
+    validate_work(args.work)
+    return expected
+
+
+def check_target(writer, target, partuuid, expected):
+    identity = writer_call(writer, writer.probe_target, target, partuuid)
+    fd = writer_call(writer, writer.open_target_ro, identity)
+    try:
+        current = writer_call(writer, writer.hash_fd, fd, writer.BOOT_BYTES)
+    finally:
+        os.close(fd)
+    need(current == expected,
+         "current target hash %s does not match --expected-current-sha256 %s"
+         % (current, expected))
+    return identity
+
+
+def prepare_env(args):
+    env = dict(os.environ)
+    env["KSHIM_LIBEXEC"] = args.libexec
+    env["ARGS_FILE"] = args.args_file
+    return env
+
+
+def run_prepare(args, entry, out):
+    command = [
+        BASH, os.path.join(args.libexec, "armada-kshim-prepare"),
+        "--boot-dir", args.boot_dir,
+        "--sysroot", args.sysroot,
+        "--stock-boot", args.stock_boot,
+        "--runtime", args.runtime,
+        "--packer", os.path.join(args.tools_dir, TOOL_FILES["packer"]),
+        "--unpacker", os.path.join(args.tools_dir, TOOL_FILES["unpacker"]),
+        "--repacker", os.path.join(args.tools_dir, TOOL_FILES["repacker"]),
+        "--avbtool", os.path.join(args.tools_dir, TOOL_FILES["avbtool"]),
+        "--out", out,
+        "--source-label", "armada-kshim-sync",
+        "--entry", entry,
+    ]
+    return subprocess.run(command, env=prepare_env(args), check=False).returncode
+
+
+def prepare_one(args, writer, item, out_dir, label):
+    code = run_prepare(args, item["entry"], out_dir)
+    need(code == 0,
+         "%s preparation failed: armada-kshim-prepare exited %d" % (label, code))
+    image = os.path.join(out_dir, "candidate", "boot.img")
+    report_path = os.path.join(out_dir, "candidate", "report.json")
+    need(os.path.isfile(image),
+         "%s preparation produced no boot image: %s" % (label, image))
+    need(os.path.isfile(report_path),
+         "%s preparation produced no report: %s" % (label, report_path))
+    fd, image_sha = writer_call(writer, writer.open_image, image, label)
+    os.close(fd)
+    report = writer_call(writer, writer.read_json, report_path, label)
+    writer_call(writer, writer.validate_report, report, image_sha, label)
+    inputs = report.get("inputs")
+    need(isinstance(inputs, dict), "%s report has no inputs" % label)
+    for key, flag, expected_sha in (
+            ("stock_boot", "--stock-sha256", args.stock_sha256),
+            ("runtime", "--runtime-sha256", args.runtime_sha256)):
+        recorded = inputs.get(key)
+        need(isinstance(recorded, dict),
+             "%s report has no inputs.%s" % (label, key))
+        need(recorded.get("sha256") == expected_sha,
+             "%s report inputs.%s.sha256 %r does not match %s %s"
+             % (label, key, recorded.get("sha256"), flag, expected_sha))
+    metadata = report["installed_metadata"]
+    need(metadata.get("bls") == item["entry"],
+         "%s report bls %r does not match selected entry %r"
+         % (label, metadata.get("bls"), item["entry"]))
+    need(metadata.get("deployment_checksum") == item["identity"]["checksum"],
+         "%s report deployment_checksum %r does not match selected %r"
+         % (label, metadata.get("deployment_checksum"),
+            item["identity"]["checksum"]))
+    for key in ("options", "image", "initrd", "fdtdir"):
+        need(metadata.get(key) == item[key],
+             "%s report %s does not match the selected BLS" % (label, key))
+    return {"image": image, "report": report_path, "sha256": image_sha}
+
+
+def same_payload(candidate, fallback):
+    return (candidate["entry"] == fallback["entry"]
+            and same_identity(candidate["identity"], fallback["identity"])
+            and candidate["options"] == fallback["options"])
+
+
+def run_writer(args, candidate, fallback, partuuid, expected, transaction_dir):
+    command = [
+        sys.executable, os.path.join(args.libexec, "kshim-write-boot.py"),
+        "--image", candidate["image"],
+        "--report", candidate["report"],
+        "--fallback-image", fallback["image"],
+        "--fallback-report", fallback["report"],
+        "--target", args.target,
+        "--partuuid", partuuid,
+        "--expected-current-sha256", expected,
+        "--transaction-dir", transaction_dir,
+    ]
+    return subprocess.run(command, check=False).returncode
+
+
+def read_writer_status(transaction_dir):
+    try:
+        with open(os.path.join(transaction_dir, "transaction.json"),
+                  "r", encoding="utf-8") as handle:
+            document = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return document.get("status") if isinstance(document, dict) else None
+
+
+def writer_status(code, recorded):
+    if code == 2:
+        return "fallback-restored"
+    if code == 3:
+        return "recovery-failed"
+    if code == 0:
+        return recorded if recorded in ("written", "unchanged") else "written"
+    return recorded or "write-failed"
+
+
+def phase_status(phase):
+    return {
+        "fallback": "fallback-prep-failed",
+        "recheck": "native-changed",
+        "write": "write-failed",
+        "fallback-repair": "write-failed",
+    }.get(phase, "error")
+
+
+def run_full(args):
+    require_root()
+    phase = "arguments"
+    result = {
+        "phase": phase,
+        "status": "error",
+        "booted": None,
+        "candidate": None,
+        "writer_exit": None,
+        "writer_status": None,
+        "error": None,
+        "paths": {},
+    }
+    work_ready = {"value": False}
+
+    def persist(status):
+        result["phase"] = phase
+        result["status"] = status
+        if work_ready["value"]:
+            try:
+                write_json(os.path.join(args.work, "result.json"), result)
+            except (OSError, SyncError) as error:
+                sys.stderr.write("armada-kshim-sync: could not record result: %s\n"
+                                 % error)
+
+    lock_fd = None
+    try:
+        expected = validate_full_args(args)
+        phase = "lock"
+        lock_fd = acquire_lock()
+        selector = load_selector(args.libexec)
+        writer = load_writer(args.libexec)
+        partuuid = writer_call(writer, writer.canonical_uuid, args.partuuid,
+                               "--partuuid")
+
+        phase = "plan"
+        plan = build_plan(args, selector)
+        result["booted"] = plan["booted"]
+        result["candidate"] = plan["candidate"]["identity"]
+
+        phase = "target"
+        check_target(writer, args.target, partuuid, expected)
+
+        phase = "work"
+        prepare_work(args.work)
+        plan_path = os.path.join(args.work, "plan.json")
+        result["paths"]["plan"] = plan_path
+        write_json(plan_path, plan)
+        work_ready["value"] = True
+
+        phase = "fallback"
+        fallback_out = os.path.join(args.work, "fallback")
+        result["paths"]["fallback"] = fallback_out
+        fallback = prepare_one(args, writer, plan["fallback"], fallback_out,
+                               "fallback")
+
+        phase = "candidate"
+        if same_payload(plan["candidate"], plan["fallback"]):
+            candidate = fallback
+        else:
+            candidate_out = os.path.join(args.work, "candidate")
+            result["paths"]["candidate"] = candidate_out
+            try:
+                candidate = prepare_one(args, writer, plan["candidate"],
+                                        candidate_out, "candidate")
+            except (SyncError, OSError) as error:
+                result["error"] = "candidate preparation failed: %s" % error
+                phase = "recheck"
+                fresh = build_plan(args, selector)
+                need(fresh == plan,
+                     "native deployment selection changed during candidate "
+                     "preparation; no writer call")
+                phase = "fallback-repair"
+                write_dir = os.path.join(args.work, "write")
+                result["paths"]["write"] = write_dir
+                code = run_writer(args, fallback, fallback, partuuid, expected,
+                                  write_dir)
+                result["writer_exit"] = code
+                result["writer_status"] = read_writer_status(write_dir)
+                status = writer_status(code, result["writer_status"])
+                if code != 0:
+                    result["error"] = ("%s; fallback repair writer exited %d (%s)"
+                                       % (result["error"], code, status))
+                persist("fallback-installed" if code == 0 else status)
+                if code == 0:
+                    sys.stderr.write(
+                        "armada-kshim-sync: candidate preparation failed (%s); "
+                        "prepared fallback installed\n" % error)
+                    return 2
+                return code if code in (2, 3) else 1
+
+        phase = "recheck"
+        fresh = build_plan(args, selector)
+        need(fresh == plan,
+             "native deployment selection changed during preparation; no "
+             "writer call")
+
+        phase = "write"
+        write_dir = os.path.join(args.work, "write")
+        result["paths"]["write"] = write_dir
+        code = run_writer(args, candidate, fallback, partuuid, expected,
+                          write_dir)
+        result["writer_exit"] = code
+        result["writer_status"] = read_writer_status(write_dir)
+        status = writer_status(code, result["writer_status"])
+        if code != 0:
+            result["error"] = "kshim-write-boot exited %d (%s)" % (code, status)
+        persist(status)
+        if code != 0:
+            sys.stderr.write(
+                "armada-kshim-sync: kshim-write-boot exited %d; retained work "
+                "at %s\n" % (code, args.work))
+        return code
+    except SyncError as error:
+        result["error"] = str(error)
+        persist(phase_status(phase))
+        sys.stderr.write("armada-kshim-sync: %s\n" % error)
+        return 1
+    except OSError as error:
+        result["error"] = str(error)
+        persist(phase_status(phase))
+        sys.stderr.write("armada-kshim-sync: %s\n" % error)
+        return 1
+    except KeyboardInterrupt:
+        result["error"] = "interrupted"
+        persist(phase_status(phase))
+        sys.stderr.write("armada-kshim-sync: interrupted\n")
+        return 1
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Prepare an explicit fallback from the booted native BLS, "
+                    "prepare the native default candidate, and write boot_a "
+                    "through the verified kshim-write-boot transaction. The "
+                    "raw write is not atomic and no native ordering is changed.")
+    parser.add_argument("--plan-only", action="store_true",
+                        help="read-only selection; print the JSON plan, no "
+                             "lock, no work dir, no writer")
+    parser.add_argument("--boot-dir", default="/boot")
+    parser.add_argument("--sysroot", default="/sysroot")
+    parser.add_argument("--libexec", default="/usr/libexec/armada")
+    parser.add_argument("--args-file", default="/usr/lib/armada/bootimg-args")
+    parser.add_argument("--tools-dir", default="/usr/libexec/armada/kshim-tools")
+    parser.add_argument("--stock-boot")
+    parser.add_argument("--stock-sha256")
+    parser.add_argument("--runtime")
+    parser.add_argument("--runtime-sha256")
+    parser.add_argument("--partuuid")
+    parser.add_argument("--expected-current-sha256")
+    parser.add_argument("--work")
+    parser.add_argument("--target", default="/dev/disk/by-partlabel/boot_a")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    try:
+        if args.plan_only:
+            selector = load_selector(args.libexec)
+            plan = build_plan(args, selector)
+            sys.stdout.write(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+            return 0
+        return run_full(args)
+    except SyncError as error:
+        sys.stderr.write("armada-kshim-sync: %s\n" % error)
+        return 1
+    except OSError as error:
+        sys.stderr.write("armada-kshim-sync: %s\n" % error)
+        return 1
+    except KeyboardInterrupt:
+        sys.stderr.write("armada-kshim-sync: interrupted\n")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

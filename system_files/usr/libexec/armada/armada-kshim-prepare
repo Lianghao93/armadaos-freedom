@@ -1,0 +1,162 @@
+#!/bin/bash
+# Prepare (never install) a verified kShimC boot.img candidate. Selects the
+# native default BLS entry with the existing armada_default_bls_entry(), or
+# uses an explicit --entry; exports its metadata and runs the existing
+# kshim-build-boot.py packer. No device, mount, bootc, or updater work.
+set -euo pipefail
+
+prog=armada-kshim-prepare
+
+die() {
+    printf '%s: %s\n' "$prog" "$*" >&2
+    exit 1
+}
+
+usage() {
+    cat <<'EOF'
+Usage: armada-kshim-prepare --boot-dir DIR --sysroot DIR --stock-boot FILE
+         --runtime FILE --packer FILE --unpacker FILE --repacker FILE
+         --avbtool FILE --out DIR [--source-label TEXT] [--entry FILE]
+
+Selects the native default BLS entry, exports its metadata, and packs a
+verified candidate under OUT/candidate. OUT must not exist or be empty.
+--entry uses an explicit BLS file instead, absolute or relative to --boot-dir;
+kshim-select-boot.py resolves and validates it.
+Environment overrides: KSHIM_LIBEXEC (default /usr/libexec/armada),
+ARGS_FILE (default /usr/lib/armada/bootimg-args).
+EOF
+}
+
+boot_dir=""
+sysroot=""
+stock_boot=""
+runtime=""
+mkbootimg=""
+unpacker=""
+repacker=""
+avbtool=""
+out=""
+source_label=""
+entry=""
+explicit_entry=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --boot-dir) [ "$#" -ge 2 ] || die "missing value for --boot-dir"; boot_dir=$2; shift 2 ;;
+        --sysroot) [ "$#" -ge 2 ] || die "missing value for --sysroot"; sysroot=$2; shift 2 ;;
+        --stock-boot) [ "$#" -ge 2 ] || die "missing value for --stock-boot"; stock_boot=$2; shift 2 ;;
+        --runtime) [ "$#" -ge 2 ] || die "missing value for --runtime"; runtime=$2; shift 2 ;;
+        --packer) [ "$#" -ge 2 ] || die "missing value for --packer"; mkbootimg=$2; shift 2 ;;
+        --unpacker) [ "$#" -ge 2 ] || die "missing value for --unpacker"; unpacker=$2; shift 2 ;;
+        --repacker) [ "$#" -ge 2 ] || die "missing value for --repacker"; repacker=$2; shift 2 ;;
+        --avbtool) [ "$#" -ge 2 ] || die "missing value for --avbtool"; avbtool=$2; shift 2 ;;
+        --out) [ "$#" -ge 2 ] || die "missing value for --out"; out=$2; shift 2 ;;
+        --source-label) [ "$#" -ge 2 ] || die "missing value for --source-label"; source_label=$2; shift 2 ;;
+        --entry) [ "$#" -ge 2 ] || die "missing value for --entry"; entry=$2; explicit_entry=1; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) die "unknown argument: $1" ;;
+    esac
+done
+
+: "${KSHIM_LIBEXEC:=/usr/libexec/armada}"
+: "${ARGS_FILE:=/usr/lib/armada/bootimg-args}"
+
+abspath() {
+    case "$1" in
+        /*) printf '%s\n' "$1" ;;
+        *) printf '%s/%s\n' "${PWD%/}" "$1" ;;
+    esac
+}
+
+[ -n "$boot_dir" ] || die "--boot-dir is required"
+[ -n "$sysroot" ] || die "--sysroot is required"
+[ -n "$stock_boot" ] || die "--stock-boot is required"
+[ -n "$runtime" ] || die "--runtime is required"
+[ -n "$mkbootimg" ] || die "--packer is required"
+[ -n "$unpacker" ] || die "--unpacker is required"
+[ -n "$repacker" ] || die "--repacker is required"
+[ -n "$avbtool" ] || die "--avbtool is required"
+[ -n "$out" ] || die "--out is required"
+
+# Absolute before anything else can depend on the caller's cwd.
+boot_dir=$(abspath "$boot_dir")
+sysroot=$(abspath "$sysroot")
+stock_boot=$(abspath "$stock_boot")
+runtime=$(abspath "$runtime")
+mkbootimg=$(abspath "$mkbootimg")
+unpacker=$(abspath "$unpacker")
+repacker=$(abspath "$repacker")
+avbtool=$(abspath "$avbtool")
+out=$(abspath "$out")
+
+[ -d "$boot_dir" ] || die "boot dir not found: $boot_dir"
+[ -d "$sysroot" ] || die "sysroot not found: $sysroot"
+[ -f "$stock_boot" ] || die "stock boot image not found: $stock_boot"
+[ -f "$runtime" ] || die "runtime not found: $runtime"
+[ -f "$mkbootimg" ] || die "mkbootimg not found: $mkbootimg"
+[ -f "$unpacker" ] || die "unpack_bootimg not found: $unpacker"
+[ -f "$repacker" ] || die "repack not found: $repacker"
+[ -f "$avbtool" ] || die "avbtool not found: $avbtool"
+
+select_helper="$KSHIM_LIBEXEC/kshim-select-boot.py"
+builder="$KSHIM_LIBEXEC/kshim-build-boot.py"
+[ -f "$select_helper" ] || die "selector not found: $select_helper"
+[ -f "$builder" ] || die "packer not found: $builder"
+[ -r "$ARGS_FILE" ] || die "bootimg args not readable: $ARGS_FILE"
+
+if [ -e "$out" ]; then
+    [ -d "$out" ] || die "output is not a directory: $out"
+    [ -z "$(ls -A -- "$out")" ] || die "output directory is not empty: $out"
+else
+    mkdir -p -- "$out" || die "cannot create output directory: $out"
+fi
+
+metadata="$out/installer-result.json"
+candidate="$out/candidate"
+
+# Explicit --entry goes to the selector unchanged: it resolves absolute and
+# BOOT-relative paths (and containment) itself, so no cwd-relative -f test.
+if [ "$explicit_entry" -eq 0 ]; then
+    # Existing BLS ordering and geometry; no local sort or args invention.
+    # shellcheck disable=SC1090
+    . "$ARGS_FILE"
+    command -v armada_default_bls_entry >/dev/null 2>&1 \
+        || die "$ARGS_FILE does not define armada_default_bls_entry"
+    entry=$(armada_default_bls_entry "$boot_dir")
+    [ -n "$entry" ] || die "no BLS entries under $boot_dir/loader/entries"
+    [ -f "$entry" ] || die "selected BLS entry is not a file: $entry"
+fi
+
+mkdir -- "$candidate" || die "cannot create $candidate"
+
+python3 "$select_helper" \
+    --boot-dir "$boot_dir" \
+    --sysroot "$sysroot" \
+    --entry "$entry" \
+    --output "$metadata" \
+    || die "metadata export failed for $entry"
+[ -s "$metadata" ] || die "metadata missing after export: $metadata"
+
+builder_args=(
+    --layout installed
+    --stock-boot "$stock_boot"
+    --runtime "$runtime"
+    --packer "$mkbootimg"
+    --unpacker "$unpacker"
+    --repacker "$repacker"
+    --avbtool "$avbtool"
+    --installer-result "$metadata"
+    --boot-dir "$boot_dir"
+    --out "$candidate"
+    --default-entry internal
+)
+if [ -n "$source_label" ]; then
+    builder_args+=(--source-label "$source_label")
+fi
+
+python3 "$builder" "${builder_args[@]}" \
+    || die "packer failed; no candidate was produced"
+[ -f "$candidate/boot.img" ] || die "packer did not produce $candidate/boot.img"
+
+printf 'candidate: %s\n' "$candidate"
+printf 'metadata: %s\n' "$metadata"

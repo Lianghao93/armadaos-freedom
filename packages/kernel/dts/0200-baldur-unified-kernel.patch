@@ -1,0 +1,126 @@
+From: Armada <noreply@armada.local>
+Subject: [PATCH] arm64: dts: qcom: baldur: stage the unified core board tree
+
+Board files are vendored verbatim from tb323fu-linux v7.3-rc4
+(11a25bf89b65fff48112a91a0b25bc247e7736d8); this patch is the whole delta
+for the core migration.
+
+Camera and the Iris video block are not in this tree yet, so the board file
+drops both includes until their separate backports land, and no &camss or
+&iris stub is added. The Type-C PMIC reports battery current with the
+opposite sign on this board. The skin zone keeps every CPU cooling map and
+drops only map2/5/8/10 as board policy, so the GPU is not throttled from the
+skin zone; the trips, polling values and the independent GPU thermal zone
+are unchanged.
+
+The stock runtime reserves [0xc2000000, 0xc20c0000) for ramoops with no-map.
+The unified board file keeps the same ramoops node and geometry but was
+missing that property, so the region would be handed over as an ordinary
+mapped reservation instead of the reserved, unmapped carveout Android left
+behind; the production handoff validation rejects exactly that change and
+returns dt_memory_apply = -15. Restore no-map on this one node so the
+Android reservation survives the boot handoff, changing no other property.
+
+The stock handoff keeps the /chosen simple-framebuffer template disabled and
+the kshim promotion path accepts only that state before it rewrites the node.
+The unified tree omitted status from framebuffer@fc800000, so the handoff
+validator rejected the descriptor. Mark that node disabled without touching
+its geometry, reg or format.
+
+---
+ arch/arm64/boot/dts/qcom/kaanapali-lenovo-baldur-display.dts |  3 +--
+ arch/arm64/boot/dts/qcom/kaanapali-lenovo-baldur.dts         |  2 ++
+ arch/arm64/boot/dts/qcom/baldur-power.dtsi                   |  1 +
+ arch/arm64/boot/dts/qcom/baldur-skin-thermal.dtsi            | 20 --------------------
+ 4 files changed, 4 insertions(+), 22 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/kaanapali-lenovo-baldur-display.dts b/arch/arm64/boot/dts/qcom/kaanapali-lenovo-baldur-display.dts
+--- a/arch/arm64/boot/dts/qcom/kaanapali-lenovo-baldur-display.dts
++++ b/arch/arm64/boot/dts/qcom/kaanapali-lenovo-baldur-display.dts
+@@ -20,8 +20,7 @@
+ #include "baldur-haptics-flash.dtsi"
+ #include "baldur-adc.dtsi"
+ #include "baldur-skin-thermal.dtsi"
+-#include "baldur-camera.dtsi"
++/* Camera and Iris require separate backports */
+ #include "baldur-ledring.dtsi"
+ #include "baldur-stats.dtsi"
+-#include "baldur-video.dtsi"
+ #include "baldur-dp.dtsi"
+diff --git a/arch/arm64/boot/dts/qcom/baldur-power.dtsi b/arch/arm64/boot/dts/qcom/baldur-power.dtsi
+--- a/arch/arm64/boot/dts/qcom/baldur-power.dtsi
++++ b/arch/arm64/boot/dts/qcom/baldur-power.dtsi
+@@ -14,6 +14,7 @@
+ / {
+ 	pmic-glink {
+ 		compatible = "qcom,kaanapali-pmic-glink";
++		qcom,battery-current-inverted;
+ 		#address-cells = <1>;
+ 		#size-cells = <0>;
+ 
+diff --git a/arch/arm64/boot/dts/qcom/baldur-skin-thermal.dtsi b/arch/arm64/boot/dts/qcom/baldur-skin-thermal.dtsi
+--- a/arch/arm64/boot/dts/qcom/baldur-skin-thermal.dtsi
++++ b/arch/arm64/boot/dts/qcom/baldur-skin-thermal.dtsi
+@@ -91,11 +91,6 @@
+ 			cooling-device = <&cpu6 13 13>;
+ 		};
+ 
+-		map2 {	/* GPU -> 902 MHz */
+-			trip = <&quiet_44>;
+-			cooling-device = <&gpu 3 3>;
+-		};
+-
+ 		map3 {	/* cluster 0 -> 998400 kHz */
+ 			trip = <&quiet_45>;
+ 			cooling-device = <&cpu0 22 22>;
+@@ -104,11 +99,6 @@
+ 		map4 {	/* cluster 1 -> 1747200 kHz */
+ 			trip = <&quiet_45>;
+ 			cooling-device = <&cpu6 20 20>;
+-		};
+-
+-		map5 {	/* GPU -> 646 MHz */
+-			trip = <&quiet_46>;
+-			cooling-device = <&gpu 6 6>;
+ 		};
+ 
+ 		map6 {	/* cluster 0 -> 384000 kHz */
+@@ -121,19 +111,9 @@
+ 			cooling-device = <&cpu6 26 26>;
+ 		};
+ 
+-		map8 {	/* GPU -> 500 MHz */
+-			trip = <&quiet_48>;
+-			cooling-device = <&gpu 8 8>;
+-		};
+-
+ 		map9 {	/* cluster 1 -> 883200 kHz */
+ 			trip = <&quiet_49>;
+ 			cooling-device = <&cpu6 27 27>;
+ 		};
+-
+-		map10 {	/* GPU -> 222 MHz */
+-			trip = <&quiet_50>;
+-			cooling-device = <&gpu 14 14>;
+-		};
+ 	};
+ };
+diff --git a/arch/arm64/boot/dts/qcom/kaanapali-lenovo-baldur.dts b/arch/arm64/boot/dts/qcom/kaanapali-lenovo-baldur.dts
+--- a/arch/arm64/boot/dts/qcom/kaanapali-lenovo-baldur.dts
++++ b/arch/arm64/boot/dts/qcom/kaanapali-lenovo-baldur.dts
+@@ -74,6 +74,7 @@
+ 		 */
+ 		framebuffer0: framebuffer@fc800000 {
+ 			compatible = "simple-framebuffer";
++			status = "disabled";
+ 			reg = <0x0 0xfc800000 0x0 (1904 * 3040 * 4)>;
+ 			width = <1904>;
+ 			height = <3040>;
+@@ -93,6 +94,7 @@
+ 		ramoops@c2000000 {
+ 			compatible = "ramoops";
+ 			reg = <0x0 0xc2000000 0x0 0xc0000>;
++			no-map;
+ 			record-size = <0x10000>;
+ 			console-size = <0x40000>;
+ 			pmsg-size = <0x40000>;

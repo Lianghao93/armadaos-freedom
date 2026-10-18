@@ -66,7 +66,6 @@ dnf5 -y install --setopt=install_weak_deps=False \
     wlr-randr \
     distrobox \
     wl-clipboard \
-    binutils \
     btop \
     tailscale
 
@@ -95,14 +94,23 @@ dnf5 -y install --setopt=install_weak_deps=False \
 dnf5 -y install --setopt=install_weak_deps=False \
     /packages/umtp-responder/umtp-responder-*.rpm
 
+# kshim-tools scripts run under python3 and call dtc, gzip and openssl.
+dnf5 -y install --setopt=install_weak_deps=False \
+    python3 \
+    dtc \
+    gzip \
+    openssl
+
 # CachyOS Proton's ARM64 GStreamer asks for Arch's libbz2 soname.
 ln -sf libbz2.so.1 /usr/lib64/libbz2.so.1.0
 
 # Some AppImages link zlib's unversioned development soname.
 ln -sf libz.so.1 /usr/lib64/libz.so
 
-# pressure-vessel needs en_US.UTF-8; the base image ships only minimal-langpack (C.utf8).
-dnf5 -y install --setopt=install_weak_deps=False glibc-langpack-en
+# pressure-vessel needs en_US.UTF-8; Plasma needs zh_CN.UTF-8 for Chinese.
+dnf5 -y install --setopt=install_weak_deps=False \
+    glibc-langpack-en \
+    glibc-langpack-zh
 
 dnf5 -y install --setopt=install_weak_deps=False \
     google-noto-sans-vf-fonts \
@@ -114,7 +122,9 @@ dnf5 -y install --setopt=install_weak_deps=False \
     google-noto-color-emoji-fonts \
     google-noto-sans-mono-fonts
 
+# Weak dependencies are disabled, so install Plasma's Qt translation catalogs.
 dnf5 -y install --setopt=install_weak_deps=False \
+    qt6-qttranslations \
     plasma-workspace \
     plasma-desktop \
     plasma-mobile \

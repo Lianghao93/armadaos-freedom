@@ -67,6 +67,75 @@ static void test_positive(void)
     free(r);
     free(fdt);
 }
+static void assert_pon_descriptors(void *fdt)
+{
+    QcomKeyDescriptor keys[QCOM_KEYS_MAX];
+    size_t count = 0;
+    assert(QcomKeysBuildFromDeviceTree(fdt, keys, QCOM_KEYS_MAX, &count) == 0);
+    assert(count == 3);
+    const QcomKeyDescriptor *up = NULL, *down = NULL, *sel = NULL;
+    for (size_t i = 0; i < count; i++) {
+        if (keys[i].Action == QCOM_KEY_ACTION_UP) up = &keys[i];
+        else if (keys[i].Action == QCOM_KEY_ACTION_DOWN) down = &keys[i];
+        else if (keys[i].Action == QCOM_KEY_ACTION_SELECT) sel = &keys[i];
+    }
+    assert(up && down && sel);
+    /* Literal PON descriptors: SPMI SID 0, base offset 0x1300, RT_STS 0x10. */
+    assert(QCOM_KEY_IS_SPMI_TOKEN(sel->Base) && QCOM_KEY_SPMI_TOKEN_SID(sel->Base) == 0);
+    assert(QCOM_KEY_SPMI_TOKEN_ADDRESS(sel->Base) == 0x1300);
+    assert(sel->RegisterOffset == 0x10 && sel->Mask == 128);
+    assert(QCOM_KEY_IS_SPMI_TOKEN(down->Base) && QCOM_KEY_SPMI_TOKEN_SID(down->Base) == 0);
+    assert(QCOM_KEY_SPMI_TOKEN_ADDRESS(down->Base) == 0x1300);
+    assert(down->RegisterOffset == 0x10 && down->Mask == 64);
+}
+static void test_positive_stock_alias(void)
+{
+    /* Gen4 TB322FC stock SunP .096 evidence names the HLOS cell "pon_hlos";
+     * the fixture is reused from TB323FU but the alias evidence is from Gen4.
+     * The reg pair is otherwise unchanged. */
+    static const char names[] = "pon_hlos\0pon_pbs";
+    void *fdt = load_fixture();
+    int pon = fdt_path_offset(fdt, "/arbiter@c400000/spmi@c426000/pmk8850@0/pon_hlos@1300");
+    uint16_t addr = 0xffff;
+    assert(pon >= 0);
+    assert(fdt_setprop(fdt, pon, "reg-names", names, sizeof(names)) == 0);
+    assert(kshim_dt_spmi_reg(fdt, pon, &addr) == 0 && addr == 0x1300);
+    assert_pon_descriptors(fdt);
+    free(fdt);
+}
+static void test_positive_reordered_alias(void)
+{
+    /* The HLOS cell is selected by name index, so reordering the names and
+     * reg cells together must still resolve to the 0x1300 cell. */
+    static const char names[] = "pon_pbs\0pon_hlos";
+    fdt32_t reg[2] = { cpu_to_fdt32(0x800), cpu_to_fdt32(0x1300) };
+    void *fdt = load_fixture();
+    int pon = fdt_path_offset(fdt, "/arbiter@c400000/spmi@c426000/pmk8850@0/pon_hlos@1300");
+    uint16_t addr = 0xffff;
+    assert(pon >= 0);
+    assert(fdt_setprop(fdt, pon, "reg-names", names, sizeof(names)) == 0);
+    assert(fdt_setprop(fdt, pon, "reg", reg, sizeof(reg)) == 0);
+    assert(kshim_dt_spmi_reg(fdt, pon, &addr) == 0 && addr == 0x1300);
+    assert_pon_descriptors(fdt);
+    free(fdt);
+}
+static void test_negative_hlos_ambiguous(void)
+{
+    static const char dup_hlos[] = "hlos\0hlos";
+    static const char dup_pon[] = "pon_hlos\0pon_hlos";
+    static const char mixed[] = "hlos\0pon_hlos";
+    static const char *const ambiguous[] = { dup_hlos, dup_pon, mixed };
+    static const size_t sizes[] = { sizeof(dup_hlos), sizeof(dup_pon), sizeof(mixed) };
+    for (size_t i = 0; i < sizeof(ambiguous) / sizeof(ambiguous[0]); i++) {
+        void *fdt = load_fixture();
+        int pon = fdt_path_offset(fdt, "/arbiter@c400000/spmi@c426000/pmk8850@0/pon_hlos@1300");
+        uint16_t addr = 0xffff;
+        assert(pon >= 0);
+        assert(fdt_setprop(fdt, pon, "reg-names", ambiguous[i], (int)sizes[i]) == 0);
+        assert(kshim_dt_spmi_reg(fdt, pon, &addr) != 0);
+        free(fdt);
+    }
+}
 static void test_indexed_descriptors_match(void)
 {
     void *fdt = load_fixture();
@@ -206,6 +275,9 @@ static void test_layout_cases(void)
 int main(void)
 {
     test_positive();
+    test_positive_stock_alias();
+    test_positive_reordered_alias();
+    test_negative_hlos_ambiguous();
     test_indexed_descriptors_match();
     test_negative_disabled();
     test_negative_regnames();

@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Lenovo Legion Tab Y700 5th Gen (TB323FU, "baldur"), SM8850 (kaanapali).
+ *
+ * Board facts come from the devicetree this device's ABL passes to Android.
+ * Structure follows kaanapali-oneplus-infiniti-common.dts by EYC and
+ * FantomTchi7 (BSD-3-Clause).
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/clock/qcom,rpmh.h>
+#include <dt-bindings/gpio/gpio.h>
+#include "kaanapali.dtsi"
+/*
+ * The PMIC's PON block: the power key, and the pwrkey driver's reboot
+ * notifier that sets PS_HOLD to warm reset before an orderly restart, as
+ * Android's qcom_pon does.
+ */
+#include "pmk8850.dtsi"
+
+/ {
+	model = "Lenovo Legion Tab Y700 5th Gen";
+	compatible = "lenovo,baldur", "qcom,kaanapali";
+	chassis-type = "tablet";
+
+	/* the SoC reports id 661, SM8850P, which has no QCOM_ID_* */
+	qcom,msm-id = <0x295 0x20000>;	/* SM8850P v2.0 */
+	qcom,board-id = <0x2000b 0>;
+
+	/* board clocks kaanapali.dtsi references by label */
+	clocks {
+		xo_board: xo-board {
+			compatible = "fixed-clock";
+			clock-frequency = <76800000>;
+			#clock-cells = <0>;
+		};
+
+		sleep_clk: sleep-clk {
+			compatible = "fixed-clock";
+			clock-frequency = <32000>;
+			#clock-cells = <0>;
+		};
+
+		bi_tcxo_div2: bi-tcxo-div2-clk {
+			compatible = "fixed-factor-clock";
+			#clock-cells = <0>;
+
+			clocks = <&rpmhcc RPMH_CXO_CLK>;
+			clock-mult = <1>;
+			clock-div = <2>;
+		};
+
+		bi_tcxo_ao_div2: bi-tcxo-ao-div2-clk {
+			compatible = "fixed-factor-clock";
+			#clock-cells = <0>;
+
+			clocks = <&rpmhcc RPMH_CXO_CLK_A>;
+			clock-mult = <1>;
+			clock-div = <2>;
+		};
+	};
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/*
+		 * The panel is the only console: no UART is wired out. ABL
+		 * hands the display over still scanning out of the splash
+		 * buffer. MDSS stays disabled: the msm driver taking over a
+		 * live bootloader scanout stalls the AXI/NoC.
+		 */
+		framebuffer0: framebuffer@fc800000 {
+			compatible = "simple-framebuffer";
+			reg = <0x0 0xfc800000 0x0 (1904 * 3040 * 4)>;
+			width = <1904>;
+			height = <3040>;
+			stride = <(1904 * 4)>;
+			format = "a8r8g8b8";
+		};
+	};
+
+	reserved-memory {
+		/* ABL keeps the display on only for a region of this name */
+		splash_memory: splash_region@fc800000 {
+			reg = <0x0 0xfc800000 0x0 0x2b00000>;
+			no-map;
+		};
+
+		/* the stock kernel's geometry: Android reads it back */
+		ramoops@c2000000 {
+			compatible = "ramoops";
+			reg = <0x0 0xc2000000 0x0 0xc0000>;
+			record-size = <0x10000>;
+			console-size = <0x40000>;
+			pmsg-size = <0x40000>;
+			/* Android reads every zone with ecc-size 16 */
+			ecc-size = <16>;
+		};
+	};
+};
+
+/*
+ * UFS and microSD. bRefClkFreq already holds 38.4 MHz (2), RPMH_LN_BB_CLK3,
+ * so ufshcd only reads it.
+ */
+#include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+#include "baldur-regulators.dtsi"
+#include "baldur-storage.dtsi"
+
+/* USB device mode: the eUSB2 repeater lives on pmih0108, SPMI1 SID 7 */
+#include "pmih0108-kaanapali.dtsi"
+#include "baldur-usb.dtsi"
+#include <dt-bindings/thermal/thermal.h>
+#include "baldur-thermal.dtsi"
+#include "baldur-power.dtsi"
+#include <dt-bindings/input/linux-event-codes.h>
+#include "baldur-keys.dtsi"
+
+/*
+ * A CoreSight trace NoC nothing here uses; its probe waits forever
+ * ("deferred probe pending: (reason unknown)").
+ */
+&{/soc@0/tn@111b8000} {
+	status = "disabled";
+};

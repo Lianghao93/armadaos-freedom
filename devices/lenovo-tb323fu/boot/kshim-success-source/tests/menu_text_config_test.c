@@ -34,7 +34,7 @@ int main(void)
                   "启动安装在 TF 卡中的 ArmadaOS，请先插入对应 TF 卡。") == 0);
     assert(strcmp(KSHIM_MENU_DESC_DIAGNOSTIC,
                   "启动 Linux 诊断环境，用于检查启动和硬件问题。") == 0);
-    assert(strcmp(KSHIM_MENU_DESC_ADVANCED, "进入 Linux 诊断、恢复或刷机模式。") == 0);
+    assert(strcmp(KSHIM_MENU_DESC_ADVANCED, "查看可用的高级启动模式。") == 0);
     assert(strcmp(KSHIM_MENU_DESC_RESTART, "重新启动设备。") == 0);
     assert(strcmp(KSHIM_MENU_DESC_OFF, "关闭设备电源。") == 0);
     assert(strcmp(KSHIM_MENU_DESC_RECOVERY,
@@ -67,7 +67,7 @@ int main(void)
     assert(strcmp(KSHIM_MENU_DESC_DIAGNOSTIC,
                   "Start the Linux diagnostic environment to investigate boot and hardware problems.") == 0);
     assert(strcmp(KSHIM_MENU_DESC_ADVANCED,
-                  "Enter Linux diagnostics, recovery or flashing modes.") == 0);
+                  "Choose an available advanced boot mode.") == 0);
     assert(strcmp(KSHIM_MENU_DESC_RESTART, "Restart the device.") == 0);
     assert(strcmp(KSHIM_MENU_DESC_OFF, "Turn off the device.") == 0);
     assert(strcmp(KSHIM_MENU_DESC_RECOVERY,

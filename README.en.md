@@ -38,12 +38,18 @@
 ArmadaOS Freedom is a community-maintained tablet branch based on
 [ArmadaOS](https://github.com/armada-os/armada). It retains the upstream gaming
 and desktop foundation while adapting boot, display, power, peripherals, and
-Armada Control to tablet hardware. Current device work focuses on the
-**Lenovo Legion Tab Gen 5 / Y700 (TB323FU, SM8850P)**.
+Armada Control to tablet hardware. Current device work covers
+**Y700 Gen 4 (TB322FC, SM8750)** and
+**Lenovo Legion Tab Gen 5 / Y700 (TB323FU, SM8850P)** on a shared Linux
+**7.2.6** kernel with device-specific board support. See the
+[Gen 4](devices/lenovo-tb322fc/README.md) and
+[Gen 5](devices/lenovo-tb323fu/README.md) status pages.
 
 Highlights of the current adaptation:
 
 - Steam Gaming Mode and KDE Plasma, with FEX and Proton from ArmadaOS.
+- A shared 7.2.6 kernel build, full module tree and Gen 4/5 device trees under
+  `packages/kernel`, including Gen 5 driver backports and its speaker module.
 - kShimC multi-boot with separate internal-storage and TF-card Linux entries.
 - Device-matched 30 / 60 / 90 / 120 / 165 Hz display modes.
 - Dual-USB routing, audio, 5 GHz Wi-Fi, battery and temperature reporting.

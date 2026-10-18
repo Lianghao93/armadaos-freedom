@@ -1,0 +1,1187 @@
+#!/usr/bin/env python3
+"""Persistent kShimC provisioning and update state around armada-kshim-sync.
+
+This is a small stateful caller, not a new deployment engine:
+
+  provision    validate a first-device installed image against the booted
+               native deployment, copy the two private inputs and record the
+               baseline. No block write, no install, no reboot.
+  sync         compare the current native default with the recorded payload,
+               and only then call the tested armada-kshim-sync child once.
+  record-boot  reconcile an interrupted transaction and record an actual boot
+               observation. A physical write is never boot acceptance.
+
+State is an immutable config.json plus state.json under --state-dir, with the
+stock/runtime inputs held in a private inputs/ directory. All JSON updates are
+fsync + rename + parent fsync. The persistent lock is a separate
+/run/armada-kshim-state.lock; the child sync keeps its own
+/run/armada-bootimg.lock. Selection, block and report rules come from
+armada-kshim-sync, kshim-select-boot.py and kshim-write-boot.py; nothing here
+reimplements them.
+"""
+import argparse
+import fcntl
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import time
+import uuid
+
+LOCK_PATH = "/run/armada-kshim-state.lock"
+LOCK_WAIT_SECONDS = 5.0
+BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id"
+CONFIG_SCHEMA = 1
+STATE_SCHEMA = 1
+PROFILE = "lenovo,elden/qcom,sm8750"
+BUILDER = "kshim-build-boot.py"
+INPUT_NAMES = {
+    "stock_boot": "inputs/stock-boot.img",
+    "runtime": "inputs/runtime.bin",
+}
+STATE_ROOT = "/var/lib/armada/kshimc"
+HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+TXID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+FINAL_WRITER_STATUS = ("written", "unchanged", "fallback-restored")
+
+
+class StateError(Exception):
+    pass
+
+
+class RecoveryFailed(StateError):
+    pass
+
+
+def need(condition, message):
+    if not condition:
+        raise StateError(message)
+
+
+def checksum_text(value, label):
+    need(isinstance(value, str) and HEX64.fullmatch(value) is not None,
+         "%s must be 64 lowercase hex characters: %r" % (label, value))
+    return value
+
+
+def load_sync(libexec):
+    """Load the extensionless T024 sync tool explicitly."""
+    path = os.path.join(libexec, "armada-kshim-sync")
+    need(os.path.isfile(path), "sync tool not found: %s" % path)
+    loader = importlib.machinery.SourceFileLoader("armada_kshim_state_sync", path)
+    need(loader is not None, "sync tool is not loadable: %s" % path)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    need(spec is not None, "sync tool is not importable: %s" % path)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def require_root():
+    need(os.geteuid() == 0, "must run as root")
+
+
+def check_profile(sync):
+    try:
+        sync.check_profile()
+    except sync.SyncError as error:
+        raise StateError(str(error))
+
+
+def writer_call(writer, function, *args):
+    try:
+        return function(*args)
+    except writer.WriteError as error:
+        raise StateError(str(error))
+
+
+def native_plan(sync, args, selector):
+    try:
+        return sync.build_plan(args, selector)
+    except sync.SyncError as error:
+        raise StateError(str(error))
+
+
+def native_status(sync):
+    try:
+        return sync.read_native_status()
+    except sync.SyncError as error:
+        raise StateError(str(error))
+
+
+def booted_identity(sync, document):
+    need(isinstance(document, dict)
+         and isinstance(document.get("deployments"), list),
+         "native status has no deployments list")
+    booted = [record for record in document["deployments"]
+              if isinstance(record, dict) and record.get("booted") is True]
+    need(len(booted) == 1,
+         "expected exactly one booted deployment, found %d" % len(booted))
+    try:
+        return sync.deployment_identity(booted[0], "booted deployment")
+    except sync.SyncError as error:
+        raise StateError(str(error))
+
+
+def read_boot_id():
+    path = BOOT_ID_PATH
+    try:
+        with open(path, "r", encoding="ascii") as handle:
+            value = handle.read().strip()
+    except OSError as error:
+        raise StateError("boot id unreadable: %s: %s" % (path, error))
+    need(value != "", "boot id is empty")
+    return value
+
+
+def file_sha256(path, label):
+    try:
+        info = os.stat(path)
+    except OSError as error:
+        raise StateError("%s unreadable: %s: %s" % (label, path, error))
+    need(stat.S_ISREG(info.st_mode), "%s is not a regular file: %s" % (label, path))
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            while True:
+                chunk = handle.read(1 << 20)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    except OSError as error:
+        raise StateError("%s unreadable: %s: %s" % (label, path, error))
+    return digest.hexdigest()
+
+
+def fsync_dir(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_json_atomic(path, document):
+    payload = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    temp = path + ".tmp"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC, 0o600)
+    try:
+        view = memoryview(payload)
+        while view:
+            written = os.write(fd, view)
+            need(written > 0, "short write: %s" % temp)
+            view = view[written:]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(temp, path)
+    fsync_dir(os.path.dirname(path) or ".")
+
+
+def read_json(path, label):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            document = json.load(handle)
+    except (OSError, ValueError) as error:
+        raise StateError("%s unreadable: %s: %s" % (label, path, error))
+    need(isinstance(document, dict), "%s is not a JSON object: %s" % (label, path))
+    return document
+
+
+def read_json_optional(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            document = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def acquire_lock():
+    path = LOCK_PATH
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError as error:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                raise StateError("state lock busy: %s (%s)" % (path, error))
+            time.sleep(0.1)
+
+
+def validate_identity(value, label):
+    need(isinstance(value, dict), "%s is not an object" % label)
+    checksum_text(value.get("checksum"), "%s checksum" % label)
+    stateroot = value.get("stateroot")
+    need(isinstance(stateroot, str) and stateroot != "",
+         "%s stateroot is not a non-empty string" % label)
+    serial = value.get("serial")
+    need(type(serial) is int and serial >= 0,
+         "%s serial is not a non-negative integer" % label)
+    return {"checksum": value["checksum"], "stateroot": stateroot,
+            "serial": serial}
+
+
+def validate_plan(plan):
+    need(isinstance(plan, dict), "plan is not an object")
+    for label in ("candidate", "fallback"):
+        item = plan.get(label)
+        need(isinstance(item, dict), "plan has no %s entry" % label)
+        for key in ("entry", "options", "image", "initrd", "fdtdir"):
+            value = item.get(key)
+            need(isinstance(value, str) and value != "",
+                 "plan %s.%s is not a non-empty string" % (label, key))
+        validate_identity(item.get("identity"), "plan %s identity" % label)
+    return plan
+
+
+def validate_config(config):
+    need(config.get("schema") == CONFIG_SCHEMA,
+         "config schema is not %d" % CONFIG_SCHEMA)
+    need(config.get("profile") == PROFILE,
+         "config profile is not %s" % PROFILE)
+    target = config.get("target")
+    need(isinstance(target, dict), "config has no target")
+    path = target.get("path")
+    need(isinstance(path, str) and os.path.isabs(path),
+         "config target path is not absolute: %r" % path)
+    guid = target.get("guid")
+    need(isinstance(guid, str) and guid != "", "config target guid is empty")
+    try:
+        need(str(uuid.UUID(guid)) == guid,
+             "config target guid is not canonical: %r" % guid)
+    except ValueError:
+        raise StateError("config target guid is not a UUID: %r" % guid)
+    size = target.get("size")
+    need(type(size) is int and size > 0, "config target size is invalid: %r" % size)
+    inputs = config.get("inputs")
+    need(isinstance(inputs, dict), "config has no inputs")
+    for key in sorted(INPUT_NAMES):
+        entry = inputs.get(key)
+        need(isinstance(entry, dict), "config has no inputs.%s" % key)
+        need(entry.get("path") == INPUT_NAMES[key],
+             "config inputs.%s path is not %s"
+             % (key, INPUT_NAMES[key]))
+        length = entry.get("length")
+        need(type(length) is int and length > 0,
+             "config inputs.%s length is invalid" % key)
+        checksum_text(entry.get("sha256"), "config inputs.%s.sha256" % key)
+    return config
+
+
+def validate_state(state):
+    need(state.get("schema") == STATE_SCHEMA,
+         "state schema is not %d" % STATE_SCHEMA)
+    checksum_text(state.get("expected_current_sha256"),
+                  "state expected_current_sha256")
+    payload = state.get("payload")
+    need(isinstance(payload, dict), "state has no payload")
+    validate_identity(payload.get("identity"), "state payload identity")
+    fingerprint = payload.get("fingerprint")
+    need(isinstance(fingerprint, dict) and fingerprint != {},
+         "state payload has no fingerprint")
+    last_written = state.get("last_written_boot_id")
+    need(last_written is None or (isinstance(last_written, str)
+                                  and last_written != ""),
+         "state last_written_boot_id is invalid")
+    observation = state.get("boot_observation")
+    need(observation is None or isinstance(observation, dict),
+         "state boot_observation is invalid")
+    result = state.get("last_result")
+    need(result is None or isinstance(result, dict),
+         "state last_result is invalid")
+    owned = state.get("owned_transactions")
+    need(isinstance(owned, list), "state owned_transactions is not a list")
+    for tid in owned:
+        need(isinstance(tid, str) and TXID.fullmatch(tid) is not None,
+             "state owned_transactions has an invalid id: %r" % tid)
+    need(len(set(owned)) == len(owned),
+         "state owned_transactions has duplicates")
+    pending = state.get("pending")
+    need(pending is None or isinstance(pending, dict),
+         "state pending is invalid")
+    last_transaction = state.get("last_transaction")
+    need(last_transaction is None
+         or (isinstance(last_transaction, str)
+             and TXID.fullmatch(last_transaction) is not None),
+         "state last_transaction is invalid")
+    return state
+
+
+def load_installed(state_dir):
+    need(os.path.isdir(state_dir), "state dir missing: %s" % state_dir)
+    config = validate_config(read_json(os.path.join(state_dir, "config.json"),
+                                       "config"))
+    state = validate_state(read_json(os.path.join(state_dir, "state.json"),
+                                     "state"))
+    return config, state
+
+
+def verify_inputs(state_dir, config):
+    root = os.path.realpath(state_dir)
+    digests = {}
+    for key in sorted(INPUT_NAMES):
+        entry = config["inputs"][key]
+        path = os.path.realpath(os.path.join(root, entry["path"]))
+        need(os.path.dirname(path) == os.path.realpath(os.path.join(root, "inputs")),
+             "private input escapes inputs/: %s" % path)
+        digest = file_sha256(path, "%s input" % key)
+        need(os.stat(path).st_size == entry["length"],
+             "%s input length does not match config" % key)
+        need(digest == entry["sha256"],
+             "%s input hash does not match config" % key)
+        digests[key] = digest
+    return digests
+
+
+def probe_configured_target(writer, config):
+    target = config["target"]
+    identity = writer_call(writer, writer.probe_target, target["path"],
+                           target["guid"])
+    need(identity.get("partuuid") == target["guid"],
+         "target partition UUID does not match config")
+    need(identity.get("size") == target["size"],
+         "target size does not match config")
+    need(identity.get("size") == writer.BOOT_BYTES,
+         "target size is not %d bytes" % writer.BOOT_BYTES)
+    found = identity.get("path")
+    need(isinstance(found, str) and os.path.isabs(found),
+         "target identity path is invalid: %r" % found)
+    need(os.path.realpath(found) == os.path.realpath(target["path"]),
+         "target path does not match config")
+    return identity
+
+
+def read_raw(writer, identity):
+    fd = writer_call(writer, writer.open_target_ro, identity)
+    try:
+        return writer_call(writer, writer.hash_fd, fd, writer.BOOT_BYTES)
+    finally:
+        os.close(fd)
+
+
+def transaction_path(state_dir, tid):
+    need(isinstance(tid, str) and TXID.fullmatch(tid) is not None,
+         "invalid transaction id: %r" % tid)
+    root = os.path.realpath(os.path.join(state_dir, "transactions"))
+    path = os.path.realpath(os.path.join(root, tid))
+    need(os.path.dirname(path) == root,
+         "transaction path escapes transactions/: %s" % path)
+    return path
+
+
+def allocate_transaction(state_dir):
+    root = os.path.join(state_dir, "transactions")
+    if not os.path.isdir(root):
+        os.mkdir(root, 0o700)
+        os.chmod(root, 0o700)
+        fsync_dir(state_dir)
+    for _ in range(8):
+        tid = (time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+               + "-" + uuid.uuid4().hex[:12])
+        path = os.path.join(root, tid)
+        try:
+            os.mkdir(path, 0o700)
+        except FileExistsError:
+            continue
+        os.chmod(path, 0o700)
+        fsync_dir(root)
+        return tid, path
+    raise StateError("could not allocate a unique transaction id under %s" % root)
+
+
+def remove_owned_staging(path, parent, prefix):
+    real = os.path.realpath(path)
+    need(os.path.dirname(real) == os.path.realpath(parent),
+         "refusing to remove non-sibling path: %s" % real)
+    need(os.path.basename(real).startswith(prefix),
+         "refusing to remove non-staging path: %s" % real)
+    if os.path.isdir(real) and not os.path.islink(real):
+        shutil.rmtree(real)
+
+
+def copy_verified(source, destination, length, digest, label):
+    info = os.stat(source)
+    need(stat.S_ISREG(info.st_mode), "%s source is not a regular file" % label)
+    need(info.st_size == length,
+         "%s source is %d bytes, expected %d" % (label, info.st_size, length))
+    out = os.open(destination,
+                  os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+    hasher = hashlib.sha256()
+    copied = 0
+    try:
+        with open(source, "rb") as handle:
+            while True:
+                chunk = handle.read(1 << 20)
+                if not chunk:
+                    break
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(out, view)
+                    need(written > 0, "%s short write" % label)
+                    view = view[written:]
+                hasher.update(chunk)
+                copied += len(chunk)
+        os.fsync(out)
+    finally:
+        os.close(out)
+    need(copied == length,
+         "%s copy is %d bytes, expected %d" % (label, copied, length))
+    need(hasher.hexdigest() == digest,
+         "%s source hash does not match the report" % label)
+    need(file_sha256(destination, "%s copy" % label) == digest,
+         "%s copy hash does not match the report" % label)
+
+
+def tool_hashes(sync, libexec, tools_dir):
+    builder = os.path.join(libexec, BUILDER)
+    need(os.path.isfile(builder), "kShimC builder missing: %s" % builder)
+    builder_sha = file_sha256(builder, "builder")
+    tools = {}
+    for key in sorted(sync.TOOL_FILES):
+        path = os.path.join(tools_dir, sync.TOOL_FILES[key])
+        need(os.path.isfile(path), "kShimC tool missing (%s): %s" % (key, path))
+        tools[key] = file_sha256(path, "tool %s" % key)
+    return builder_sha, tools
+
+
+def descriptor(item):
+    return {
+        "bls": item["entry"],
+        "identity": {"checksum": item["identity"]["checksum"],
+                     "stateroot": item["identity"]["stateroot"],
+                     "serial": item["identity"]["serial"]},
+        "options": item["options"],
+        "image": item["image"],
+        "initrd": item["initrd"],
+        "fdtdir": item["fdtdir"],
+    }
+
+
+def fingerprint(item, assets, stock_sha, runtime_sha, builder_sha, tools):
+    return {
+        "descriptor": descriptor(item),
+        "assets": {"linux_image": assets["linux_image"],
+                   "initrd": assets["initrd"],
+                   "dtb": assets["dtb"]},
+        "inputs": {"stock_boot": stock_sha, "runtime": runtime_sha},
+        "builder": {"name": BUILDER, "sha256": builder_sha},
+        "tools": {key: tools[key] for key in sorted(tools)},
+    }
+
+
+def asset_hashes(selector, boot, item):
+    try:
+        image_rel, image_real = selector.boot_asset(boot, item["image"], "linux")
+        initrd_rel, initrd_real = selector.boot_asset(boot, item["initrd"],
+                                                      "initrd")
+        fdtdir_rel, fdtdir_real = selector.boot_asset(boot, item["fdtdir"],
+                                                      "fdtdir")
+    except selector.ExportError as error:
+        raise StateError(str(error))
+    need(os.path.isfile(image_real), "kernel image missing: %s" % image_rel)
+    need(os.path.isfile(initrd_real), "initrd missing: %s" % initrd_rel)
+    need(os.path.isdir(fdtdir_real), "fdtdir missing: %s" % fdtdir_rel)
+    dtb = os.path.realpath(os.path.join(fdtdir_real, selector.DTB_REL))
+    need(selector.inside(boot, dtb) and os.path.isfile(dtb),
+         "Elden DT missing or outside boot: %s/%s"
+         % (fdtdir_rel, selector.DTB_REL))
+    return {
+        "linux_image": file_sha256(image_real, "kernel image"),
+        "initrd": file_sha256(initrd_real, "initrd"),
+        "dtb": file_sha256(dtb, "DTB"),
+    }
+
+
+def report_input(report, key):
+    inputs = report.get("inputs")
+    need(isinstance(inputs, dict), "report has no inputs")
+    entry = inputs.get(key)
+    need(isinstance(entry, dict), "report has no inputs.%s" % key)
+    return entry
+
+
+def report_assets(report):
+    assets = {}
+    for key in ("linux_image", "initrd", "dtb"):
+        entry = report_input(report, key)
+        assets[key] = checksum_text(entry.get("sha256"),
+                                    "report inputs.%s.sha256" % key)
+    return assets
+
+
+def verify_report_inputs(report, config):
+    assets = report_assets(report)
+    for key in ("stock_boot", "runtime"):
+        entry = report_input(report, key)
+        expected = config["inputs"][key]
+        need(entry.get("sha256") == expected["sha256"],
+             "report inputs.%s.sha256 does not match the private input" % key)
+        need(entry.get("length") == expected["length"],
+             "report inputs.%s.length does not match the private input" % key)
+    return assets
+
+
+def verify_report_tools(report, tools):
+    """Bind the prepared report to the tool snapshot captured before the child."""
+    for key in sorted(tools):
+        entry = report_input(report, key)
+        need(entry.get("sha256") == tools[key],
+             "prepared report inputs.%s.sha256 does not match the pending "
+             "tool snapshot" % key)
+
+
+def report_plan_item(report, plan):
+    metadata = report.get("installed_metadata")
+    need(isinstance(metadata, dict), "reviewed report has no installed_metadata")
+    for label in ("candidate", "fallback"):
+        item = plan.get(label)
+        need(isinstance(item, dict), "pending plan has no %s entry" % label)
+        if (metadata.get("bls") == item["entry"]
+                and metadata.get("deployment_checksum")
+                == item["identity"]["checksum"]
+                and metadata.get("options") == item["options"]
+                and metadata.get("image") == item["image"]
+                and metadata.get("initrd") == item["initrd"]
+                and metadata.get("fdtdir") == item["fdtdir"]):
+            return label, item
+    raise StateError("prepared report does not match the pending plan entries")
+
+
+def prepared_report(writer, transaction_dir, raw, kinds):
+    for kind in kinds:
+        base = os.path.join(transaction_dir, "work", kind, "candidate")
+        image = os.path.join(base, "boot.img")
+        report_path = os.path.join(base, "report.json")
+        if not (os.path.isfile(image) and os.path.isfile(report_path)):
+            continue
+        try:
+            fd, digest = writer_call(writer, writer.open_image, image, kind)
+            os.close(fd)
+        except StateError:
+            continue
+        if digest != raw:
+            continue
+        report = writer_call(writer, writer.read_json, report_path, kind)
+        writer_call(writer, writer.validate_report, report, digest, kind)
+        return report
+    return None
+
+
+def advance(state, plan, report, raw, before, calling_boot_id, action, status,
+            sync_exit, error, transaction_id, input_shas, builder_sha, tools):
+    _label, item = report_plan_item(report, plan)
+    assets = report_assets(report)
+    state["expected_current_sha256"] = raw
+    state["payload"] = {
+        "identity": {"checksum": item["identity"]["checksum"],
+                     "stateroot": item["identity"]["stateroot"],
+                     "serial": item["identity"]["serial"]},
+        "fingerprint": fingerprint(item, assets, input_shas["stock_boot"],
+                                   input_shas["runtime"], builder_sha, tools),
+    }
+    if raw != before:
+        state["last_written_boot_id"] = calling_boot_id
+    state["last_result"] = {"action": action, "status": status,
+                            "sync_exit": sync_exit, "error": error}
+    state["pending"] = None
+    state["last_transaction"] = transaction_id
+
+
+def child_error(transaction_dir):
+    document = read_json_optional(os.path.join(transaction_dir, "work",
+                                               "result.json"))
+    if isinstance(document, dict):
+        error = document.get("error")
+        if isinstance(error, str) and error != "":
+            return error
+    return None
+
+
+def run_child_sync(args, config, transaction_dir, before):
+    """Run the tested sync tool with fixed argv; no shell evaluation."""
+    work = os.path.join(transaction_dir, "work")
+    stock = os.path.join(args.state_dir, INPUT_NAMES["stock_boot"])
+    runtime = os.path.join(args.state_dir, INPUT_NAMES["runtime"])
+    command = [
+        sys.executable, os.path.join(args.libexec, "armada-kshim-sync"),
+        "--boot-dir", args.boot_dir,
+        "--sysroot", args.sysroot,
+        "--libexec", args.libexec,
+        "--args-file", args.args_file,
+        "--tools-dir", args.tools_dir,
+        "--stock-boot", stock,
+        "--stock-sha256", config["inputs"]["stock_boot"]["sha256"],
+        "--runtime", runtime,
+        "--runtime-sha256", config["inputs"]["runtime"]["sha256"],
+        "--partuuid", config["target"]["guid"],
+        "--expected-current-sha256", before,
+        "--work", work,
+        "--target", config["target"]["path"],
+    ]
+    try:
+        return subprocess.run(command, check=False).returncode
+    except OSError as error:
+        raise StateError("armada-kshim-sync could not run: %s" % error)
+
+
+def finish_sync(writer, args, config, state, input_shas, transaction_id,
+                before, calling_boot_id, code, tool_keys):
+    pending = state_pending(state)
+    builder_sha, tools = pending_provenance(pending, tool_keys)
+    transaction_dir = transaction_path(args.state_dir, transaction_id)
+    if code not in (0, 2):
+        reason = child_error(transaction_dir) or (
+            "armada-kshim-sync exited %d" % code)
+        if code == 3:
+            raise RecoveryFailed("%s; explicit recovery needed, pending "
+                                 "transaction retained" % reason)
+        raise StateError("%s; pending transaction retained" % reason)
+
+    record = read_json_optional(os.path.join(transaction_dir, "work", "write",
+                                             "transaction.json"))
+    need(isinstance(record, dict),
+         "armada-kshim-sync exited %d without a writer transaction record"
+         % code)
+    need(record.get("expected_current_sha256") == before,
+         "writer record expected hash does not match the pending before hash")
+    target_record = record.get("target")
+    need(isinstance(target_record, dict)
+         and target_record.get("partuuid") == config["target"]["guid"],
+         "writer record target does not match the configured partition")
+    status = record.get("status")
+
+    if code == 0:
+        need(status in ("written", "unchanged"),
+             "armada-kshim-sync exited 0 with non-final writer status %r"
+             % status)
+        raw_expected = checksum_text(record.get("candidate_sha256"),
+                                     "writer candidate_sha256")
+        kinds = ("candidate", "fallback")
+    else:
+        if status == "fallback-restored":
+            raw_expected = checksum_text(record.get("fallback_sha256"),
+                                         "writer fallback_sha256")
+            kinds = ("fallback", "candidate")
+        elif status in ("written", "unchanged"):
+            # A code-2 repair may hand the writer the verified fallback as both
+            # images; when the target already holds those bytes the writer
+            # records "unchanged" instead of "written". Accept it only when
+            # both recorded hashes agree and the prepared fallback matches.
+            candidate = checksum_text(record.get("candidate_sha256"),
+                                      "writer candidate_sha256")
+            fallback = checksum_text(record.get("fallback_sha256"),
+                                     "writer fallback_sha256")
+            need(candidate == fallback,
+                 "armada-kshim-sync exited 2 with writer status %r but "
+                 "candidate_sha256 %s does not match fallback_sha256 %s; "
+                 "refusing to guess" % (status, candidate, fallback))
+            raw_expected = fallback
+            kinds = ("fallback",)
+        else:
+            raise StateError(
+                "armada-kshim-sync exited 2 with non-final writer status %r; "
+                "pending transaction retained" % status)
+
+    identity = probe_configured_target(writer, config)
+    raw = read_raw(writer, identity)
+    need(raw == raw_expected,
+         "target hash %s does not match the writer's final %s"
+         % (raw, raw_expected))
+    report = prepared_report(writer, transaction_dir, raw, kinds)
+    need(report is not None,
+         "no validated prepared image matches the final target hash")
+    verify_report_inputs(report, config)
+    verify_report_tools(report, tools)
+
+    if code == 2:
+        status = "fallback-restored"
+        error = child_error(transaction_dir) or (
+            "armada-kshim-sync fell back to the prepared booted image")
+    else:
+        error = None
+
+    advance(state, state_pending_plan(state), report, raw, before,
+            calling_boot_id, "sync", status, code, error, transaction_id,
+            input_shas, builder_sha, tools)
+    write_json_atomic(os.path.join(args.state_dir, "state.json"), state)
+    return code
+
+
+def state_pending(state):
+    pending = state.get("pending")
+    need(isinstance(pending, dict), "state pending is missing")
+    return pending
+
+
+def state_pending_plan(state):
+    pending = state_pending(state)
+    need(isinstance(pending.get("plan"), dict),
+         "state pending plan is missing")
+    return pending["plan"]
+
+
+def pending_provenance(pending, tool_keys):
+    """Validate and return the builder/tool snapshot captured before the child.
+
+    The snapshot is authoritative for the fingerprint of whatever image the
+    transaction prepared. Current caller hashes are never substituted: a
+    missing or malformed snapshot refuses and keeps the transaction evidence.
+    """
+    need(isinstance(pending, dict), "state pending is not an object")
+    builder_sha = checksum_text(pending.get("builder_sha256"),
+                                "pending builder_sha256")
+    recorded = pending.get("tool_sha256")
+    need(isinstance(recorded, dict), "pending tool_sha256 is not an object")
+    need(sorted(recorded) == sorted(tool_keys),
+         "pending tool_sha256 does not cover the kShimC tool set")
+    tools = {}
+    for key in sorted(tool_keys):
+        tools[key] = checksum_text(recorded.get(key),
+                                   "pending tool_sha256.%s" % key)
+    return builder_sha, tools
+
+
+def plan_item_fingerprint(plan, selector, boot, input_shas, builder_sha, tools):
+    return fingerprint(plan["candidate"],
+                       asset_hashes(selector, boot, plan["candidate"]),
+                       input_shas["stock_boot"], input_shas["runtime"],
+                       builder_sha, tools)
+
+
+def reconcile_pending(writer, args, config, state, identity, raw, input_shas,
+                      tool_keys):
+    pending = state.get("pending")
+    if pending is None:
+        return
+    need(isinstance(pending, dict), "state pending is not an object")
+    builder_sha, tools = pending_provenance(pending, tool_keys)
+    transaction_id = pending.get("id")
+    need(transaction_id in state["owned_transactions"],
+         "pending transaction %r is not listed in owned_transactions"
+         % transaction_id)
+    transaction_dir = transaction_path(args.state_dir, transaction_id)
+    need(os.path.isdir(transaction_dir),
+         "pending transaction directory missing: %s" % transaction_dir)
+    before = checksum_text(pending.get("before_sha256"),
+                           "pending before_sha256")
+    need(before == state["expected_current_sha256"],
+         "pending before hash does not match state expected_current_sha256")
+    calling_boot_id = pending.get("calling_boot_id")
+    need(isinstance(calling_boot_id, str) and calling_boot_id != "",
+         "pending calling_boot_id is invalid")
+    plan = pending.get("plan")
+    need(isinstance(plan, dict), "pending plan is missing")
+    validate_plan(plan)
+
+    record = read_json_optional(os.path.join(transaction_dir, "work", "write",
+                                             "transaction.json"))
+    status = record.get("status") if isinstance(record, dict) else None
+
+    if status in FINAL_WRITER_STATUS:
+        need(isinstance(record, dict), "final writer status without a record")
+        need(record.get("expected_current_sha256") == before,
+             "writer record expected hash does not match pending before hash")
+        target_record = record.get("target")
+        need(isinstance(target_record, dict)
+             and target_record.get("partuuid") == config["target"]["guid"],
+             "writer record target does not match the configured partition")
+        if status == "fallback-restored":
+            raw_expected = checksum_text(record.get("fallback_sha256"),
+                                         "writer fallback_sha256")
+            kinds = ("fallback", "candidate")
+        else:
+            raw_expected = checksum_text(record.get("candidate_sha256"),
+                                         "writer candidate_sha256")
+            kinds = ("candidate", "fallback")
+        need(raw == raw_expected,
+             "target hash %s does not match recovered writer status %s (%s); "
+             "explicit recovery needed" % (raw, status, raw_expected))
+        report = prepared_report(writer, transaction_dir, raw, kinds)
+        need(report is not None,
+             "no validated prepared image matches the recovered target hash; "
+             "explicit recovery needed")
+        verify_report_inputs(report, config)
+        verify_report_tools(report, tools)
+        advance(state, plan, report, raw, before, calling_boot_id, "recover",
+                "recovered-interrupted", None,
+                "writer had finished with status %s but the parent state "
+                "update was interrupted" % status, transaction_id, input_shas,
+                builder_sha, tools)
+        write_json_atomic(os.path.join(args.state_dir, "state.json"), state)
+        return
+
+    if status == "recovery-failed":
+        raise RecoveryFailed(
+            "pending transaction %s recorded recovery-failed; explicit "
+            "recovery needed" % transaction_id)
+
+    if status in (None, "prepared", "backup-failed"):
+        need(raw == before,
+             "target bytes changed without a final writer record; explicit "
+             "recovery needed")
+        need(before == state["expected_current_sha256"],
+             "pending before hash no longer matches state")
+        state["pending"] = None
+        state["last_result"] = {
+            "action": "recover",
+            "status": "interrupted-noop",
+            "sync_exit": None,
+            "error": "writer did not reach a final status; target unchanged",
+        }
+        write_json_atomic(os.path.join(args.state_dir, "state.json"), state)
+        return
+
+    raise StateError("pending transaction %s has unknown writer status %r; "
+                     "explicit recovery needed" % (transaction_id, status))
+
+
+def prune_owned_transactions(state_dir, state):
+    keep = set()
+    if state.get("last_transaction"):
+        keep.add(state["last_transaction"])
+    pending = state.get("pending")
+    if isinstance(pending, dict) and pending.get("id"):
+        keep.add(pending["id"])
+    remaining = []
+    failures = []
+    for transaction_id in state["owned_transactions"]:
+        if transaction_id in keep:
+            remaining.append(transaction_id)
+            continue
+        try:
+            path = transaction_path(state_dir, transaction_id)
+            if os.path.lexists(path):
+                need(os.path.isdir(path) and not os.path.islink(path),
+                     "managed transaction path is not a directory: %s" % path)
+                shutil.rmtree(path)
+        except (OSError, StateError) as error:
+            failures.append("could not remove transaction %s: %s"
+                            % (transaction_id, error))
+            remaining.append(transaction_id)
+    state["owned_transactions"] = remaining
+    return failures
+
+
+def cmd_provision(sync, args):
+    for name in ("stock_boot", "runtime", "current_image", "current_report",
+                 "partuuid"):
+        need(getattr(args, name),
+             "--%s is required for provision" % name.replace("_", "-"))
+    state_dir = os.path.abspath(args.state_dir)
+    need(state_dir != os.path.dirname(state_dir),
+         "state dir must not be the filesystem root")
+    need(not os.path.lexists(state_dir),
+         "state dir already exists; refusing to overwrite: %s" % state_dir)
+    parent = os.path.dirname(state_dir)
+    need(os.path.isdir(parent), "state dir parent missing: %s" % parent)
+
+    writer = sync.load_writer(args.libexec)
+    selector = sync.load_selector(args.libexec)
+
+    fd, image_sha = writer_call(writer, writer.open_image, args.current_image,
+                                "current")
+    os.close(fd)
+    report = writer_call(writer, writer.read_json, args.current_report,
+                         "current")
+    writer_call(writer, writer.validate_report, report, image_sha, "current")
+
+    stock_entry = report_input(report, "stock_boot")
+    runtime_entry = report_input(report, "runtime")
+    need(stock_entry.get("length") == writer.BOOT_BYTES,
+         "report inputs.stock_boot.length is not %d" % writer.BOOT_BYTES)
+    need(type(runtime_entry.get("length")) is int
+         and runtime_entry["length"] > 0,
+         "report inputs.runtime.length is not positive")
+    for key in ("linux_image", "initrd", "dtb"):
+        report_input(report, key)
+
+    fd, stock_sha = writer_call(writer, writer.open_image, args.stock_boot,
+                                "stock")
+    os.close(fd)
+    need(stock_sha == checksum_text(stock_entry.get("sha256"),
+                                    "report inputs.stock_boot.sha256"),
+         "stock boot hash does not match the current report")
+    runtime_sha = file_sha256(args.runtime, "runtime")
+    need(os.stat(args.runtime).st_size == runtime_entry["length"],
+         "runtime length does not match the current report")
+    need(runtime_sha == checksum_text(runtime_entry.get("sha256"),
+                                      "report inputs.runtime.sha256"),
+         "runtime hash does not match the current report")
+
+    plan = native_plan(sync, args, selector)
+    validate_plan(plan)
+    fallback = plan["fallback"]
+    metadata = report.get("installed_metadata")
+    need(isinstance(metadata, dict), "current report has no installed_metadata")
+    need(metadata.get("bls") == fallback["entry"],
+         "current report bls does not match the booted fallback entry")
+    need(metadata.get("deployment_checksum")
+         == fallback["identity"]["checksum"],
+         "current report deployment_checksum does not match the booted "
+         "deployment")
+    for key in ("options", "image", "initrd", "fdtdir"):
+        need(metadata.get(key) == fallback[key],
+             "current report %s does not match the booted BLS" % key)
+
+    guid = writer_call(writer, writer.canonical_uuid, args.partuuid,
+                       "--partuuid")
+    identity = writer_call(writer, writer.probe_target, args.target, guid)
+    raw = read_raw(writer, identity)
+    need(raw == image_sha,
+         "target hash %s does not match the current image %s"
+         % (raw, image_sha))
+
+    boot = os.path.realpath(args.boot_dir)
+    assets = asset_hashes(selector, boot, fallback)
+    for key in ("linux_image", "initrd", "dtb"):
+        expected = checksum_text(report_input(report, key).get("sha256"),
+                                 "report inputs.%s.sha256" % key)
+        need(assets[key] == expected,
+             "selected %s hash does not match the current report" % key)
+
+    builder_sha, tools = tool_hashes(sync, args.libexec, args.tools_dir)
+    boot_id = read_boot_id()
+    baseline_fingerprint = fingerprint(fallback, assets, stock_sha,
+                                       runtime_sha, builder_sha, tools)
+
+    config = {
+        "schema": CONFIG_SCHEMA,
+        "profile": PROFILE,
+        "target": {"path": identity["path"], "guid": guid,
+                   "size": identity["size"]},
+        "inputs": {
+            "stock_boot": {"path": INPUT_NAMES["stock_boot"],
+                           "length": stock_entry["length"],
+                           "sha256": stock_sha},
+            "runtime": {"path": INPUT_NAMES["runtime"],
+                        "length": runtime_entry["length"],
+                        "sha256": runtime_sha},
+        },
+    }
+    state = {
+        "schema": STATE_SCHEMA,
+        "expected_current_sha256": raw,
+        "payload": {"identity": {"checksum": plan["booted"]["checksum"],
+                                 "stateroot": plan["booted"]["stateroot"],
+                                 "serial": plan["booted"]["serial"]},
+                    "fingerprint": baseline_fingerprint},
+        "last_written_boot_id": None,
+        "boot_observation": {"label": "observed", "boot_id": boot_id,
+                             "identity": dict(plan["booted"]),
+                             "observed_raw_sha256": raw},
+        "last_result": {"action": "provision", "status": "provisioned",
+                        "sync_exit": None, "error": None},
+        "owned_transactions": [],
+        "pending": None,
+        "last_transaction": None,
+    }
+    baseline = {
+        "schema": CONFIG_SCHEMA,
+        "profile": PROFILE,
+        "identity": dict(plan["booted"]),
+        "bls": fallback["entry"],
+        "options": fallback["options"],
+        "image": fallback["image"],
+        "initrd": fallback["initrd"],
+        "fdtdir": fallback["fdtdir"],
+        "assets": {key: {"sha256": assets[key]} for key in sorted(assets)},
+        "inputs": {"stock_boot": stock_sha, "runtime": runtime_sha},
+        "builder": {"name": BUILDER, "sha256": builder_sha},
+        "tools": {key: tools[key] for key in sorted(tools)},
+        "current_image_sha256": image_sha,
+        "created_boot_id": boot_id,
+    }
+
+    prefix = "." + os.path.basename(state_dir) + ".staging-"
+    staging = os.path.join(parent, prefix + uuid.uuid4().hex)
+    os.mkdir(staging, 0o700)
+    os.chmod(staging, 0o700)
+    renamed = False
+    try:
+        inputs_dir = os.path.join(staging, "inputs")
+        os.mkdir(inputs_dir, 0o700)
+        os.chmod(inputs_dir, 0o700)
+        copy_verified(args.stock_boot,
+                      os.path.join(staging, INPUT_NAMES["stock_boot"]),
+                      stock_entry["length"], stock_sha, "stock boot")
+        copy_verified(args.runtime,
+                      os.path.join(staging, INPUT_NAMES["runtime"]),
+                      runtime_entry["length"], runtime_sha, "runtime")
+        fsync_dir(inputs_dir)
+        write_json_atomic(os.path.join(staging, "config.json"), config)
+        write_json_atomic(os.path.join(staging, "baseline.json"), baseline)
+        write_json_atomic(os.path.join(staging, "state.json"), state)
+        fsync_dir(staging)
+        os.rename(staging, state_dir)
+        renamed = True
+        fsync_dir(parent)
+    finally:
+        if not renamed and os.path.isdir(staging):
+            remove_owned_staging(staging, parent, prefix)
+
+    print("armada-kshim-state: provisioned %s (identity %s/%s/%d, raw %s)"
+          % (state_dir, plan["booted"]["checksum"],
+             plan["booted"]["stateroot"], plan["booted"]["serial"], raw))
+    return 0
+
+
+def cmd_sync(sync, args):
+    writer = sync.load_writer(args.libexec)
+    selector = sync.load_selector(args.libexec)
+    config, state = load_installed(args.state_dir)
+    input_shas = verify_inputs(args.state_dir, config)
+    builder_sha, tools = tool_hashes(sync, args.libexec, args.tools_dir)
+    identity = probe_configured_target(writer, config)
+    raw = read_raw(writer, identity)
+
+    reconcile_pending(writer, args, config, state, identity, raw, input_shas,
+                      sorted(tools))
+
+    raw = read_raw(writer, identity)
+    need(raw == state["expected_current_sha256"],
+         "unknown current target hash %s; expected %s (refusing to write)"
+         % (raw, state["expected_current_sha256"]))
+
+    plan = native_plan(sync, args, selector)
+    validate_plan(plan)
+    candidate_fingerprint = plan_item_fingerprint(
+        plan, selector, os.path.realpath(args.boot_dir), input_shas,
+        builder_sha, tools)
+    if candidate_fingerprint == state["payload"]["fingerprint"]:
+        print("armada-kshim-state: unchanged; the installed payload already "
+              "matches the current native default")
+        return 0
+
+    boot_id = read_boot_id()
+    transaction_id, transaction_dir = allocate_transaction(args.state_dir)
+    # Capture the exact tools used by the child durably before it runs, so an
+    # interrupted parent can never fingerprint the prepared image with tools
+    # installed later.
+    state["pending"] = {"id": transaction_id, "plan": plan,
+                        "before_sha256": raw, "calling_boot_id": boot_id,
+                        "builder_sha256": builder_sha,
+                        "tool_sha256": {key: tools[key]
+                                        for key in sorted(tools)}}
+    state["owned_transactions"].append(transaction_id)
+    write_json_atomic(os.path.join(args.state_dir, "state.json"), state)
+
+    code = run_child_sync(args, config, transaction_dir, raw)
+    return finish_sync(writer, args, config, state, input_shas, transaction_id,
+                       raw, boot_id, code, sorted(tools))
+
+
+def cmd_record_boot(sync, args):
+    writer = sync.load_writer(args.libexec)
+    config, state = load_installed(args.state_dir)
+    input_shas = verify_inputs(args.state_dir, config)
+    builder_sha, tools = tool_hashes(sync, args.libexec, args.tools_dir)
+    identity = probe_configured_target(writer, config)
+    raw = read_raw(writer, identity)
+
+    reconcile_pending(writer, args, config, state, identity, raw, input_shas,
+                      sorted(tools))
+
+    raw = read_raw(writer, identity)
+    need(raw == state["expected_current_sha256"],
+         "current target hash %s does not match state expected %s"
+         % (raw, state["expected_current_sha256"]))
+
+    current = booted_identity(sync, native_status(sync))
+    boot_id = read_boot_id()
+    last_written = state.get("last_written_boot_id")
+    if last_written is not None and boot_id == last_written:
+        print("armada-kshim-state: awaiting reboot; boot %s is the boot that "
+              "wrote the target, not a boot observation" % boot_id)
+        return 0
+
+    payload = state["payload"]["identity"]
+    if current["checksum"] != payload["checksum"] \
+            or current["stateroot"] != payload["stateroot"] \
+            or current["serial"] != payload["serial"]:
+        sys.stderr.write(
+            "armada-kshim-state: booted deployment %s/%s/%d does not match "
+            "the installed payload %s/%s/%d; state evidence retained\n"
+            % (current["checksum"], current["stateroot"], current["serial"],
+               payload["checksum"], payload["stateroot"], payload["serial"]))
+        return 1
+
+    state["boot_observation"] = {"label": "observed", "boot_id": boot_id,
+                                 "identity": dict(current),
+                                 "observed_raw_sha256": raw}
+    state["last_result"] = {"action": "record-boot", "status": "boot-observed",
+                            "sync_exit": None, "error": None}
+    failures = prune_owned_transactions(args.state_dir, state)
+    write_json_atomic(os.path.join(args.state_dir, "state.json"), state)
+    for failure in failures:
+        sys.stderr.write("armada-kshim-state: %s\n" % failure)
+    print("armada-kshim-state: observed boot %s for %s/%s/%d"
+          % (boot_id, current["checksum"], current["stateroot"],
+             current["serial"]))
+    return 0
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Persistent kShimC provisioning/update state around the "
+                    "tested armada-kshim-sync tool. A raw write is not boot "
+                    "acceptance.")
+    parser.add_argument("action", choices=("provision", "sync", "record-boot"))
+    parser.add_argument("--state-dir", default=STATE_ROOT)
+    parser.add_argument("--boot-dir", default="/boot")
+    parser.add_argument("--sysroot", default="/sysroot")
+    parser.add_argument("--libexec", default="/usr/libexec/armada")
+    parser.add_argument("--args-file", default="/usr/lib/armada/bootimg-args")
+    parser.add_argument("--tools-dir",
+                        default="/usr/libexec/armada/kshim-tools")
+    parser.add_argument("--stock-boot")
+    parser.add_argument("--runtime")
+    parser.add_argument("--current-image")
+    parser.add_argument("--current-report")
+    parser.add_argument("--partuuid")
+    parser.add_argument("--target", default="/dev/disk/by-partlabel/boot_a")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    args.state_dir = os.path.abspath(args.state_dir)
+    lock_fd = None
+    try:
+        require_root()
+        sync = load_sync(args.libexec)
+        check_profile(sync)
+        lock_fd = acquire_lock()
+        if args.action == "provision":
+            return cmd_provision(sync, args)
+        if args.action == "sync":
+            return cmd_sync(sync, args)
+        return cmd_record_boot(sync, args)
+    except RecoveryFailed as error:
+        sys.stderr.write("armada-kshim-state: %s\n" % error)
+        return 3
+    except StateError as error:
+        sys.stderr.write("armada-kshim-state: %s\n" % error)
+        return 1
+    except OSError as error:
+        sys.stderr.write("armada-kshim-state: %s\n" % error)
+        return 1
+    except KeyboardInterrupt:
+        sys.stderr.write("armada-kshim-state: interrupted\n")
+        return 1
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

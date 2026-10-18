@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: MIT */
+#include <config.h>
 #include <kshim_console.h>
+#if CONFIG_KSHIM_DEBUG_CONSOLE
 #include <dt.h>
 #include <pl011_uart.h>
 #include <Library/cr_debug_uart_poll.h>
@@ -39,3 +41,11 @@ int kshim_console_quiesce(void)
     if (!status) initialized = false;
     return status;
 }
+#else
+int kshim_console_init(const void *fdt) { (void)fdt; return -1; }
+void kshim_console_write(const char *buffer, uint32_t length) { (void)buffer; (void)length; }
+int kshim_console_try_read(char *character) { (void)character; return 0; }
+uint64_t kshim_console_base(void) { return 0; }
+size_t kshim_console_size(void) { return 0; }
+int kshim_console_quiesce(void) { return 0; }
+#endif

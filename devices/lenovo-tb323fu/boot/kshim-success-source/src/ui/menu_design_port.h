@@ -230,6 +230,17 @@ static int KshimDesignRelayout(void) {
     if(!mContext || !mFramebuffer || !mPanel || !mTitle || !mStatus || !mList || !mBootButton) return -1;
     if(kshim_design_layout(&mMenuDesign,mContext->LogicalWidth,mContext->LogicalHeight,
         (uint32_t)mContext->EntryCount,KshimDesignScaleOverride(),&mDesignGeometry)!=0) return -2;
+    /* STAR_CHART device-info state: drop the illustration/notice and stretch the
+     * detail panel under the status title, leaving x/width and the boot button
+     * exactly as laid out. */
+    if(mMenuDesign.kind==KSHIM_DESIGN_STAR_CHART && !mDesignGeometry.compact && mInfoState) {
+        mDesignGeometry.illustration=(kshim_design_rect_t){0};
+        mDesignGeometry.notice=(kshim_design_rect_t){0};
+        mDesignGeometry.status.y=mDesignGeometry.list.y;
+        mDesignGeometry.detail.y=mDesignGeometry.status.y+mDesignGeometry.status.h+KshimDesignPx(14);
+        mDesignGeometry.detail.h=kshim_design_max(0,
+            mDesignGeometry.boot.y-KshimDesignPx(12)-mDesignGeometry.detail.y);
+    }
     KshimDesignPlace(mPanel,mDesignGeometry.panel);
     lv_obj_set_style_radius(mPanel,mDesignGeometry.compact?0:KshimDesignPx(mMenuDesign.panel_radius),0);
     lv_obj_set_style_clip_corner(mPanel,true,0);
@@ -272,7 +283,7 @@ static int KshimDesignRelayout(void) {
         lv_obj_set_style_text_font(mStatus,mRowFont,0);
         lv_obj_set_style_text_color(mStatus,lv_color_hex(mMenuStyle.FocusBorder),0);
         if(mDetail) {
-            lv_obj_set_style_text_font(mDetail,mStatusFont,0);
+            lv_obj_set_style_text_font(mDetail,mInfoState?mInfoFont:mStatusFont,0);
             lv_obj_set_style_text_color(mDetail,lv_color_hex(mMenuStyle.Text),0);
         }
         if(mCredit) lv_obj_set_style_text_font(mCredit,mStatusFont,0);

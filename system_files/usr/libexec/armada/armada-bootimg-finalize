@@ -1,7 +1,34 @@
 #!/bin/bash
-# Regenerate /KERNEL after OSTree finalizes a staged deployment, rolling back
-# the BLS default on failure while preserving the updater's failure status.
+# Regenerate the next-boot image after OSTree finalizes a staged deployment.
+# ABL devices regenerate the ESP /KERNEL and roll the BLS default back on
+# failure while preserving the updater's failure status. kShimC devices hand
+# the same finalized native plan to the tested state tool, which already
+# prepared a candidate/fallback pair: its exact 0/1/2/3 is propagated and
+# nothing is rolled back or reordered here.
 set -uo pipefail
+
+BOOT_METHOD_FILE=/etc/armada/boot-method
+
+boot_method=abl
+if [ -e "${BOOT_METHOD_FILE}" ] || [ -L "${BOOT_METHOD_FILE}" ]; then
+    boot_method=$(cat "${BOOT_METHOD_FILE}") || {
+        echo "armada-bootimg-finalize: cannot read ${BOOT_METHOD_FILE}" >&2
+        exit 1
+    }
+fi
+case "${boot_method}" in
+    abl)
+        ;;
+    kshimc)
+        # The update dispatches to kShimC state sync itself; exec keeps its
+        # exact status and skips the bootc rollback below.
+        exec /usr/libexec/armada/armada-bootimg-update
+        ;;
+    *)
+        echo "armada-bootimg-finalize: unknown boot method '${boot_method}' in ${BOOT_METHOD_FILE}" >&2
+        exit 1
+        ;;
+esac
 
 if /usr/libexec/armada/armada-bootimg-update; then
     exit 0

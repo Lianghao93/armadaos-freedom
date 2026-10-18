@@ -1,0 +1,343 @@
+power: sequencing: qcom-wcn: add WCN7861 PMU support
+
+The Lenovo Elden (TB322FC / Legion Y700 Gen4) carries a WCN7861 Wi-Fi/BT
+part whose PMU has no provider in this tree.  Without a qcom,wcn7861-pmu
+compatible the power-sequencing driver never binds the device, so Wi-Fi
+power control is stalled and the msm PCIe endpoint cannot complete
+enumeration: the endpoint waits on its supply (ldo9) indefinitely.
+
+This adds a WCN7861 platform-data entry that votes seven external supplies
+(voltage range and load) before WLAN_EN, and runs a 7861-only AOSS/PDC
+initialisation ahead of any supply or enable vote.  The existing WCN7860
+path is unchanged.
+
+Derived from h0cheung/tb322fc-linux-kernel commit
+6f97250ead155fc3b980856323e99a4623dae73d; reference file:
+https://github.com/h0cheung/tb322fc-linux-kernel/blob/6f97250ead155fc3b980856323e99a4623dae73d/drivers/power/sequencing/pwrseq-qcom-wcn.c
+
+This is an adaptation for the local Armada tree.  It is not a claim of
+hardware success.  The reference's Bluetooth reset timing and its
+OL-CPR / QMI API are intentionally omitted as out of scope.
+
+diff --git a/drivers/power/sequencing/pwrseq-qcom-wcn.c b/drivers/power/sequencing/pwrseq-qcom-wcn.c
+index ebb1c26..e754dc7 100644
+--- a/drivers/power/sequencing/pwrseq-qcom-wcn.c
++++ b/drivers/power/sequencing/pwrseq-qcom-wcn.c
+@@ -14,11 +14,19 @@
+ #include <linux/property.h>
+ #include <linux/regulator/consumer.h>
+ #include <linux/pwrseq/provider.h>
++#include <linux/soc/qcom/qcom_aoss.h>
+ #include <linux/string.h>
+ #include <linux/types.h>
+ 
++struct pwrseq_qcom_wcn_vreg_cfg {
++	unsigned int min_uV;
++	unsigned int max_uV;
++	unsigned int load_uA;
++};
++
+ struct pwrseq_qcom_wcn_pdata {
+ 	const char *const *vregs;
++	const struct pwrseq_qcom_wcn_vreg_cfg *vreg_cfgs;
+ 	size_t num_vregs;
+ 	unsigned int pwup_delay_ms;
+ 	unsigned int gpio_enable_delay_ms;
+@@ -29,6 +37,7 @@ struct pwrseq_qcom_wcn_pdata {
+ 
+ struct pwrseq_qcom_wcn_ctx {
+ 	struct pwrseq_device *pwrseq;
++	struct device *dev;
+ 	struct device_node *of_node;
+ 	const struct pwrseq_qcom_wcn_pdata *pdata;
+ 	struct regulator_bulk_data *regs;
+@@ -37,9 +46,72 @@ struct pwrseq_qcom_wcn_ctx {
+ 	struct gpio_desc *wlan_gpio;
+ 	struct gpio_desc *xo_clk_gpio;
+ 	struct clk *clk;
++	struct qmp *qmp;
+ 	unsigned long last_gpio_enable_jf;
+ };
+ 
++static int pwrseq_qcom_wcn_qmp_send(struct pwrseq_qcom_wcn_ctx *ctx,
++				    const char *msg)
++{
++	int ret;
++
++	dev_dbg(ctx->dev, "AOSS QMP tx: %s\n", msg);
++	ret = qmp_send(ctx->qmp, "%s", msg);
++	if (ret)
++		dev_err(ctx->dev, "AOSS QMP result=%d: %s\n", ret, msg);
++	else
++		dev_dbg(ctx->dev, "AOSS QMP result=0: %s\n", msg);
++
++	return ret;
++}
++
++static void pwrseq_qcom_wcn_qmp_put(void *data)
++{
++	struct pwrseq_qcom_wcn_ctx *ctx = data;
++
++	qmp_put(ctx->qmp);
++}
++
++static int pwrseq_qcom_wcn_pdc_init(struct pwrseq_qcom_wcn_ctx *ctx)
++{
++	struct device_node *np = ctx->of_node;
++	const char *msg;
++	int count;
++	int i, ret;
++
++	if (!of_property_present(np, "qcom,pdc-init-table"))
++		return 0;
++
++	ctx->qmp = qmp_get(ctx->dev);
++	if (IS_ERR(ctx->qmp))
++		return dev_err_probe(ctx->dev, PTR_ERR(ctx->qmp),
++				     "Failed to acquire the AOSS QMP channel\n");
++
++	ret = devm_add_action_or_reset(ctx->dev, pwrseq_qcom_wcn_qmp_put, ctx);
++	if (ret)
++		return ret;
++
++	count = of_property_count_strings(np, "qcom,pdc-init-table");
++	if (count < 0)
++		return dev_err_probe(ctx->dev, count,
++				     "Invalid WLAN PDC initialization table\n");
++
++	for (i = 0; i < count; i++) {
++		ret = of_property_read_string_index(np, "qcom,pdc-init-table",
++						    i, &msg);
++		if (ret)
++			return ret;
++
++		ret = pwrseq_qcom_wcn_qmp_send(ctx, msg);
++		if (ret)
++			return ret;
++	}
++
++	dev_dbg(ctx->dev, "Configured WLAN PDC with %d AOSS messages\n", count);
++
++	return 0;
++}
++
+ static void pwrseq_qcom_wcn_ensure_gpio_delay(struct pwrseq_qcom_wcn_ctx *ctx)
+ {
+ 	unsigned long diff_jiffies;
+@@ -75,18 +147,123 @@ static const struct pwrseq_unit_data pwrseq_qcom_wcn_vddio_unit_data = {
+ 	.disable = pwrseq_qcom_wcn_vddio_disable,
+ };
+ 
++static int pwrseq_qcom_wcn_vregs_unvote(struct pwrseq_qcom_wcn_ctx *ctx,
++					size_t count)
++{
++	const struct pwrseq_qcom_wcn_vreg_cfg *cfg;
++	int first_err = 0;
++	int ret;
++
++	if (!ctx->pdata->vreg_cfgs)
++		return 0;
++
++	while (count--) {
++		cfg = &ctx->pdata->vreg_cfgs[count];
++
++		if (cfg->load_uA) {
++			ret = regulator_set_load(ctx->regs[count].consumer, 0);
++			if (ret < 0 && !first_err)
++				first_err = ret;
++		}
++
++		if (cfg->min_uV) {
++			ret = regulator_set_voltage(ctx->regs[count].consumer, 0,
++						    cfg->max_uV);
++			if (ret && !first_err)
++				first_err = ret;
++		}
++	}
++
++	return first_err;
++}
++
++static int pwrseq_qcom_wcn_vregs_configure(struct pwrseq_qcom_wcn_ctx *ctx)
++{
++	const struct pwrseq_qcom_wcn_vreg_cfg *cfg;
++	int voltage;
++	int ret;
++	int i;
++
++	if (!ctx->pdata->vreg_cfgs)
++		return 0;
++
++	for (i = 0; i < ctx->pdata->num_vregs; i++) {
++		cfg = &ctx->pdata->vreg_cfgs[i];
++
++		if (cfg->min_uV) {
++			ret = regulator_set_voltage(ctx->regs[i].consumer,
++						    cfg->min_uV, cfg->max_uV);
++			if (ret) {
++				dev_err(ctx->dev,
++					"Failed to set %s voltage to %u-%u uV: %d\n",
++					ctx->regs[i].supply, cfg->min_uV,
++					cfg->max_uV, ret);
++				goto err_unvote;
++			}
++		}
++
++		if (cfg->load_uA) {
++			ret = regulator_set_load(ctx->regs[i].consumer,
++						 cfg->load_uA);
++			if (ret < 0) {
++				dev_err(ctx->dev,
++					"Failed to set %s load to %u uA: %d\n",
++					ctx->regs[i].supply, cfg->load_uA, ret);
++				goto err_unvote;
++			}
++		}
++
++		voltage = regulator_get_voltage(ctx->regs[i].consumer);
++		dev_dbg(ctx->dev,
++			"Voted %s voltage=%d uV range=%u-%u uV load=%u uA\n",
++			 ctx->regs[i].supply, voltage, cfg->min_uV,
++			 cfg->max_uV, cfg->load_uA);
++	}
++
++	return 0;
++
++err_unvote:
++	pwrseq_qcom_wcn_vregs_unvote(ctx, i + 1);
++	return ret;
++}
++
+ static int pwrseq_qcom_wcn_vregs_enable(struct pwrseq_device *pwrseq)
+ {
+ 	struct pwrseq_qcom_wcn_ctx *ctx = pwrseq_device_get_drvdata(pwrseq);
++	int ret;
++	int i;
++
++	ret = pwrseq_qcom_wcn_vregs_configure(ctx);
++	if (ret)
++		return ret;
++
++	ret = regulator_bulk_enable(ctx->pdata->num_vregs, ctx->regs);
++	if (ret) {
++		pwrseq_qcom_wcn_vregs_unvote(ctx, ctx->pdata->num_vregs);
++		return ret;
++	}
++
++	if (ctx->pdata->vreg_cfgs) {
++		for (i = 0; i < ctx->pdata->num_vregs; i++)
++			dev_dbg(ctx->dev, "Enabled %s at %d uV\n",
++				ctx->regs[i].supply,
++				 regulator_get_voltage(ctx->regs[i].consumer));
++	}
+ 
+-	return regulator_bulk_enable(ctx->pdata->num_vregs, ctx->regs);
++	return 0;
+ }
+ 
+ static int pwrseq_qcom_wcn_vregs_disable(struct pwrseq_device *pwrseq)
+ {
+ 	struct pwrseq_qcom_wcn_ctx *ctx = pwrseq_device_get_drvdata(pwrseq);
++	int ret;
++	int unvote_ret;
+ 
+-	return regulator_bulk_disable(ctx->pdata->num_vregs, ctx->regs);
++	ret = regulator_bulk_disable(ctx->pdata->num_vregs, ctx->regs);
++	unvote_ret = pwrseq_qcom_wcn_vregs_unvote(ctx,
++						  ctx->pdata->num_vregs);
++
++	return ret ? ret : unvote_ret;
+ }
+ 
+ static const struct pwrseq_unit_data pwrseq_qcom_wcn_vregs_unit_data = {
+@@ -417,6 +594,41 @@ static const struct pwrseq_qcom_wcn_pdata pwrseq_wcn7860_of_data = {
+ 	.targets = pwrseq_qcom_wcn_targets,
+ };
+ 
++/*
++ * Lenovo's downstream Peach CNSS node votes these exact external PMIC
++ * ranges before WLAN_EN.  Merely enabling the variable RPMh regulators leaves
++ * S4D/S5F/S7I at their lowest constraints (500/500/1224 mV), which is below
++ * the WCN7861 AON, digital and RFA requirements.  These votes are independent
++ * of the firmware's stock-compatible, non-fatal TME result.
++ */
++static const struct pwrseq_qcom_wcn_vreg_cfg pwrseq_wcn7861_vreg_cfgs[] = {
++	/* vdd (same S5F rail as vdddig) */
++	{ 876000, 1000000, 0 },
++	/* vddio */
++	{ 1800000, 1800000, 30000 },
++	/* vddio1p2 */
++	{ 1200000, 1200000, 30000 },
++	/* vddaon (S4D) */
++	{ 876000, 1036000, 0 },
++	/* vdddig (S5F) */
++	{ 876000, 1000000, 0 },
++	/* vddrfa1p2 (S7I) */
++	{ 1312000, 1340000, 0 },
++	/* vddrfa1p8 (S3G) */
++	{ 1860000, 2000000, 0 },
++};
++
++static_assert(ARRAY_SIZE(pwrseq_wcn7861_vreg_cfgs) ==
++	      ARRAY_SIZE(pwrseq_wcn7850_vregs));
++
++static const struct pwrseq_qcom_wcn_pdata pwrseq_wcn7861_of_data = {
++	.vregs = pwrseq_wcn7850_vregs,
++	.vreg_cfgs = pwrseq_wcn7861_vreg_cfgs,
++	.num_vregs = ARRAY_SIZE(pwrseq_wcn7850_vregs),
++	.pwup_delay_ms = 50,
++	.targets = pwrseq_qcom_wcn_targets,
++};
++
+ static int pwrseq_qcom_wcn_match_regulator(struct pwrseq_device *pwrseq,
+ 					   struct device *dev,
+ 					   const char *name)
+@@ -481,6 +693,7 @@ static int pwrseq_qcom_wcn_probe(struct platform_device *pdev)
+ 	if (!ctx)
+ 		return -ENOMEM;
+ 
++	ctx->dev = dev;
+ 	ctx->of_node = dev->of_node;
+ 
+ 	ctx->pdata = device_get_match_data(dev);
+@@ -488,6 +701,16 @@ static int pwrseq_qcom_wcn_probe(struct platform_device *pdev)
+ 		return dev_err_probe(dev, -ENODEV,
+ 				     "Failed to obtain platform data\n");
+ 
++	/*
++	 * Newer WCN devices require the host AOSS to configure their PDC
++	 * resources before any external supply or WLAN_EN vote is made.
++	 */
++	if (ctx->pdata == &pwrseq_wcn7861_of_data) {
++		ret = pwrseq_qcom_wcn_pdc_init(ctx);
++		if (ret)
++			return ret;
++	}
++
+ 	ctx->regs = devm_kcalloc(dev, ctx->pdata->num_vregs,
+ 				 sizeof(*ctx->regs), GFP_KERNEL);
+ 	if (!ctx->regs)
+@@ -596,6 +819,10 @@ static const struct of_device_id pwrseq_qcom_wcn_of_match[] = {
+ 		.compatible = "qcom,wcn7860-pmu",
+ 		.data = &pwrseq_wcn7860_of_data,
+ 	},
++	{
++		.compatible = "qcom,wcn7861-pmu",
++		.data = &pwrseq_wcn7861_of_data,
++	},
+ 	{
+ 		.compatible = "qcom,wcn6750-pmu",
+ 		.data = &pwrseq_wcn6750_of_data,
+
+diff --git a/drivers/power/sequencing/Kconfig b/drivers/power/sequencing/Kconfig
+index 1c5f582..a8c583c 100644
+--- a/drivers/power/sequencing/Kconfig
++++ b/drivers/power/sequencing/Kconfig
+@@ -17,6 +17,7 @@ config POWER_SEQUENCING_QCOM_WCN
+ 	tristate "Qualcomm WCN family PMU driver"
+ 	default m if ARCH_QCOM
+ 	depends on OF || COMPILE_TEST
++	depends on QCOM_AOSS_QMP || QCOM_AOSS_QMP=n
+ 	help
+ 	  Say Y here to enable the power sequencing driver for Qualcomm
+ 	  WCN Bluetooth/WLAN chipsets.

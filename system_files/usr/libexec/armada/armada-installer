@@ -16,11 +16,13 @@ import select
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 import tomllib
+import traceback
 
 MIB = 1024**2
 GIB = 1024**3
@@ -31,6 +33,11 @@ LINUX_TYPE = "0fc63daf-8483-4772-8e79-3d69d8477de4"
 BTRFS_OPTS = "noatime,compress=zstd:1,discard=async"
 SELF = "/usr/libexec/armada/armada-installer"
 BOOTIMG = "/usr/libexec/armada/armada-bootimg-update"
+GUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+SEED_DIRECTORY = "/.armada-install-seed"
+PREPARED_RECORD = ".armada-install-prepared.json"
+PREPARE_TOOLS = ("sfdisk", "lsblk", "blkid", "mkfs.ext4", "mkfs.btrfs", "btrfs", "mount", "umount")
+DEPLOY_TOOLS = ("sfdisk", "lsblk", "blkid", "btrfs", "mount", "umount", "ostree", "cp")
 RECOVERY = ("To retry from SD, select SD as the boot source in ABL and re-run the installer. "
             "To abandon the internal installation, select UNINSTALL CFW in ABL.")
 
@@ -198,6 +205,48 @@ def table_fingerprint(table):
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
+def verify_kernel_partitions(device, sector_size, partitions):
+    for p in partitions:
+        node = part_node(device, p.number)
+        path = Path("/sys/class/block") / Path(device).name / Path(node).name
+        try:
+            ident = os.stat(node).st_rdev
+            device_id = (path / "dev").read_text().strip()
+            # Sysfs uses 512-byte sectors even on 4Kn disks.
+            start = int((path / "start").read_text()) * 512
+            size = int((path / "size").read_text()) * 512
+        except (OSError, ValueError) as error:
+            raise Error(f"Could not verify the kernel partition mapping for {node}: {error}") from error
+        if (device_id != f"{os.major(ident)}:{os.minor(ident)}"
+                or start != p.start * sector_size
+                or size != (p.end - p.start) * sector_size):
+            raise Error(f"Kernel partition mapping for {node} does not match the installation plan")
+
+
+def require_idle_partitions(device, partitions):
+    mounted = set()
+    for path in ("/proc/1/mountinfo", "/proc/self/mountinfo"):
+        for line in Path(path).read_text().splitlines():
+            fields = line.split()
+            mounted.add(fields[2])
+            source = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), fields[fields.index("-") + 2])
+            if not source.startswith("/"):
+                continue
+            try:
+                source_stat = os.stat(source)
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            if stat.S_ISBLK(source_stat.st_mode):
+                mounted.add(f"{os.major(source_stat.st_rdev)}:{os.minor(source_stat.st_rdev)}")
+    swaps = {os.stat(line.split()[0]).st_rdev for line in Path("/proc/swaps").read_text().splitlines()[1:]}
+    for p in partitions:
+        node = part_node(device, p.number)
+        ident = os.stat(node).st_rdev
+        key = f"{os.major(ident)}:{os.minor(ident)}"
+        if key in mounted or ident in swaps or any((Path("/sys/dev/block") / key / "holders").iterdir()):
+            raise Error(f"{node} is in use; unmount it and disable its swap or device mappings before continuing")
+
+
 @dataclass(frozen=True)
 class Plan:
     table: Table
@@ -285,21 +334,61 @@ class Plan:
 
 
     def verify_kernel(self):
-        for p in (replace(self.userdata, end=self.userdata_end), *self.create):
-            node = part_node(self.table.device, p.number)
-            path = Path("/sys/class/block") / Path(self.table.device).name / Path(node).name
-            try:
-                ident = os.stat(node).st_rdev
-                device_id = (path / "dev").read_text().strip()
-                # Sysfs uses 512-byte sectors even on 4Kn disks.
-                start = int((path / "start").read_text()) * 512
-                size = int((path / "size").read_text()) * 512
-            except (OSError, ValueError) as error:
-                raise Error(f"Could not verify the kernel partition mapping for {node}: {error}") from error
-            if (device_id != f"{os.major(ident)}:{os.minor(ident)}"
-                    or start != p.start * self.table.sector_size
-                    or size != (p.end - p.start) * self.table.sector_size):
-                raise Error(f"Kernel partition mapping for {node} does not match the installation plan")
+        verify_kernel_partitions(self.table.device, self.table.sector_size,
+                                 (replace(self.userdata, end=self.userdata_end), *self.create))
+
+
+@dataclass(frozen=True)
+class ExistingTarget:
+    table: Table
+    userdata: Partition
+    boot: Partition
+    root: Partition
+
+    @classmethod
+    def make(cls, table, boot_partuuid, root_partuuid):
+        def normalize(value):
+            if not isinstance(value, str) or not GUID.fullmatch(value):
+                raise Error("Valid boot and root partition UUIDs are required")
+            return value.lower()
+
+        boot_uuid, root_uuid = normalize(boot_partuuid), normalize(root_partuuid)
+        if boot_uuid == root_uuid:
+            raise Error("The boot and root partition UUIDs must be distinct")
+        labelled = {}
+        for label in ("userdata", "ARMADA_BOOT", "ARMADA_ROOT"):
+            matches = [p for p in table.parts if p.name == label]
+            if len(matches) != 1:
+                raise Error(f"Expected exactly one {label} partition")
+            labelled[label] = matches[0]
+        userdata, boot, root = labelled["userdata"], labelled["ARMADA_BOOT"], labelled["ARMADA_ROOT"]
+        for value, part, label in ((boot_uuid, boot, "ARMADA_BOOT"), (root_uuid, root, "ARMADA_ROOT")):
+            matches = [p for p in table.parts if p.uuid.lower() == value]
+            if len(matches) != 1 or matches[0] != part:
+                raise Error(f"The selected partition UUID does not match the {label} partition")
+        sector = table.sector_size
+        if (userdata.end - userdata.start) * sector != 128 * GIB:
+            raise Error("The Android userdata partition must be exactly 128 GiB")
+        if (boot.end - boot.start) * sector != BOOT_SIZE:
+            raise Error("The ARMADA_BOOT partition must be exactly 1 GiB")
+        if boot.type != LINUX_TYPE or root.type != LINUX_TYPE:
+            raise Error("The ARMADA_BOOT and ARMADA_ROOT partitions must be Linux type")
+        if (root.end - root.start) * sector < ROOT_MIN:
+            raise Error("The ARMADA_ROOT partition is too small")
+        if boot.start != align_up(userdata.end * sector) // sector or root.start != boot.end:
+            raise Error("The ARMADA_BOOT partition must start at the 1 MiB-aligned offset after userdata, "
+                        "and ARMADA_ROOT must immediately follow ARMADA_BOOT")
+        tail = {p.number for p in table.parts if p.start >= userdata.end}
+        if tail != {boot.number, root.number}:
+            raise Error("Unexpected partitions follow the Android userdata partition")
+        return cls(table, userdata, boot, root)
+
+    def verify_kernel(self):
+        verify_kernel_partitions(self.table.device, self.table.sector_size,
+                                 (self.userdata, self.boot, self.root))
+
+    def require_idle(self):
+        require_idle_partitions(self.table.device, (self.boot, self.root))
 
 
 def discover_device(override=None):
@@ -332,15 +421,7 @@ def require_idle(plan):
     parts = list(plan.remove)
     if plan.operation != "replace":
         parts.append(plan.userdata)
-    mounted = {line.split()[2] for path in ("/proc/1/mountinfo", "/proc/self/mountinfo")
-               for line in Path(path).read_text().splitlines()}
-    swaps = {os.stat(line.split()[0]).st_rdev for line in Path("/proc/swaps").read_text().splitlines()[1:]}
-    for p in parts:
-        node = part_node(plan.table.device, p.number)
-        ident = os.stat(node).st_rdev
-        key = f"{os.major(ident)}:{os.minor(ident)}"
-        if key in mounted or ident in swaps or any((Path("/sys/dev/block") / key / "holders").iterdir()):
-            raise Error(f"{node} is in use; unmount it and disable its swap or device mappings before continuing")
+    require_idle_partitions(plan.table.device, parts)
 
 
 @dataclass
@@ -353,7 +434,6 @@ class SourceImage:
     @classmethod
     def read(cls, repo, deployment):
         _, OSTree = ostree_api()
-        from gi.repository import GLib
         if deployment is None or deployment.get_unlocked() != OSTree.DeploymentUnlockedState.NONE:
             raise Error("A locked, booted OSTree deployment is required")
         origin = deployment.get_origin()
@@ -368,7 +448,26 @@ class SourceImage:
         registry_ref = re.sub(r"^(?:ostree-image-signed:docker://|ostree-unverified-registry:(?:docker://)?|ostree-unverified-image:docker://)", "", ref)
         if re.fullmatch(r"ghcr\.io/(?:armada-os|virtudude)/armada(?::[A-Za-z0-9_.-]+)?(?:@sha256:[0-9a-f]{64})?", registry_ref):
             origin.set_string("origin", "container-image-reference", "ostree-image-signed:docker://" + registry_ref)
-        checksum = deployment.get_csum()
+        return cls._validated(repo, deployment.get_csum(), origin)
+
+    @classmethod
+    def from_seed(cls, repo, checksum, origin_ref, expected_manifest_digest):
+        """Validate an offline OCI seed's identity; publication and signature status are not checked."""
+        from gi.repository import GLib
+        if not isinstance(checksum, str) or not re.fullmatch(r"[0-9a-f]{64}", checksum):
+            raise Error(f"Invalid seed commit checksum: {checksum!r}")
+        if not isinstance(expected_manifest_digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_manifest_digest):
+            raise Error(f"Invalid expected seed manifest digest: {expected_manifest_digest!r}")
+        if not isinstance(origin_ref, str) or not re.fullmatch(
+                r"ostree-image-signed:docker://ghcr\.io/mydanyi/armadaos-freedom:(?:stable|beta|testing)(?:@sha256:[0-9a-f]{64})?", origin_ref):
+            raise Error(f"Unsupported seed origin: {origin_ref!r}")
+        origin = GLib.KeyFile.new()
+        origin.set_string("origin", "container-image-reference", origin_ref)
+        return cls._validated(repo, checksum, origin, expected_manifest_digest)
+
+    @classmethod
+    def _validated(cls, repo, checksum, origin, expected_manifest_digest=None):
+        from gi.repository import GLib
         try:
             metadata = cls.metadata(repo, checksum)
             manifest = json.loads(metadata["ostree.manifest"])
@@ -376,6 +475,8 @@ class SourceImage:
             if (not isinstance(config, dict) or not re.fullmatch(r"sha256:[0-9a-f]{64}", metadata["ostree.manifest-digest"])
                     or manifest["schemaVersion"] != 2 or not isinstance(manifest["layers"], list) or not manifest["layers"]):
                 raise ValueError("invalid image metadata")
+            if expected_manifest_digest is not None and metadata["ostree.manifest-digest"] != expected_manifest_digest:
+                raise ValueError("manifest digest does not match the expected seed")
             refs = {checksum: checksum}
             for layer in manifest["layers"]:
                 digest = layer["digest"]
@@ -431,12 +532,53 @@ def locked_source():
         sysroot.unlock()
 
 
-def base_kargs(directory=Path("/usr/lib/bootc/kargs.d")):
+@contextmanager
+def seed_source(path, checksum, origin_ref, expected_manifest_digest):
+    """Open a private native repository for an offline seed and release it on exit.
+
+    The native Repo has no close API; its file descriptors are only released when
+    the Repo is finalized, which needs every Python reference to be gone. This
+    context owns the Repo and invalidates the yielded SourceImage so the Repo is
+    released even when the caller keeps the image beyond the context.
+    """
+    Gio, OSTree = ostree_api()
+    repo = None
+    source = None
+    try:
+        repo = OSTree.Repo.new(Gio.File.new_for_path(str(path)))
+        repo.open(None)
+        source = SourceImage.from_seed(repo, checksum, origin_ref, expected_manifest_digest)
+        yield source
+    except BaseException as error:
+        # Unwind frame locals held by retained tracebacks so the owned Repo can finalize;
+        # clear_frames preserves the exception kind, message and stack locations.
+        pending, seen = [error], set()
+        while pending:
+            current = pending.pop()
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            if current.__cause__ is not None:
+                pending.append(current.__cause__)
+            if current.__context__ is not None:
+                pending.append(current.__context__)
+            if current.__traceback__ is not None:
+                traceback.clear_frames(current.__traceback__)
+        raise
+    finally:
+        if source is not None:
+            source.repo = None
+        source = None
+        repo = None
+
+
+def base_kargs(directory=Path("/usr/lib/bootc/kargs.d"), architecture=None):
+    machine = platform.machine() if architecture is None else architecture
     args = []
     for path in sorted(directory.glob("*.toml")):
         with path.open("rb") as stream:
             data = tomllib.load(stream)
-        if "match-architectures" in data and platform.machine() not in data["match-architectures"]:
+        if "match-architectures" in data and machine not in data["match-architectures"]:
             continue
         values = data.get("kargs", [])
         if not isinstance(values, list) or any(not isinstance(v, str) or any(c.isspace() for c in v) for v in values):
@@ -445,7 +587,26 @@ def base_kargs(directory=Path("/usr/lib/bootc/kargs.d")):
     return args
 
 
-def configure_deployment(target, source, uuids, kargs):
+def seed_kargs(source, directory):
+    architectures = {"arm64": "aarch64", "amd64": "x86_64"}
+    try:
+        metadata = source.metadata(source.repo, source.checksum)
+        architecture = json.loads(metadata["ostree.container.image-config"])["architecture"]
+    except (KeyError, TypeError, ValueError) as error:
+        raise Error(f"The selected deployment has no usable container architecture: {error}") from error
+    if not isinstance(architecture, str) or architecture not in architectures:
+        raise Error(f"Unsupported container architecture: {architecture!r}")
+    run("ostree", "checkout", f"--repo={repo_path(source.repo)}",
+        "--subpath=/usr/lib/bootc/kargs.d", source.checksum, directory)
+    try:
+        return base_kargs(directory, architectures[architecture])
+    except (OSError, TypeError, ValueError) as error:
+        raise Error(f"The selected deployment has unusable source kernel arguments: {error}") from error
+
+
+def configure_deployment(target, source, uuids, kargs, boot_method="abl"):
+    if boot_method not in ("abl", "kshimc"):
+        raise Error(f"Unsupported boot method: {boot_method}")
     Gio, OSTree = ostree_api()
     sysroot = OSTree.Sysroot.new(Gio.File.new_for_path(str(target)))
     sysroot.load(None)
@@ -456,12 +617,8 @@ def configure_deployment(target, source, uuids, kargs):
     if deployment.get_origin().get_string("origin", "container-image-reference") != source.origin.get_string("origin", "container-image-reference"):
         raise Error("Target update origin does not match the selected image")
     root = target / "ostree/deploy" / deployment.get_osname() / "deploy" / f"{source.checksum}.{deployment.get_deployserial()}"
-    (root / "etc/fstab").write_text(
-        f"UUID={uuids['boot']} /boot auto ro 0 0\n"
-        f"UUID={uuids['esp']} /boot/efi vfat umask=0077,shortname=winnt 0 2\n"
-        f"UUID={uuids['root']} /var btrfs {BTRFS_OPTS},subvol=var 0 0\n"
-        f"UUID={uuids['root']} /var/home btrfs {BTRFS_OPTS},subvol=home 0 0\n")
-    entries = list((target / "boot/loader/entries").glob("*.conf"))
+    boot_root = target / "boot"
+    entries = list((boot_root / "loader/entries").glob("*.conf"))
     if len(entries) != 1:
         raise Error("Expected one boot entry for the new installation")
     entry = entries[0]
@@ -474,8 +631,61 @@ def configure_deployment(target, source, uuids, kargs):
     linux, initrd = (fields[key] if fields[key].startswith("/boot/") else "/boot" + fields[key] for key in ("linux", "initrd"))
     options = [f"root=UUID={uuids['root']}", "rw", f"boot=UUID={uuids['boot']}", *kargs,
                f"rootflags=subvol=root,{BTRFS_OPTS}", pointers[0]]
-    entry.write_text(f"title Armada\nversion {fields.get('version', '1')}\noptions {' '.join(options)}\n"
-                     f"linux {linux}\ninitrd {initrd}\nfdtdir {Path(linux).parent}/dtb\n")
+    entry_text = (f"title Armada\nversion {fields.get('version', '1')}\noptions {' '.join(options)}\n"
+                  f"linux {linux}\ninitrd {initrd}\nfdtdir {Path(linux).parent}/dtb\n")
+    if boot_method == "abl":
+        (root / "etc/fstab").write_text(
+            f"UUID={uuids['boot']} /boot auto ro 0 0\n"
+            f"UUID={uuids['esp']} /boot/efi vfat umask=0077,shortname=winnt 0 2\n"
+            f"UUID={uuids['root']} /var btrfs {BTRFS_OPTS},subvol=var 0 0\n"
+            f"UUID={uuids['root']} /var/home btrfs {BTRFS_OPTS},subvol=home 0 0\n")
+        entry.write_text(entry_text)
+        return None
+    boot_resolved = boot_root.resolve()
+    assets = {}
+    for key, value in (("image", linux), ("initrd", initrd), ("fdtdir", str(Path(linux).parent / "dtb"))):
+        relative = value[len("/boot/"):] if value.startswith("/boot/") else value.lstrip("/")
+        path = Path(relative)
+        if not relative or path.is_absolute() or ".." in path.parts:
+            raise Error(f"Boot asset must stay inside the boot filesystem: {value}")
+        try:
+            resolved = (boot_root / path).resolve(strict=True)
+        except OSError as error:
+            raise Error(f"Missing boot asset: {value}") from error
+        if not str(resolved).startswith(str(boot_resolved) + os.sep):
+            raise Error(f"Boot asset escapes the boot filesystem: {value}")
+        if key == "fdtdir":
+            if not resolved.is_dir():
+                raise Error(f"Boot asset is not a directory: {value}")
+        elif not resolved.is_file():
+            raise Error(f"Boot asset is not a regular file: {value}")
+        assets[key] = relative
+    try:
+        bls_resolved = entry.resolve(strict=True)
+    except OSError as error:
+        raise Error(f"Missing boot entry: {entry}") from error
+    if not bls_resolved.is_file() or not str(bls_resolved).startswith(str(boot_resolved) + os.sep):
+        raise Error(f"Boot entry escapes the boot filesystem: {entry}")
+    (root / "etc/fstab").write_text(
+        f"UUID={uuids['boot']} /boot auto ro 0 0\n"
+        f"UUID={uuids['root']} /var btrfs {BTRFS_OPTS},subvol=var 0 0\n"
+        f"UUID={uuids['root']} /var/home btrfs {BTRFS_OPTS},subvol=home 0 0\n")
+    entry.write_text(entry_text)
+    boot_method_file = root / "etc/armada/boot-method"
+    boot_method_file.parent.mkdir(parents=True, exist_ok=True)
+    boot_method_file.write_text("kshimc\n")
+    for name in ("etc/systemd/system/armada-bootimg-sync.service",
+                 "etc/systemd/system/armada-esp-rename.service",
+                 "etc/systemd/system/ostree-finalize-staged.service.d/10-armada-bootimg.conf"):
+        link = root / name
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to("/dev/null")
+    return {"deployment_checksum": deployment.get_csum(),
+            "filesystem_uuids": {"boot": uuids["boot"], "root": uuids["root"]},
+            "bls": str(entry.relative_to(boot_root)), "image": assets["image"],
+            "initrd": assets["initrd"], "fdtdir": assets["fdtdir"], "options": " ".join(options)}
 
 
 class Installation:
@@ -548,6 +758,15 @@ class Installation:
                  for name, node in (("root", root), ("boot", boot), ("esp", esp))}
         if not all(re.fullmatch(r"[A-Za-z0-9-]+", value) for value in uuids.values()):
             raise Error("Could not determine filesystem UUIDs")
+        self.deploy_tree(target, source, uuids, kargs)
+        print("Writing the internal boot image...", flush=True)
+        with tempfile.TemporaryDirectory(prefix=".armada-bootimg.", dir=target) as scratch:
+            run(BOOTIMG, env=dict(os.environ, TMPDIR=scratch, ESP=str(target / "boot/efi"),
+                                 BOOTROOT=str(target / "boot"), SYSROOT=str(target)))
+        if not (target / "boot/efi/KERNEL").is_file() or not (target / "boot/efi/KERNEL").stat().st_size:
+            raise Error("The internal boot image was not created")
+
+    def deploy_tree(self, target, source, uuids, kargs, boot_method="abl"):
         repo = target / "ostree/repo"
         run("ostree", "config", f"--repo={repo}", "set", "sysroot.bootloader", "none")
         run("ostree", "config", f"--repo={repo}", "set", "sysroot.bootprefix", "true")
@@ -562,13 +781,7 @@ class Installation:
         run("ostree", "checkout", f"--repo={repo}", "--subpath=/var", source.checksum, seed)
         run("cp", "-a", f"{seed}/.", f"{target}/var/")
         shutil.rmtree(seed)
-        configure_deployment(target, source, uuids, kargs)
-        print("Writing the internal boot image...", flush=True)
-        with tempfile.TemporaryDirectory(prefix=".armada-bootimg.", dir=target) as scratch:
-            run(BOOTIMG, env=dict(os.environ, TMPDIR=scratch, ESP=str(target / "boot/efi"),
-                                 BOOTROOT=str(target / "boot"), SYSROOT=str(target)))
-        if not (target / "boot/efi/KERNEL").is_file() or not (target / "boot/efi/KERNEL").stat().st_size:
-            raise Error("The internal boot image was not created")
+        return configure_deployment(target, source, uuids, kargs, boot_method=boot_method)
 
     def recovery(self):
         android = " Android userdata and earlier partitions are unchanged." if self.plan.operation == "replace" else ""
@@ -622,6 +835,206 @@ def require_commands():
         raise Error("Missing required tools: " + ", ".join(missing))
 
 
+def require_prepare_commands():
+    missing = [name for name in PREPARE_TOOLS if not shutil.which(name)]
+    if missing:
+        raise Error("Missing required tools: " + ", ".join(missing))
+
+
+def require_deploy_commands():
+    missing = [name for name in DEPLOY_TOOLS if not shutil.which(name)]
+    if missing:
+        raise Error("Missing required tools: " + ", ".join(missing))
+
+
+def blkid_value(node, tag):
+    result = run("blkid", "-p", "-s", tag, "-o", "value", node, capture=True, check=False)
+    if result.returncode == 0:
+        return result.stdout.strip()
+    if result.returncode == 2:
+        return ""
+    raise Error(f"Could not inspect the {tag} of {node} (blkid exit status {result.returncode})")
+
+
+def prepare_existing(args):
+    if os.geteuid() != 0:
+        raise Error("This command must run as root")
+    require_prepare_commands()
+    with open("/run/armada-installer.lock", "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise Error("Another installation is already running") from error
+        device = discover_device(args.device)
+        table = read_table(device)
+        if not args.expect_table or table_fingerprint(table) != args.expect_table:
+            raise Error("The target device or partition table changed after confirmation; start the installer again")
+        target = ExistingTarget.make(table, args.boot_partuuid, args.root_partuuid)
+        target.verify_kernel()
+        target.require_idle()
+        boot_node, root_node = part_node(device, target.boot.number), part_node(device, target.root.number)
+        if blkid_value(root_node, "TYPE") == "btrfs":
+            raise Error(f"{root_node} already contains a Btrfs filesystem")
+        if blkid_value(boot_node, "TYPE") == "ext4" and blkid_value(boot_node, "LABEL") == "boot":
+            raise Error(f"{boot_node} already contains a prepared boot filesystem")
+        if read_table(device) != table or table_fingerprint(table) != args.expect_table:
+            raise Error("The target device or partition table changed after confirmation; start the installer again")
+        run("mkfs.ext4", "-F", "-L", "boot", boot_node)
+        run("mkfs.btrfs", "-f", "-L", "root", root_node)
+        uuids = {name: blkid_value(node, "UUID")
+                 for name, node in (("boot", boot_node), ("root", root_node))}
+        if not all(re.fullmatch(r"[A-Za-z0-9-]+", value) for value in uuids.values()):
+            raise Error("Could not determine filesystem UUIDs")
+        work = Path(tempfile.mkdtemp(prefix="armada-prepare.", dir="/run"))
+        mounted = False
+        try:
+            try:
+                run("mount", "-o", "subvolid=5", root_node, work)
+            except BaseException:
+                mounted = work.is_mount()
+                raise
+            mounted = True
+            for name in ("root", "var", "home"):
+                run("btrfs", "subvolume", "create", work / name)
+            record = {
+                "table_fingerprint": args.expect_table,
+                "device": table.device,
+                "sector_size": table.sector_size,
+                "boot": {"partuuid": target.boot.uuid, "filesystem_uuid": uuids["boot"],
+                         "start": target.boot.start, "end": target.boot.end,
+                         "size_bytes": (target.boot.end - target.boot.start) * table.sector_size},
+                "root": {"partuuid": target.root.uuid, "filesystem_uuid": uuids["root"],
+                         "start": target.root.start, "end": target.root.end,
+                         "size_bytes": (target.root.end - target.root.start) * table.sector_size},
+                "subvolumes": ["root", "var", "home"],
+                "seed_directory": SEED_DIRECTORY,
+            }
+            payload = json.dumps(record)
+            (work / PREPARED_RECORD).write_text(payload)
+            os.sync()
+            run("umount", work)
+            mounted = False
+            print(payload, flush=True)
+            return record
+        finally:
+            if mounted:
+                try:
+                    run("umount", work)
+                    mounted = False
+                except (Error, OSError) as error:
+                    print(f"ERROR: cleanup: {error}", file=sys.stderr)
+            if not mounted:
+                try:
+                    os.rmdir(work)
+                except OSError:
+                    pass
+
+
+def read_prepared(top, target, uuids, fingerprint):
+    """Validate a prepare-existing receipt and its subvolumes without modifying anything."""
+    top = Path(top)
+    try:
+        record = json.loads((top / PREPARED_RECORD).read_text())
+    except (OSError, ValueError) as error:
+        raise Error(f"Could not read the prepared installation record: {error}") from error
+    try:
+        if not isinstance(record, dict):
+            raise ValueError("the record is not a JSON object")
+        if record.get("table_fingerprint") != fingerprint:
+            raise ValueError("the partition table fingerprint does not match")
+        if record.get("sector_size") != target.table.sector_size:
+            raise ValueError("the sector size does not match the target")
+        if record.get("subvolumes") != ["root", "var", "home"]:
+            raise ValueError("the subvolume set is not the expected one")
+        if record.get("seed_directory") != SEED_DIRECTORY:
+            raise ValueError("the seed directory is not the expected one")
+        for key, part, filesystem_uuid in (("boot", target.boot, uuids["boot"]),
+                                           ("root", target.root, uuids["root"])):
+            value = record.get(key)
+            if (not isinstance(value, dict)
+                    or set(value) != {"partuuid", "filesystem_uuid", "start", "end", "size_bytes"}):
+                raise ValueError(f"the {key} entry is invalid")
+            if (value["partuuid"] != part.uuid or value["filesystem_uuid"] != filesystem_uuid
+                    or value["start"] != part.start or value["end"] != part.end
+                    or value["size_bytes"] != (part.end - part.start) * target.table.sector_size):
+                raise ValueError(f"the {key} entry does not match the target")
+    except (KeyError, TypeError, ValueError) as error:
+        raise Error(f"Invalid prepared installation record: {error}") from error
+    for name in ("root", "var", "home"):
+        path = top / name
+        if path.is_symlink() or not path.is_dir():
+            raise Error(f"The prepared {name} subvolume is missing or is not a real directory")
+        run("btrfs", "subvolume", "show", path, capture=True)
+    if any((top / "root").iterdir()):
+        raise Error("The prepared root subvolume is not empty; the target is already partly installed")
+    return record
+
+
+def require_target_unchanged(device, table, expected_fingerprint):
+    if read_table(device) != table or table_fingerprint(table) != expected_fingerprint:
+        raise Error("The target device or partition table changed after confirmation; start the installer again")
+
+
+def deploy_existing(args):
+    if os.geteuid() != 0:
+        raise Error("This command must run as root")
+    require_deploy_commands()
+    with open("/run/armada-installer.lock", "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise Error("Another installation is already running") from error
+        device = discover_device(args.device)
+        table = read_table(device)
+        if not args.expect_table or table_fingerprint(table) != args.expect_table:
+            raise Error("The target device or partition table changed after confirmation; start the installer again")
+        target = ExistingTarget.make(table, args.boot_partuuid, args.root_partuuid)
+        target.verify_kernel()
+        target.require_idle()
+        boot_node, root_node = part_node(device, target.boot.number), part_node(device, target.root.number)
+        if blkid_value(boot_node, "TYPE") != "ext4" or blkid_value(boot_node, "LABEL") != "boot":
+            raise Error(f"{boot_node} is not a prepared boot filesystem")
+        if blkid_value(root_node, "TYPE") != "btrfs" or blkid_value(root_node, "LABEL") != "root":
+            raise Error(f"{root_node} is not a prepared root filesystem")
+        uuids = {}
+        for name, node in (("boot", boot_node), ("root", root_node)):
+            value = blkid_value(node, "UUID")
+            if not re.fullmatch(r"[A-Za-z0-9-]+", value):
+                raise Error(f"Could not determine the filesystem UUID of {node}")
+            uuids[name] = value
+        require_target_unchanged(device, table, args.expect_table)
+        with operation(None) as job:
+            job.work = Path(tempfile.mkdtemp(prefix="armada-deploy.", dir="/run"))
+            top = job.work / "top"
+            job.mount(root_node, top, "subvolid=5")
+            read_prepared(top, target, uuids, args.expect_table)
+            seed = top / SEED_DIRECTORY.lstrip("/") / "repo"
+            seed_expected = top.resolve(strict=True) / SEED_DIRECTORY.lstrip("/") / "repo"
+            if seed.is_symlink() or not seed.is_dir() or seed.resolve() != seed_expected:
+                raise Error("The prepared seed repository is missing or is not a real directory under the root subvolume")
+            source_bind = job.work / "source-repo"
+            job.mount(seed, source_bind, "bind")
+            run("mount", "-o", "remount,bind,ro", source_bind)
+            with seed_source(source_bind, args.seed_commit, args.origin, args.seed_manifest_digest) as source:
+                run("ostree", "fsck", f"--repo={repo_path(source.repo)}")
+                kargs = seed_kargs(source, job.work / "kargs")
+                require_target_unchanged(device, table, args.expect_table)
+                target_dir = job.work / "target"
+                print("Mounting the prepared filesystems...", flush=True)
+                job.mount(root_node, target_dir, BTRFS_OPTS + ",subvol=root")
+                job.mount(root_node, target_dir / "var", BTRFS_OPTS + ",subvol=var")
+                job.mount(root_node, target_dir / "var/home", BTRFS_OPTS + ",subvol=home")
+                job.mount(boot_node, target_dir / "boot")
+                entries = sorted(path.name for path in (target_dir / "boot").iterdir() if path.name != "lost+found")
+                if entries:
+                    raise Error("The prepared boot filesystem is not empty: " + ", ".join(entries))
+                run("ostree", "admin", "init-fs", "--modern", target_dir)
+                result = job.deploy_tree(target_dir, source, uuids, kargs, boot_method="kshimc")
+                os.sync()
+        print(json.dumps(result), flush=True)
+        return result
+
+
 def execute(args):
     if os.geteuid() != 0:
         raise Error("This command must run as root")
@@ -632,6 +1045,12 @@ def execute(args):
             run("ostree", "fsck", f"--repo={repo_path(source.repo)}")
             print(f"Validated source commit: {source.checksum}", flush=True)
         print(f"Source preflight completed in {time.monotonic() - started:.1f} seconds; internal storage was not touched.", flush=True)
+        return
+    if args.command == "prepare-existing":
+        prepare_existing(args)
+        return
+    if args.command == "deploy-existing":
+        deploy_existing(args)
         return
     device = discover_device(args.device)
     table = read_table(device)
@@ -809,6 +1228,17 @@ def main(argv=None):
     commands.add_parser("gui", help="desktop installer")
     commands.add_parser("detect", help="inspect internal storage without changing it").add_argument("--json", action="store_true")
     commands.add_parser("preflight", help="validate the running source without touching internal storage")
+    prepare = commands.add_parser("prepare-existing", help="prepare the filesystems of an existing Armada target")
+    prepare.add_argument("--boot-partuuid", required=True)
+    prepare.add_argument("--root-partuuid", required=True)
+    prepare.add_argument("--expect-table", required=True)
+    deploy = commands.add_parser("deploy-existing", help="deploy an offline seed onto a prepared existing Armada target")
+    deploy.add_argument("--boot-partuuid", required=True)
+    deploy.add_argument("--root-partuuid", required=True)
+    deploy.add_argument("--expect-table", required=True)
+    deploy.add_argument("--seed-commit", required=True)
+    deploy.add_argument("--seed-manifest-digest", required=True)
+    deploy.add_argument("--origin", required=True)
     install = commands.add_parser("install", help="install the running image")
     install.add_argument("--userdata-gib", type=int)
     install.add_argument("--expect-table", help="require the target fingerprint returned by detect")

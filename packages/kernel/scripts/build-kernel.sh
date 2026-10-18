@@ -164,21 +164,28 @@ for p in "${DTS_DIR}"/*.patch; do
     fi
 done
 
-# Append DTB entries to the qcom Makefile so they get built
+# Append missing DTB entries to the qcom Makefile so they get built. The
+# marker is only a comment: FAST=1 re-runs after a board is added must still
+# register the new .dtb, while already-registered boards stay untouched.
 QCOM_MAKEFILE="${DTS_TARGET}/Makefile"
 echo "==> Adding DTB entries to qcom Makefile"
-# grep marker keeps this idempotent across FAST=1 re-runs
-if ! grep -q "# armada-kernel DTBs" "${QCOM_MAKEFILE}" 2>/dev/null; then
+if ! grep -qxF "# armada-kernel DTBs" "${QCOM_MAKEFILE}" 2>/dev/null; then
     {
         echo ""
         echo "# armada-kernel DTBs"
-        for dts in "${DTS_DIR}"/*.dts; do
-            base=$(basename "${dts}" .dts)
-            echo "dtb-\$(CONFIG_ARCH_QCOM) += ${base}.dtb"
-        done
     } >> "${QCOM_MAKEFILE}"
-    echo "  added $(ls ${DTS_DIR}/*.dts | wc -l) DTB entries"
 fi
+added_dtbs=0
+for dts in "${DTS_DIR}"/*.dts; do
+    base=$(basename "${dts}" .dts)
+    entry="dtb-\$(CONFIG_ARCH_QCOM) += ${base}.dtb"
+    if grep -qxF "${entry}" "${QCOM_MAKEFILE}"; then
+        continue
+    fi
+    echo "${entry}" >> "${QCOM_MAKEFILE}"
+    added_dtbs=$((added_dtbs+1))
+done
+echo "  added ${added_dtbs} DTB entries"
 
 # ---------- 4. Generate config ----------
 # defconfig + fragment via merge_config.sh. Explicit =y requests are checked
@@ -227,6 +234,26 @@ echo "==> Compiler: $(sed -n 's/^CONFIG_CC_VERSION_TEXT="\(.*\)"$/\1/p' .config)
 # ---------- 5. Build ----------
 echo "==> Building Image + dtbs + modules"
 make "${MAKE_ARGS[@]}" Image dtbs modules
+
+# Out-of-tree Gen5 speaker module. The symbol is a make variable only: the
+# driver's Kconfig is never merged into the kernel tree. Build from a fresh
+# per-run copy under WORK_DIR so the vendored tree on the NAS stays clean.
+AW_OOT_SRC="${REPO_ROOT}/out-of-tree/aw882xx"
+AW_OOT_BUILD="${WORK_DIR}/aw882xx-build"
+if [ ! -d "${AW_OOT_SRC}" ]; then
+    echo "ERROR: out-of-tree aw882xx source missing: ${AW_OOT_SRC}" >&2
+    exit 1
+fi
+if [ -z "${WORK_DIR}" ] || [ "${WORK_DIR}" = "/" ]; then
+    echo "ERROR: refusing to clear ${AW_OOT_BUILD}: unsafe WORK_DIR" >&2
+    exit 1
+fi
+rm -rf "${AW_OOT_BUILD}"
+mkdir -p "${AW_OOT_BUILD}"
+cp -a "${AW_OOT_SRC}/." "${AW_OOT_BUILD}/"
+echo "==> Building out-of-tree aw882xx module"
+make "${MAKE_ARGS[@]}" M="${AW_OOT_BUILD}" CONFIG_SND_SOC_AW882XX=m modules
+
 command -v ccache >/dev/null 2>&1 && ccache -s || true
 size vmlinux 2>/dev/null || true
 
@@ -238,7 +265,27 @@ mkdir -p "${STAGE}/lib/modules/${KVER}/dtb/qcom"
 echo "==> Staging vmlinuz + modules + DTBs"
 cp arch/arm64/boot/Image "${STAGE}/lib/modules/${KVER}/vmlinuz"
 make "${MAKE_ARGS[@]}" INSTALL_MOD_PATH="${STAGE}" INSTALL_MOD_STRIP=1 modules_install >/dev/null
+
+echo "==> Staging out-of-tree aw882xx module to extra/aw882xx"
+make "${MAKE_ARGS[@]}" M="${AW_OOT_BUILD}" CONFIG_SND_SOC_AW882XX=m \
+    INSTALL_MOD_PATH="${STAGE}" INSTALL_MOD_DIR="extra/aw882xx" \
+    INSTALL_MOD_STRIP=1 modules_install
+installed_ko=$(find "${STAGE}/lib/modules/${KVER}/extra/aw882xx" -maxdepth 1 \
+    -name 'snd-soc-aw882xx.ko*' -print -quit || true)
+if [ -z "${installed_ko}" ]; then
+    echo "ERROR: snd-soc-aw882xx module was not installed into ${STAGE}" >&2
+    exit 1
+fi
+
 rm -f "${STAGE}/lib/modules/${KVER}/build" "${STAGE}/lib/modules/${KVER}/source"
+
+# Regenerate the stage index after the out-of-tree install. A missing depmod
+# is a hard failure, not a silent skip.
+if ! command -v depmod >/dev/null 2>&1; then
+    echo "ERROR: depmod not found; cannot index ${STAGE}" >&2
+    exit 1
+fi
+depmod -b "${STAGE}" "${KVER}"
 
 for dts in "${DTS_DIR}"/*.dts; do
     base=$(basename "${dts}" .dts)
@@ -254,7 +301,7 @@ cat > "${STAGE}/lib/modules/${KVER}/.armada-source" <<EOF
 Source: linux-${KERNEL_VERSION} (kernel.org stable)
 Built: armada-builder on ${HOST_ARCH}
 Patches applied: ${APPLIED:-?} (from patches/series)
-DTBs included: $(ls ${DTS_DIR}/*.dts | wc -l) boards (SM8250 + SM8550 + SM8650 + SM8750)
+DTBs included: $(ls ${DTS_DIR}/*.dts | wc -l) boards (SM8250 + SM8550 + SM8650 + SM8750 + SM8850)
 Repackaged for: armada
 EOF
 

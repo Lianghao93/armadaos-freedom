@@ -45,6 +45,18 @@ static void cells(const char *path, const char *name, const uint32_t *values, un
 #define SDAM PMIC "/sdam"
 #define CELL SDAM "/restart"
 
+/* Field hierarchy reproduced from the actual Sun (SM8750-class, "qcom,sunp")
+ * hardware DT: a flat (non-nested) SPMI arbiter whose PMIC child owns the
+ * SDAM holding the reboot-reason cell, plus a /soc identity bus. */
+#define SUN_SOC "/soc"
+#define SUN_SYSCON SUN_SOC "/syscon@1fc0000"
+#define SUN_SCM "/firmware/qcom_scm"
+#define SUN_SPMI SUN_SOC "/qcom,spmi@c42d000"
+#define SUN_PMIC SUN_SPMI "/qcom,pmk8550@0"
+#define SUN_SDAM SUN_PMIC "/sdam@7100"
+#define SUN_CELL SUN_SDAM "/restart@48"
+#define SUN_REASON SUN_SOC "/reboot_reason"
+
 static void fixture(void)
 {
     memset(&fake, 0, sizeof(fake));
@@ -71,6 +83,53 @@ static void fixture(void)
     add("/", "reason"); string("/reason", "compatible", "qcom,reboot-reason");
     CELLS("/reason", "nvmem-cells", 3);
     string("/reason", "nvmem-cell-names", "restart_reason");
+}
+
+/* A present but empty ranges property: /soc is identity-mapped onto the root
+ * 2/2-cell bus. dt_reg() rejects an absent ranges, so it must exist. */
+static void empty_prop(const char *path, const char *name)
+{
+    assert(!fdt_setprop(blob, node(path), name, NULL, 0));
+}
+
+static void sun_fixture(void)
+{
+    memset(&fake, 0, sizeof(fake));
+    fake.dload = 0x30; fake.reason = 0xa5; fake.version = 0x10001;
+    assert(!fdt_create_empty_tree(blob, sizeof(blob)));
+    string("/", "compatible", "qcom,sunp");
+    CELLS("/", "#address-cells", 2); CELLS("/", "#size-cells", 2);
+    add("/", "soc");
+    CELLS(SUN_SOC, "#address-cells", 1); CELLS(SUN_SOC, "#size-cells", 1);
+    empty_prop(SUN_SOC, "ranges");
+    add(SUN_SOC, "syscon@1fc0000");
+    string(SUN_SYSCON, "compatible", "syscon");
+    CELLS(SUN_SYSCON, "reg", 0x1fc0000, 0x30000);
+    CELLS(SUN_SYSCON, "phandle", 2);
+    add("/", "firmware"); add("/firmware", "qcom_scm");
+    string(SUN_SCM, "compatible", "qcom,scm");
+    CELLS(SUN_SCM, "qcom,dload-mode", 2, 0x19000);
+    add(SUN_SOC, "qcom,spmi@c42d000");
+    string(SUN_SPMI, "compatible", "qcom,spmi-pmic-arb");
+    CELLS(SUN_SPMI, "qcom,bus-id", 0);
+    CELLS(SUN_SPMI, "qcom,channel", 0);
+    CELLS(SUN_SPMI, "qcom,ee", 0);
+    CELLS(SUN_SPMI, "#address-cells", 2); CELLS(SUN_SPMI, "#size-cells", 0);
+    add(SUN_SPMI, "qcom,pmk8550@0");
+    string(SUN_PMIC, "compatible", "qcom,spmi-pmic");
+    CELLS(SUN_PMIC, "reg", 0, 0);
+    CELLS(SUN_PMIC, "#address-cells", 1); CELLS(SUN_PMIC, "#size-cells", 0);
+    add(SUN_PMIC, "sdam@7100");
+    string(SUN_SDAM, "compatible", "qcom,spmi-sdam");
+    CELLS(SUN_SDAM, "reg", 0x7100);
+    CELLS(SUN_SDAM, "#address-cells", 1); CELLS(SUN_SDAM, "#size-cells", 1);
+    add(SUN_SDAM, "restart@48");
+    CELLS(SUN_CELL, "reg", 0x48, 1);
+    CELLS(SUN_CELL, "bits", 1, 7); CELLS(SUN_CELL, "phandle", 3);
+    add(SUN_SOC, "reboot_reason");
+    string(SUN_REASON, "compatible", "qcom,reboot-reason");
+    CELLS(SUN_REASON, "nvmem-cells", 3);
+    string(SUN_REASON, "nvmem-cell-names", "restart_reason");
 }
 
 int kshim_psci_init(const void *fdt) { assert(fdt == blob); return 0; }
@@ -157,64 +216,67 @@ void kshim_qcom_reboot_smccc(uint64_t r[8])
     }
 }
 
-static void test_targets(void)
+/* The target/preflight/rollback contracts are layout-independent: the Canoe
+ * and Sun DTs resolve to the same literal config, so the same assertions run
+ * against either fixture through the setup parameter. */
+static void test_targets(void (*setup)(void))
 {
-    fixture();
+    setup();
     assert(kshim_qcom_reboot_request(blob, KSHIM_QCOM_REBOOT_RECOVERY) ==
            KSHIM_QCOM_REBOOT_RESET_RETURNED);
     assert(fake.cold == 1 && !fake.warm && fake.reason_values[0] == 3);
     assert(fake.dload_values[0] == 0 && fake.dload_values[1] == 0x30);
     assert(fake.reason == 0xa5 && fake.dload == 0x30);
-    fixture();
+    setup();
     assert(kshim_qcom_reboot_request(blob, KSHIM_QCOM_REBOOT_BOOTLOADER) ==
            KSHIM_QCOM_REBOOT_RESET_RETURNED);
     assert(fake.reason_values[0] == 5 && fake.reason_values[1] == 0xa5);
-    fixture(); fake.reason = 0xa4;
+    setup(); fake.reason = 0xa4;
     assert(kshim_qcom_reboot_request(blob, KSHIM_QCOM_REBOOT_RECOVERY) ==
            KSHIM_QCOM_REBOOT_RESET_RETURNED);
     assert(fake.reason_values[0] == 2 && fake.reason == 0xa4);
-    fixture(); fake.interrupt = 1;
+    setup(); fake.interrupt = 1;
     assert(kshim_qcom_reboot_request(blob, KSHIM_QCOM_REBOOT_EDL) ==
            KSHIM_QCOM_REBOOT_RESET_RETURNED);
     assert(fake.warm == 1 && !fake.cold && !fake.prepared && !fake.reason_writes);
     assert(fake.dload_values[0] == 1 && fake.dload == 0x30 && fake.resumed);
-    fixture(); fake.has_oem = 1;
+    setup(); fake.has_oem = 1;
     assert(kshim_qcom_reboot_request(blob, KSHIM_QCOM_REBOOT_EDL) ==
            KSHIM_QCOM_REBOOT_RESET_RETURNED);
     assert(fake.oem_warm == 1 && !fake.warm && !fake.cold && fake.dload == 0x30);
-    fixture(); fake.has_oem = 1; fake.version = 0x10000;
+    setup(); fake.has_oem = 1; fake.version = 0x10000;
     assert(kshim_qcom_reboot_request(blob, KSHIM_QCOM_REBOOT_EDL) ==
            KSHIM_QCOM_REBOOT_RESET_RETURNED);
     assert(fake.oem_warm == 1 && !fake.warm && fake.dload == 0x30);
 }
 
-static void test_preflight_and_rollback(void)
+static void test_preflight_and_rollback(void (*setup)(void))
 {
-    fixture(); fake.version = 0x10000;
+    setup(); fake.version = 0x10000;
     assert(kshim_qcom_reboot_request(blob, KSHIM_QCOM_REBOOT_EDL) == KSHIM_QCOM_REBOOT_UNSUPPORTED);
     assert(!fake.dload_writes && !fake.reason_writes && !fake.warm && !fake.oem_warm);
-    fixture(); fake.no_reset2 = 1;
+    setup(); fake.no_reset2 = 1;
     assert(kshim_qcom_reboot_request(blob, KSHIM_QCOM_REBOOT_EDL) == KSHIM_QCOM_REBOOT_UNSUPPORTED);
     assert(!fake.dload_writes && !fake.reason_writes);
-    fixture(); fake.no_scm = 1;
+    setup(); fake.no_scm = 1;
     assert(kshim_qcom_reboot_request(blob, KSHIM_QCOM_REBOOT_RECOVERY) == KSHIM_QCOM_REBOOT_UNSUPPORTED);
     assert(!fake.dload_writes && !fake.reason_writes);
-    fixture(); fake.fail_prepare = 1;
+    setup(); fake.fail_prepare = 1;
     assert(kshim_qcom_reboot_request(blob, KSHIM_QCOM_REBOOT_RECOVERY) == KSHIM_QCOM_REBOOT_IO_FAILED);
     assert(!fake.dload_writes);
-    fixture(); fake.fail_dload_write = 1; fake.fail_after_write = 1;
+    setup(); fake.fail_dload_write = 1; fake.fail_after_write = 1;
     assert(kshim_qcom_reboot_request(blob, KSHIM_QCOM_REBOOT_EDL) == KSHIM_QCOM_REBOOT_IO_FAILED);
     assert(fake.dload_writes == 2 && fake.dload == 0x30 && !fake.warm);
-    fixture(); fake.corrupt_dload_read = 2;
+    setup(); fake.corrupt_dload_read = 2;
     assert(kshim_qcom_reboot_request(blob, KSHIM_QCOM_REBOOT_EDL) == KSHIM_QCOM_REBOOT_VERIFY_FAILED);
     assert(fake.dload == 0x30 && !fake.warm);
-    fixture(); fake.fail_reason_write = 1;
+    setup(); fake.fail_reason_write = 1;
     assert(kshim_qcom_reboot_request(blob, KSHIM_QCOM_REBOOT_RECOVERY) == KSHIM_QCOM_REBOOT_IO_FAILED);
     assert(fake.reason_writes == 2 && fake.reason == 0xa5 && fake.dload == 0x30 && !fake.cold);
-    fixture(); fake.fail_reason_write = 2;
+    setup(); fake.fail_reason_write = 2;
     assert(kshim_qcom_reboot_request(blob, KSHIM_QCOM_REBOOT_RECOVERY) == KSHIM_QCOM_REBOOT_ROLLBACK_FAILED);
     assert(fake.reason == 3 && fake.dload == 0x30);
-    fixture(); fake.fail_dload_write = 2;
+    setup(); fake.fail_dload_write = 2;
     assert(kshim_qcom_reboot_request(blob, KSHIM_QCOM_REBOOT_EDL) == KSHIM_QCOM_REBOOT_ROLLBACK_FAILED);
     assert(fake.dload == 1);
 }
@@ -242,6 +304,46 @@ static void test_dt_validation(void)
     assert(kshim_qcom_reboot_parse(blob, &c) == KSHIM_QCOM_REBOOT_INVALID_DT);
     fixture(); CELLS("/reason", "nvmem-cells", 999);
     assert(kshim_qcom_reboot_request(blob, KSHIM_QCOM_REBOOT_RECOVERY) == KSHIM_QCOM_REBOOT_INVALID_DT);
+    assert(!fake.smc_calls && !fake.dload_writes && !fake.reason_writes);
+}
+
+/* Sun success: exact root compatible qcom,sunp with the unchanged DT,
+ * capability, version and rollback checks must resolve to the same config.
+ * Old production rejects it with KSHIM_QCOM_REBOOT_UNSUPPORTED (-100); the
+ * stderr line below records that observation before the assertion trips. */
+static void test_sun_parse(void)
+{
+    struct kshim_qcom_reboot_config c;
+    sun_fixture();
+    const char *root = fdt_getprop(blob, 0, "compatible", NULL);
+    int rc = kshim_qcom_reboot_parse(blob, &c);
+    fprintf(stderr, "sun fixture root=%s parse rc=%d (expected 0 = success; "
+            "want dload=0x1fd9000 controller=0 bus=0 sid=0 reason=0x7148 "
+            "mask=0xfe shift=1)\n", root ? root : "(none)", rc);
+    assert(rc == 0);
+    assert(c.fdt == blob && c.dload_address == 0x1fd9000);
+    assert(c.controller == 0 && c.bus == 0 && c.sid == 0);
+    assert(c.reason_address == 0x7148 && c.reason_mask == 0xfe &&
+           c.reason_shift == 1);
+    assert(!fake.smc_calls && !fake.prepared && !fake.reason_reads &&
+           !fake.reason_writes && !fake.dload_reads && !fake.dload_writes);
+}
+
+static void test_sun_invalid_dt(void)
+{
+    struct kshim_qcom_reboot_config c;
+    /* Bad bits: not the published <1 7> reboot-reason window. */
+    sun_fixture(); CELLS(SUN_CELL, "bits", 0, 8);
+    assert(kshim_qcom_reboot_parse(blob, &c) == KSHIM_QCOM_REBOOT_INVALID_DT);
+    assert(!fake.smc_calls && !fake.dload_writes && !fake.reason_writes);
+    /* Disabled flat controller: no enabled SPMI bus owns the SDAM. */
+    sun_fixture(); string(SUN_SPMI, "status", "disabled");
+    assert(kshim_qcom_reboot_parse(blob, &c) == KSHIM_QCOM_REBOOT_INVALID_DT);
+    assert(!fake.smc_calls && !fake.dload_writes && !fake.reason_writes);
+    /* Missing reason phandle: nvmem-cells names an absent restart cell. */
+    sun_fixture(); CELLS(SUN_REASON, "nvmem-cells", 999);
+    assert(kshim_qcom_reboot_request(blob, KSHIM_QCOM_REBOOT_RECOVERY) ==
+           KSHIM_QCOM_REBOOT_INVALID_DT);
     assert(!fake.smc_calls && !fake.dload_writes && !fake.reason_writes);
 }
 
@@ -277,14 +379,16 @@ static int test_hardware_dtb(const char *path)
            (unsigned long long)c.dload_address, (unsigned)c.controller,
            (unsigned)c.bus, (unsigned)c.sid, (unsigned)c.reason_address,
            (unsigned)c.reason_mask, (unsigned)c.reason_shift);
-    int matches = c.dload_address == 0x1fd9000 && c.bus == 0 && c.sid == 0 &&
+    int matches = c.controller == 0 && c.dload_address == 0x1fd9000 &&
+                  c.bus == 0 && c.sid == 0 &&
                   c.reason_address == 0x7148 && c.reason_mask == 0xfe &&
                   c.reason_shift == 1;
     assert(!fake.smc_calls && !fake.prepared && !fake.reason_reads &&
            !fake.reason_writes && !fake.cold && !fake.warm && !fake.oem_warm);
     free(hardware);
     if (!matches) {
-        fprintf(stderr, "Hardware DT reboot values differ from TB323FU evidence\n");
+        fprintf(stderr, "Hardware DT reboot values differ from the supported "
+                        "board DT evidence\n");
         return 1;
     }
     puts("qcom_reboot_test: hardware DT parse-only regression passed");
@@ -299,7 +403,12 @@ int main(int argc, char **argv)
         fprintf(stderr, "Usage: %s [--hardware-dtb PATH]\n", argv[0]);
         return 2;
     }
-    test_targets(); test_preflight_and_rollback(); test_dt_validation();
+    test_targets(fixture); test_preflight_and_rollback(fixture);
+    test_dt_validation();
+    /* Run the Sun parse-success check before its shared target/rollback
+     * checks so a rejecting build prints the diagnostic and fails here. */
+    test_sun_parse(); test_sun_invalid_dt();
+    test_targets(sun_fixture); test_preflight_and_rollback(sun_fixture);
     puts("qcom_reboot_test: DT, target ABI, capability checks and rollback passed");
     return 0;
 }

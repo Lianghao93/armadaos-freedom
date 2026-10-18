@@ -61,15 +61,42 @@ printf '%s\n' \
     >"$tmp/bin/envmanager"
 printf '%s\n' \
     '#!/usr/bin/env bash' \
+    'env | sort >"$ARMADA_TEST_STARTPLASMA_ENV"' \
     'printf '\''%s\n'\'' "$(readlink "$XDG_CONFIG_HOME/plasmashellrc")" "$DESKTOP_SESSION" "$XDG_SESSION_TYPE" "${TEST_UNTOUCHED-unset}" >"$ARMADA_TEST_ARGS"' \
     >"$tmp/bin/startplasma"
+# KDE reads plasma-localerc through KConfig; the mock needs no Qt runtime.
+cat >"$tmp/bin/kreadconfig6" <<'KREADCONFIG'
+#!/usr/bin/env bash
+set -eu
+file= group= key=
+while (($#)); do
+    case "$1" in
+        --file) file=$2; shift 2 ;;
+        --group) group=$2; shift 2 ;;
+        --key) key=$2; shift 2 ;;
+        *) shift ;;
+    esac
+done
+config_home=${XDG_CONFIG_HOME:-${HOME:-/nonexistent}/.config}
+case "$file" in
+    */*) path=$file ;;
+    *) path="$config_home/$file" ;;
+esac
+printf '%s %s %s\n' "$path" "$group" "$key" >>"$ARMADA_TEST_KREADCONFIG_LOG"
+[[ -f "$path" ]] || exit 0
+awk -v group="$group" -v key="$key" '
+    /^\[/ { section = substr($0, 2, length($0) - 2); next }
+    section == group && index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }
+' "$path"
+KREADCONFIG
 chmod +x "$tmp/bin"/*
 
 session() {
     local home=$1
     shift
     env -i \
-        HOME=/test/home USER=armada LANG=C.UTF-8 LANGUAGE=de LC_TIME=de_DE.UTF-8 "${display[@]}" \
+        HOME=/test/home USER=armada LANG=C.UTF-8 LANGUAGE=de LC_TIME=de_DE.UTF-8 \
+        LC_NUMERIC=de_DE.UTF-8 "${display[@]}" \
         XDG_RUNTIME_DIR="$tmp/run" XDG_CONFIG_HOME="$home" XDG_DATA_DIRS=/test/share XDG_SESSION_ID=9 \
         PATH="/steam/runtime/bin:$PATH" LD_PRELOAD= LC_ALL=C QT_QPA_PLATFORM=xcb QT_IM_MODULE=steam \
         GTK_IM_MODULE=Steam SteamAppId=1 STEAM_COMPAT_APP_ID=1 XCURSOR_THEME=steam VK_INSTANCE_LAYERS=x \
@@ -81,7 +108,9 @@ session() {
         ARMADA_PLASMA_MOBILE_ENVMANAGER="$tmp/bin/envmanager" ARMADA_STARTPLASMA="$tmp/bin/startplasma" \
         ARMADA_LOGGER=/usr/bin/true ARMADA_PLASMA_SESSION_LIB="$LIB" \
         ARMADA_TEST_LOG="$log" ARMADA_TEST_ARGS="$tmp/args" ARMADA_TEST_ENV="$tmp/env" \
+        ARMADA_TEST_STARTPLASMA_ENV="$tmp/startplasma-env" \
         ARMADA_TEST_ENVMANAGER="$tmp/envmanager" ARMADA_DEVICE_ID=test-device \
+        ARMADA_KREADCONFIG="$tmp/bin/kreadconfig6" ARMADA_TEST_KREADCONFIG_LOG="$tmp/kreadconfig" \
         "${extra[@]}" \
         "$SESSION" "$@"
 }
@@ -92,6 +121,19 @@ args() {
 }
 envval() {
     sed -n "s/^$1=//p" "$tmp/env"
+}
+expect_env() {
+    local actual
+    actual="$(envval "$1")"
+    [[ "$actual" == "$2" ]] || fail "expected $1=$2, got '$actual'"
+}
+startplasma_envval() {
+    sed -n "s/^$1=//p" "$tmp/startplasma-env"
+}
+expect_startplasma_env() {
+    local actual
+    actual="$(startplasma_envval "$1")"
+    [[ "$actual" == "$2" ]] || fail "startplasma: expected $1=$2, got '$actual'"
 }
 expect_args() {
     args
@@ -240,6 +282,189 @@ if session "$home" nested 2>/dev/null; then
 fi
 grep -q -- '--restore-bottom' "$log" || fail 'a failed stop left nothing to bring the bottom shell back'
 extra=()
+
+# Locale selections apply to the shells that bypass startplasma.
+locale_zh="$tmp/locale-zh"
+mkdir -p "$locale_zh"
+printf '%s\n' \
+    '[Formats]' \
+    'LANG=zh_CN.UTF-8' \
+    'LC_NUMERIC=zh_CN.UTF-8' \
+    'LC_TIME=zh_CN.UTF-8' \
+    '' \
+    '[Translations]' \
+    'LANGUAGE=zh_CN' \
+    >"$locale_zh/plasma-localerc"
+: >"$tmp/kreadconfig"
+session "$locale_zh" bottom
+expect_env LANGUAGE zh_CN
+expect_env LANG zh_CN.UTF-8
+expect_env LC_NUMERIC zh_CN.UTF-8
+expect_env LC_TIME zh_CN.UTF-8
+! grep -q '^LC_ALL=' "$tmp/env" || fail 'LC_ALL reached the localized bottom session'
+grep -qx "$locale_zh/plasma-localerc Formats LANG" "$tmp/kreadconfig" ||
+    fail 'the bottom session did not read LANG from the shared plasma-localerc'
+grep -qx "$locale_zh/plasma-localerc Translations LANGUAGE" "$tmp/kreadconfig" ||
+    fail 'the bottom session did not read LANGUAGE from the shared plasma-localerc'
+! grep -q "$locale_zh/armada" "$tmp/kreadconfig" ||
+    fail 'the bottom session read locale from the per-surface config'
+
+locale_nested="$tmp/locale-nested"
+mkdir -p "$locale_nested/steamos-manager"
+printf 'desktop_session = "armada-plasma.desktop"\n' >"$locale_nested/steamos-manager/state.toml"
+cp "$locale_zh/plasma-localerc" "$locale_nested/plasma-localerc"
+: >"$log"
+: >"$tmp/kreadconfig"
+session "$locale_nested" nested
+expect_env LANGUAGE zh_CN
+expect_env LANG zh_CN.UTF-8
+expect_env LC_NUMERIC zh_CN.UTF-8
+expect_env LC_TIME zh_CN.UTF-8
+
+# Formats and translations are independent, like startplasma's startup config.
+locale_formats="$tmp/locale-formats"
+mkdir -p "$locale_formats"
+printf '%s\n' '[Formats]' 'LANG=fr_FR.UTF-8' 'LC_TIME=fr_FR.UTF-8' >"$locale_formats/plasma-localerc"
+session "$locale_formats" bottom
+expect_env LANGUAGE de
+expect_env LANG fr_FR.UTF-8
+expect_env LC_TIME fr_FR.UTF-8
+
+# A non-Chinese selection proves the helper does not hardcode zh_CN.
+locale_ja="$tmp/locale-ja"
+mkdir -p "$locale_ja"
+printf '%s\n' '[Formats]' 'LANG=ja_JP.UTF-8' '' '[Translations]' 'LANGUAGE=ja' >"$locale_ja/plasma-localerc"
+session "$locale_ja" bottom
+expect_env LANGUAGE ja
+expect_env LANG ja_JP.UTF-8
+expect_env LC_TIME de_DE.UTF-8
+
+# A real device saved Chinese translations but kept a C formats locale. GNU
+# gettext ignores LANGUAGE under a C message locale, so the surfaces that bypass
+# startplasma need an installed carrier for messages only; formats stay as saved.
+locale_device="$tmp/locale-device"
+mkdir -p "$locale_device/steamos-manager"
+printf 'desktop_session = "armada-plasma.desktop"\n' >"$locale_device/steamos-manager/state.toml"
+printf '%s\n' '[Formats]' 'LANG=C.UTF-8' '' '[Translations]' 'LANGUAGE=zh_CN' >"$locale_device/plasma-localerc"
+session "$locale_device" bottom
+expect_env LANGUAGE zh_CN
+expect_env LANG C.UTF-8
+expect_env LC_MESSAGES en_US.UTF-8
+expect_env LC_TIME de_DE.UTF-8
+expect_env LC_NUMERIC de_DE.UTF-8
+session "$locale_device" nested
+expect_env LANGUAGE zh_CN
+expect_env LANG C.UTF-8
+expect_env LC_MESSAGES en_US.UTF-8
+expect_env LC_TIME de_DE.UTF-8
+expect_env LC_NUMERIC de_DE.UTF-8
+
+# The device has no LC_ALL at all; the carrier must survive the startplasma handoff.
+locale_device_standalone="$tmp/locale-device-standalone"
+mkdir -p "$locale_device_standalone"
+cp "$locale_device/plasma-localerc" "$locale_device_standalone/plasma-localerc"
+extra=(LC_ALL=)
+session "$locale_device_standalone" standalone
+extra=()
+[[ "$(<"$tmp/args")" == $'plasmashellrc.desktop\nplasma\nwayland\n1' ]]
+expect_startplasma_env LANGUAGE zh_CN
+expect_startplasma_env LANG C.UTF-8
+expect_startplasma_env LC_MESSAGES en_US.UTF-8
+expect_startplasma_env LC_TIME de_DE.UTF-8
+expect_startplasma_env LC_NUMERIC de_DE.UTF-8
+
+# The carrier is generic; Chinese is not special-cased.
+locale_device_ja="$tmp/locale-device-ja"
+mkdir -p "$locale_device_ja"
+printf '%s\n' '[Formats]' 'LANG=C.UTF-8' '' '[Translations]' 'LANGUAGE=ja' >"$locale_device_ja/plasma-localerc"
+session "$locale_device_ja" bottom
+expect_env LANGUAGE ja
+expect_env LANG C.UTF-8
+expect_env LC_MESSAGES en_US.UTF-8
+
+# Explicit message settings win, including the C and POSIX locales.
+locale_explicit="$tmp/locale-explicit"
+mkdir -p "$locale_explicit"
+printf '%s\n' '[Formats]' 'LANG=C.UTF-8' 'LC_MESSAGES=fr_FR.UTF-8' '' '[Translations]' 'LANGUAGE=zh_CN' >"$locale_explicit/plasma-localerc"
+session "$locale_explicit" bottom
+expect_env LANGUAGE zh_CN
+expect_env LANG C.UTF-8
+expect_env LC_MESSAGES fr_FR.UTF-8
+for value in C POSIX; do
+    home="$tmp/locale-explicit-$value"
+    mkdir -p "$home"
+    printf '%s\n' '[Formats]' 'LANG=C.UTF-8' "LC_MESSAGES=$value" '' '[Translations]' 'LANGUAGE=zh_CN' >"$home/plasma-localerc"
+    session "$home" bottom
+    expect_env LANGUAGE zh_CN
+    expect_env LANG C.UTF-8
+    expect_env LC_MESSAGES "$value"
+done
+
+# An explicit LC_ALL is preserved and already selects a translated locale.
+locale_all_explicit="$tmp/locale-all-explicit"
+mkdir -p "$locale_all_explicit"
+printf '%s\n' '[Formats]' 'LANG=C.UTF-8' 'LC_ALL=fr_FR.UTF-8' '' '[Translations]' 'LANGUAGE=zh_CN' >"$locale_all_explicit/plasma-localerc"
+session "$locale_all_explicit" bottom
+expect_env LANGUAGE zh_CN
+expect_env LC_ALL fr_FR.UTF-8
+! grep -q '^LC_MESSAGES=' "$tmp/env" || fail 'a message carrier was added under an explicit LC_ALL'
+
+# A non-C LANG already selects translations, so no carrier is needed.
+locale_non_c="$tmp/locale-non-c"
+mkdir -p "$locale_non_c"
+printf '%s\n' '[Formats]' 'LANG=fr_FR.UTF-8' '' '[Translations]' 'LANGUAGE=zh_CN' >"$locale_non_c/plasma-localerc"
+session "$locale_non_c" bottom
+expect_env LANGUAGE zh_CN
+expect_env LANG fr_FR.UTF-8
+! grep -q '^LC_MESSAGES=' "$tmp/env" || fail 'a message carrier was added for a non-C message locale'
+
+# A leading C or POSIX LANGUAGE item asks gettext not to translate.
+for language in C:zh_CN POSIX:de; do
+    home="$tmp/locale-language-${language%%:*}"
+    mkdir -p "$home"
+    printf '%s\n' '[Formats]' 'LANG=C.UTF-8' '' '[Translations]' "LANGUAGE=$language" >"$home/plasma-localerc"
+    session "$home" bottom
+    expect_env LANGUAGE "$language"
+    expect_env LANG C.UTF-8
+    ! grep -q '^LC_MESSAGES=' "$tmp/env" || fail "LANGUAGE=$language gained a message carrier"
+done
+
+# Empty or missing keys keep the inherited Game Mode locale.
+locale_empty="$tmp/locale-empty"
+mkdir -p "$locale_empty"
+printf '%s\n' '[Formats]' 'LANG=' '' '[Translations]' 'LANGUAGE=' >"$locale_empty/plasma-localerc"
+session "$locale_empty" bottom
+expect_env LANGUAGE de
+expect_env LANG C.UTF-8
+expect_env LC_TIME de_DE.UTF-8
+! grep -q '^LC_MESSAGES=' "$tmp/env" || fail 'empty preferences gained a message carrier'
+
+# No Translations group keeps the inherited selection, even under C formats.
+locale_no_translations="$tmp/locale-no-translations"
+mkdir -p "$locale_no_translations"
+printf '%s\n' '[Formats]' 'LANG=C.UTF-8' >"$locale_no_translations/plasma-localerc"
+session "$locale_no_translations" bottom
+expect_env LANGUAGE de
+expect_env LANG C.UTF-8
+! grep -q '^LC_MESSAGES=' "$tmp/env" || fail 'a missing translation preference gained a message carrier'
+
+# Standalone still hands off to upstream startplasma, but imports the shared
+# locale first so a saved translation has a carrier when startplasma applies
+# the explicit preferences again.
+locale_standalone="$tmp/locale-standalone"
+mkdir -p "$locale_standalone"
+cp "$locale_zh/plasma-localerc" "$locale_standalone/plasma-localerc"
+: >"$tmp/kreadconfig"
+extra=(LC_ALL=)
+session "$locale_standalone" standalone
+extra=()
+[[ "$(<"$tmp/args")" == $'plasmashellrc.desktop\nplasma\nwayland\n1' ]]
+grep -qx "$locale_standalone/plasma-localerc Formats LANG" "$tmp/kreadconfig" ||
+    fail 'standalone did not import the shared locale before startplasma'
+grep -qx "$locale_standalone/plasma-localerc Translations LANGUAGE" "$tmp/kreadconfig" ||
+    fail 'standalone did not import the saved translation'
+expect_startplasma_env LANGUAGE zh_CN
+expect_startplasma_env LANG zh_CN.UTF-8
 
 home="$tmp/legacy"
 mkdir -p "$home"

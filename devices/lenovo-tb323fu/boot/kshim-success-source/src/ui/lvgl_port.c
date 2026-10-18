@@ -47,9 +47,10 @@ static void *mScratch;
 static size_t mScratchSize;
 static uint32_t *mBackdropTextures[2];
 static const void *mFontData;
-static lv_font_t *mFonts[3];
+static lv_font_t *mFonts[4];
 static const lv_font_t *mTitleFont;
 static const lv_font_t *mStatusFont;
+static const lv_font_t *mInfoFont;
 static lv_image_dsc_t mBackdropImages[2];
 static kshim_backdrop_layout_t mBackdropLayout;
 static QcomKeys *mKeys;
@@ -232,6 +233,11 @@ static void KshimAnimate(
   lv_anim_start(&Animation);
 }
 
+/* True while the focused row is the read-only Device info summary. It is
+ * identified only by the existing DEVICE_INFO role plus the current localized
+ * Back action, so no new role or API is introduced. */
+static bool mInfoState;
+
 #include "menu_design_port.h"
 
 static int KshimButtonIndex(const lv_obj_t *Button)
@@ -250,6 +256,16 @@ static int KshimButtonIndex(const lv_obj_t *Button)
 static void KshimShowEntry(size_t Index)
 {
   if (mContext == NULL || Index >= mContext->EntryCount) return;
+  /* Entering or leaving the read-only summary changes the STAR chart geometry;
+   * an ordinary row restores the baseline layout. */
+  const char *EntryAction = mContext->ActionLabels[Index];
+  bool Info = mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART &&
+      mContext->Roles[Index] == KSHIM_MENU_ROLE_DEVICE_INFO &&
+      EntryAction != NULL && strcmp(EntryAction, KSHIM_MENU_ACTION_BACK) == 0;
+  if (Info != mInfoState) {
+    mInfoState = Info;
+    (void)KshimDesignRelayout();
+  }
   if (mStatus != NULL) lv_label_set_text(mStatus, mContext->Entries[Index]);
   if (mDetail != NULL) {
     const char *Description = mContext->Descriptions[Index];
@@ -425,8 +441,9 @@ static void KshimCreateFonts(uint32_t ShortEdge)
   static const int32_t Sizes[3][3] = {{48, 28, 22}, {28, 20, 16}, {20, 14, 12}};
   const int32_t *Size = Sizes[ShortEdge >= 720U ? 0 : ShortEdge >= 320U ? 1 : 2];
   int32_t DesignSizes[3];
+  uint32_t Scale = 0U;
   if (mMenuDesign.enabled) {
-    uint32_t Scale = kshim_design_scale(mContext->LogicalWidth, mContext->LogicalHeight,
+    Scale = kshim_design_scale(mContext->LogicalWidth, mContext->LogicalHeight,
                                       KshimDesignScaleOverride());
     DesignSizes[0] = kshim_design_max(12, kshim_design_px(mMenuDesign.title_size, Scale));
     DesignSizes[1] = kshim_design_max(12, kshim_design_px(mMenuDesign.row_size, Scale));
@@ -438,9 +455,20 @@ static void KshimCreateFonts(uint32_t ShortEdge)
         lv_tiny_ttf_create_data_ex(mFontData, kshim_ui_font_size(), Size[Index],
             LV_FONT_KERNING_NONE, Index == 0U ? 32U : LV_TINY_TTF_CACHE_GLYPH_CNT);
   }
+  /* The STAR summary body on a short-edge <=1080 panel needs a smaller face;
+   * slot three is created only there, sharing the body glyph cache, and stays
+   * NULL everywhere else so every other layout keeps the shared status font. */
+  mFonts[3] = NULL;
+  if (mMenuDesign.enabled && mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART &&
+      ShortEdge <= 1080U && mFontData != NULL) {
+    mFonts[3] = lv_tiny_ttf_create_data_ex(mFontData, kshim_ui_font_size(),
+        kshim_design_max(10, kshim_design_px(14U, Scale)),
+        LV_FONT_KERNING_NONE, LV_TINY_TTF_CACHE_GLYPH_CNT);
+  }
   mTitleFont = mFonts[0] != NULL ? mFonts[0] : &lv_font_montserrat_20;
   mRowFont = mFonts[1] != NULL ? mFonts[1] : &lv_font_montserrat_20;
   mStatusFont = mFonts[2] != NULL ? mFonts[2] : &lv_font_montserrat_20;
+  mInfoFont = mFonts[3] != NULL ? mFonts[3] : mStatusFont;
   KshimDesignFonts();
 }
 
@@ -448,8 +476,8 @@ static void KshimCreateFonts(uint32_t ShortEdge)
 static void KshimForgetFonts(void)
 {
   KshimDesignForgetFonts();
-  for (unsigned Index = 0; Index < 3U; Index++) mFonts[Index] = NULL;
-  mTitleFont = mRowFont = mStatusFont = NULL;
+  for (unsigned Index = 0; Index < 4U; Index++) mFonts[Index] = NULL;
+  mTitleFont = mRowFont = mStatusFont = mInfoFont = NULL;
 }
 
 /* 构建共享控件树；不同风格不复制输入或启动状态机。 */
@@ -649,6 +677,7 @@ int kshim_lvgl_init(kshim_lvgl_t *Context, kshim_framebuffer_t *Framebuffer, Qco
   mTileWidth = 0U;
   mKey = LV_KEY_ENTER;
   mKeyReleasePending = 0U;
+  mInfoState = false;
   KshimPlaceScratch();
   kshim_boot_metrics_record_once(KSHIM_BOOT_STAGE_FONT);
   if (KshimRenderInitialBackground() != 0) goto Failed;
@@ -819,12 +848,28 @@ void kshim_lvgl_set_entry_roles(kshim_lvgl_t *Context, const kshim_menu_role_t *
       Count > KSHIM_MENU_MAX_ENTRIES) return;
   for (size_t Index = 0; Index < KSHIM_MENU_MAX_ENTRIES; Index++)
     Context->Roles[Index] = (Roles != NULL && Index < Count) ? Roles[Index] : KSHIM_MENU_ROLE_UNKNOWN;
+  /* STAR_CHART re-evaluates the info geometry from the actually focused row:
+   * roles may change under a stable focus, so refresh from the group focus and
+   * fall back to the initial index. */
+  if (mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART) {
+    int FocusedIndex = KshimButtonIndex(lv_group_get_focused((lv_group_t *)Context->Group));
+    if (FocusedIndex < 0) FocusedIndex = (int)Context->InitialIndex;
+    if (FocusedIndex >= 0 && (size_t)FocusedIndex < Context->EntryCount)
+      KshimShowEntry((size_t)FocusedIndex);
+  }
   if (mList != NULL) lv_obj_invalidate(mList);
 }
 
 void kshim_lvgl_set_status(kshim_lvgl_t *Context, const char *Text)
 {
-  lv_obj_t *Notice = mNotice != NULL && !lv_obj_has_flag(mNotice, LV_OBJ_FLAG_HIDDEN) ? mNotice : mStatus;
+  /* In the STAR info state the status label carries the device title, so keep
+   * writes on the (hidden) notice instead of clearing that title. */
+  lv_obj_t *Notice;
+  if (mMenuDesign.kind == KSHIM_DESIGN_STAR_CHART && mInfoState) {
+    Notice = mNotice;
+  } else {
+    Notice = mNotice != NULL && !lv_obj_has_flag(mNotice, LV_OBJ_FLAG_HIDDEN) ? mNotice : mStatus;
+  }
   if (kshim_lvgl_ready(Context) && Text != NULL && Notice != NULL) lv_label_set_text(Notice, Text);
 }
 
@@ -931,4 +976,5 @@ void kshim_lvgl_deinit(kshim_lvgl_t *Context)
   mRibbon = 0U;
   mTileHeight = 0U;
   mTileWidth = 0U;
+  mInfoState = false;
 }

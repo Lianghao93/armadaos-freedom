@@ -203,7 +203,8 @@ int kshim_dt_spmi_identity(const void *f, int node, uint8_t *controller,
  *
  * A size-cells=0 PMIC with address-cells=1 may also expose a multi-cell
  * reg list; in that case only a well-formed, uniquely named "hlos" entry
- * is accepted and the address is taken from its cell. */
+ * (or its stock alias "pon_hlos") is accepted and the address is taken
+ * from its cell. */
 int kshim_dt_spmi_reg(const void *f, int node, uint16_t *offset)
 {
     uint8_t controller, bus, sid;
@@ -227,8 +228,19 @@ int kshim_dt_spmi_reg(const void *f, int node, uint16_t *offset)
             a = fdt32_to_cpu(p[0]);
         } else if (len > 4 && (len % 4) == 0) {
             int count = fdt_stringlist_count(f, node, "reg-names");
-            int index = dt_string_index(f, node, "reg-names", "hlos");
-            if (count != len / 4 || index < 0) return -1;
+            if (count != len / 4) return -1;
+            /* Locate the single HLOS cell by its name index.  Either the
+             * exact name "hlos" or the stock alias "pon_hlos" is accepted;
+             * a repeated name or both aliases together are ambiguous. */
+            int index = -1;
+            for (int i = 0; i < count; ++i) {
+                const char *name = fdt_stringlist_get(f, node, "reg-names", i, NULL);
+                if (!name || !*name) return -1;
+                if (strcmp(name, "hlos") && strcmp(name, "pon_hlos")) continue;
+                if (index >= 0) return -1;
+                index = i;
+            }
+            if (index < 0) return -1;
             a = fdt32_to_cpu(p[index]);
         } else {
             return -1;

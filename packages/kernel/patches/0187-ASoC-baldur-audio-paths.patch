@@ -1,0 +1,188 @@
+From: Joonhoe Kim <26rote@gmail.com>
+Date: Sat, 26 Sep 2026 01:28:20 +0000
+Subject: [PATCH] ASoC: qcom: baldur: preserve playback and microphone board settings
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TB323FU/Baldur needs three board settings that the unified 7.2.6
+drivers do not carry, coalesced here from legacy patches 0034, 0035
+and 0037 of the pinned tb323fu-linux tree at
+11a25bf89b65fff48112a91a0b25bc247e7736d8.  The code is the original
+author's work, rebased onto these preimages; the rebase adds no
+Signed-off-by.
+
+- sc8280xp: opt into S32_LE on the MI2S backends with the board's
+  qcom,mi2s-s32le property.  The AW882xx amplifiers are tuned for
+  32-bit slots (64 fs BCLK); at S16_LE their boost converter never
+  reports finished and the driver refuses to start them.  The front
+  end stays S16_LE and the DSP converts.  The check is merged into
+  this tree's flat sc8280xp_snd_data and its
+  of_device_get_match_data() driver_name; the MI2S clock, startup and
+  prepare paths are untouched.
+- lpass-tx-macro: replay the optional qcom,dec-tuning-reg-values pairs
+  into each decimator's 0x800 + 0x80 * n filter block at PRE_PMU.
+  The block is outside the regmap and is lost with the LPASS power,
+  so it is written on every enable.  Existing regmap, PM and mux
+  handling is unchanged.
+- wcd939x: read and update the channel's own bit in the SoundWire port
+  channel mask instead of the whole-port flag, and report a change
+  only when that bit changes.  ADC1-4 share TX port 1, so the old
+  per-port flag made unused ADCs read back as on and alsactl restore
+  then enabled them.  This tree already resolves HPH_L/R to
+  HIFI_PCM_L/R while HPH PCM mode is on; the merge keeps that
+  resolved ch_id instead of restoring the raw mixer->reg lookup, so
+  the unified 0073 headphone flow is preserved.
+
+No sound card match, topology, userspace, amplifier or Gen4 DT change
+is included.  Both properties are board-local, not proposed bindings.
+
+---
+ 3 files changed, 50 insertions(+), 6 deletions(-)
+---
+
+diff --git a/sound/soc/qcom/sc8280xp.c b/sound/soc/qcom/sc8280xp.c
+index 880453554eac..01244a13928b 100644
+--- a/sound/soc/qcom/sc8280xp.c
++++ b/sound/soc/qcom/sc8280xp.c
+@@ -26,6 +26,7 @@
+ 	int mi2s_clk_count;
+ 	bool jack_setup;
+ 	bool wsa2_only;
++	bool mi2s_s32;
+ };
+ 
+ static int sc8280xp_snd_init(struct snd_soc_pcm_runtime *rtd)
+@@ -129,6 +130,7 @@
+ 				     struct snd_pcm_hw_params *params)
+ {
+ 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
++	struct sc8280xp_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
+ 	struct snd_interval *rate = hw_param_interval(params,
+ 					SNDRV_PCM_HW_PARAM_RATE);
+ 	struct snd_interval *channels = hw_param_interval(params,
+@@ -146,6 +148,14 @@
+ 	case TX_CODEC_DMA_TX_3:
+ 		channels->min = 1;
+ 		break;
++	case PRIMARY_MI2S_RX ... QUATERNARY_MI2S_TX:
++	case QUINARY_MI2S_RX ... QUINARY_MI2S_TX:
++		/* amplifiers set up for 32-bit slots (64 fs BCLK) */
++		if (data->mi2s_s32) {
++			snd_mask_none(fmt);
++			snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S32_LE);
++		}
++		break;
+ 	default:
+ 		break;
+ 	}
+@@ -260,6 +270,7 @@
+ 			  of_device_is_compatible(dev->of_node,
+ 						  "konkr,pocket-fit-sndcard");
+ 	card->driver_name = of_device_get_match_data(dev);
++	data->mi2s_s32 = of_property_read_bool(dev->of_node, "qcom,mi2s-s32le");
+ 	sc8280xp_add_be_ops(card);
+ 	return devm_snd_soc_register_card(dev, card);
+ }
+diff --git a/sound/soc/codecs/lpass-tx-macro.c b/sound/soc/codecs/lpass-tx-macro.c
+index 0cbf50647ff5..8629451da3d1 100644
+--- a/sound/soc/codecs/lpass-tx-macro.c
++++ b/sound/soc/codecs/lpass-tx-macro.c
+@@ -107,6 +107,7 @@
+ #define CDC_TX0_TX_PATH_SEC5		(0x0424)
+ #define CDC_TX0_TX_PATH_SEC6		(0x0428)
+ #define CDC_TX0_TX_PATH_SEC7		(0x042C)
++#define CDC_TXn_TUNING_BLOCK(n)		(0x0800 + 0x80 * (n))
+ #define CDC_TX0_MBHC_CTL_EN_MASK	BIT(6)
+ #define CDC_TX1_TX_PATH_CTL		(0x0480)
+ #define CDC_TX1_TX_PATH_CFG0		(0x0484)
+@@ -285,6 +286,9 @@
+ 	int dec_mode[NUM_DECIMATORS];
+ 	struct lpass_macro *pds;
+ 	bool bcs_clk_en;
++	void __iomem *base;
++	u32 *dec_tuning;
++	int dec_tuning_n;
+ };
+ #define to_tx_macro(_hw) container_of(_hw, struct tx_macro, hw)
+ 
+@@ -927,6 +931,15 @@
+ 
+ 	switch (event) {
+ 	case SND_SOC_DAPM_PRE_PMU:
++		/*
++		 * Board tuning of the decimator's filter block (0x800 + 0x80 * n),
++		 * outside the regmap and lost with the LPASS power, so written on
++		 * every enable.  Pairs of <offset value> within the block.
++		 */
++		for (int i = 0; i + 1 < tx->dec_tuning_n; i += 2)
++			writel(tx->dec_tuning[i + 1],
++			       tx->base + CDC_TXn_TUNING_BLOCK(decimator) +
++			       tx->dec_tuning[i]);
+ 		adc_mux_reg = CDC_TX_INP_MUX_ADC_MUXn_CFG1(decimator);
+ 		if (snd_soc_component_read(component, adc_mux_reg) & SWR_MIC) {
+ 			adc_reg = CDC_TX_INP_MUX_ADC_MUXn_CFG0(decimator);
+@@ -2299,6 +2312,19 @@
+ 		}
+ 	}
+ 
++	tx->base = base;
++	ret = of_property_count_u32_elems(np, "qcom,dec-tuning-reg-values");
++	if (ret > 0 && !(ret % 2)) {
++		tx->dec_tuning = devm_kcalloc(dev, ret, sizeof(u32), GFP_KERNEL);
++		if (!tx->dec_tuning) {
++			ret = -ENOMEM;
++			goto err;
++		}
++		tx->dec_tuning_n = ret;
++		of_property_read_u32_array(np, "qcom,dec-tuning-reg-values",
++					   tx->dec_tuning, ret);
++	}
++
+ 	tx->regmap = devm_regmap_init_mmio(dev, base, &tx_regmap_config);
+ 	if (IS_ERR(tx->regmap)) {
+ 		ret = PTR_ERR(tx->regmap);
+diff --git a/sound/soc/codecs/wcd939x.c b/sound/soc/codecs/wcd939x.c
+index cb119f85c40e..e1f0cd72d80b 100644
+--- a/sound/soc/codecs/wcd939x.c
++++ b/sound/soc/codecs/wcd939x.c
+@@ -2053,7 +2053,10 @@
+ 	}
+ 	portidx = wcd->ch_info[ch_id].port_num;
+ 
+-	ucontrol->value.integer.value[0] = wcd->port_enable[portidx] ? 1 : 0;
++	/* this channel's bit, not the whole port (all ADCs share TX port 1) */
++	ucontrol->value.integer.value[0] =
++		!!(wcd->port_config[portidx - 1].ch_mask &
++		   wcd->ch_info[ch_id].ch_mask);
+ 
+ 	return 0;
+ }
+@@ -2074,6 +2077,7 @@
+ static int wcd939x_set_swr_port(struct snd_kcontrol *kcontrol,
+ 				struct snd_ctl_elem_value *ucontrol)
+ {
++	bool enable, was;
+ 	struct soc_mixer_control *mixer = (struct soc_mixer_control *)kcontrol->private_value;
+ 	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
+ 	struct wcd939x_priv *wcd939x = snd_soc_component_get_drvdata(comp);
+@@ -2090,11 +2094,14 @@
+ 	}
+ 	portidx = wcd->ch_info[ch_id].port_num;
+ 
+-	wcd->port_enable[portidx] = !!ucontrol->value.integer.value[0];
+-
+-	wcd939x_connect_port(wcd, portidx, ch_id, wcd->port_enable[portidx]);
+-
+-	return 1;
++	enable = !!ucontrol->value.integer.value[0];
++	was = !!(wcd->port_config[portidx - 1].ch_mask &
++		 wcd->ch_info[ch_id].ch_mask);
++
++	wcd939x_connect_port(wcd, portidx, ch_id, enable);
++	wcd->port_enable[portidx] = !!wcd->port_config[portidx - 1].ch_mask;
++
++	return enable != was;
+ }
+ 
+ /* MBHC Related */

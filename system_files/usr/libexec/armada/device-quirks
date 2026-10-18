@@ -5,6 +5,8 @@ device_env=${ARMADA_DEVICE_ENV:-/usr/libexec/armada/device-env}
 mem_sleep=${ARMADA_MEM_SLEEP_PATH:-/sys/power/mem_sleep}
 nm_ignore_sleep=${ARMADA_NM_IGNORE_SLEEP:-/etc/NetworkManager/ignore-sleep}
 sleep_config=${ARMADA_SLEEP_CONFIG:-/etc/armada/sleep.conf}
+iris_rule_src=${ARMADA_IRIS_V4L2_RULE:-/usr/lib/armada/wireplumber/lenovo-tb322fc-iris.conf}
+wireplumber_conf_dir=${ARMADA_WIREPLUMBER_CONFIG_DIR:-/etc/wireplumber/wireplumber.conf.d}
 
 eval "$("$device_env")"
 
@@ -52,6 +54,47 @@ case "${ARMADA_GAMEPAD_QUIRK:-none}" in
         ayaneo_default_mode
         ;;
     none)
+        ;;
+esac
+
+# On the Lenovo Legion Y700 Gen4 (TB322FC) WirePlumber 0.5.18 hangs during its
+# V4L2 camera probe: the Qualcomm Iris mem2mem codec nodes
+# (platform-aa00000.video-codec) are enumerated as cameras and their firmware
+# init fails at open, leaving the probe stuck and the later ALSA audio nodes
+# unprocessed. Direct ALSA playback works (the hardware test used aplay), but
+# Pulse/PipeWire streams failed to link: the sink existed, yet the default and
+# link hooks stayed blocked until this workaround. Install a narrowly scoped
+# drop-in that keeps only that exact bus path out of camera enumeration. Every
+# failure below is reported but never fatal, so the remaining quirks in this
+# script still run.
+install_tb322fc_iris_rule() {
+    local dest="$wireplumber_conf_dir/90-armada-tb322fc-iris.conf"
+
+    if [[ ! -r "$iris_rule_src" ]]; then
+        echo "device-quirks: $iris_rule_src not readable, skipping TB322FC WirePlumber Iris quirk" >&2
+        return 0
+    fi
+
+    if ! install -d -m 0755 "$wireplumber_conf_dir"; then
+        echo "device-quirks: failed to create $wireplumber_conf_dir, skipping TB322FC WirePlumber Iris quirk" >&2
+        return 0
+    fi
+
+    # Leave an already-correct drop-in untouched so repeat boots do not rewrite
+    # the file (stable inode/mtime); unrelated configs in this directory are
+    # never removed.
+    if [[ -r "$dest" ]] && cmp -s "$iris_rule_src" "$dest"; then
+        return 0
+    fi
+
+    if ! install -m 0644 "$iris_rule_src" "$dest"; then
+        echo "device-quirks: failed to install $dest" >&2
+    fi
+}
+
+case "${ARMADA_DEVICE_ID:-}" in
+    lenovo-tb322fc)
+        install_tb322fc_iris_rule
         ;;
 esac
 

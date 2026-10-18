@@ -58,6 +58,17 @@
       }
     },
     {
+      "models": [
+        "Lenovo Legion Y700 Gen4"
+      ],
+      "backend": {
+        "type": "gcmhid",
+        "vendor": "3537",
+        "product": "1134",
+        "strips": [1, 2]
+      }
+    },
+    {
       "models": ["AYANEO Pocket MICRO 2"],
       "backend": {
         "type": "serial",

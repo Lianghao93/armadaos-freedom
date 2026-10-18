@@ -53,7 +53,7 @@ static const char *const kshim_menu_text_table[2][KSHIM_TEXT_COUNT] = {
         [KSHIM_TEXT_DESC_INTERNAL]  = "启动安装在机身存储中的 ArmadaOS。",
         [KSHIM_TEXT_DESC_TF]        = "启动安装在 TF 卡中的 ArmadaOS，请先插入对应 TF 卡。",
         [KSHIM_TEXT_DESC_DIAGNOSTIC] = "启动 Linux 诊断环境，用于检查启动和硬件问题。",
-        [KSHIM_TEXT_DESC_ADVANCED]  = "进入 Linux 诊断、恢复或刷机模式。",
+        [KSHIM_TEXT_DESC_ADVANCED]  = "查看可用的高级启动模式。",
         [KSHIM_TEXT_DESC_RESTART]   = "重新启动设备。",
         [KSHIM_TEXT_DESC_OFF]       = "关闭设备电源。",
         [KSHIM_TEXT_DESC_RECOVERY]  = "进入 Android 恢复模式，进行系统维护。",
@@ -113,7 +113,7 @@ static const char *const kshim_menu_text_table[2][KSHIM_TEXT_COUNT] = {
         [KSHIM_TEXT_DESC_INTERNAL]  = "Start ArmadaOS installed on internal storage.",
         [KSHIM_TEXT_DESC_TF]        = "Start ArmadaOS installed on the TF card. Insert the matching card first.",
         [KSHIM_TEXT_DESC_DIAGNOSTIC] = "Start the Linux diagnostic environment to investigate boot and hardware problems.",
-        [KSHIM_TEXT_DESC_ADVANCED]  = "Enter Linux diagnostics, recovery or flashing modes.",
+        [KSHIM_TEXT_DESC_ADVANCED]  = "Choose an available advanced boot mode.",
         [KSHIM_TEXT_DESC_RESTART]   = "Restart the device.",
         [KSHIM_TEXT_DESC_OFF]       = "Turn off the device.",
         [KSHIM_TEXT_DESC_RECOVERY]  = "Enter Android recovery mode for system maintenance.",
@@ -326,7 +326,7 @@ int kshim_menu_format_countdown(char *buffer, size_t capacity, uint32_t seconds,
 #define KSHIM_MENU_DESC_INTERNAL "启动安装在机身存储中的 ArmadaOS。"
 #define KSHIM_MENU_DESC_TF "启动安装在 TF 卡中的 ArmadaOS，请先插入对应 TF 卡。"
 #define KSHIM_MENU_DESC_DIAGNOSTIC "启动 Linux 诊断环境，用于检查启动和硬件问题。"
-#define KSHIM_MENU_DESC_ADVANCED "进入 Linux 诊断、恢复或刷机模式。"
+#define KSHIM_MENU_DESC_ADVANCED "查看可用的高级启动模式。"
 #define KSHIM_MENU_DESC_RESTART "重新启动设备。"
 #define KSHIM_MENU_DESC_OFF "关闭设备电源。"
 #define KSHIM_MENU_DESC_RECOVERY "进入 Android 恢复模式，进行系统维护。"
@@ -353,7 +353,7 @@ int kshim_menu_format_countdown(char *buffer, size_t capacity, uint32_t seconds,
 #define KSHIM_MENU_DESC_INTERNAL "Start ArmadaOS installed on internal storage."
 #define KSHIM_MENU_DESC_TF "Start ArmadaOS installed on the TF card. Insert the matching card first."
 #define KSHIM_MENU_DESC_DIAGNOSTIC "Start the Linux diagnostic environment to investigate boot and hardware problems."
-#define KSHIM_MENU_DESC_ADVANCED "Enter Linux diagnostics, recovery or flashing modes."
+#define KSHIM_MENU_DESC_ADVANCED "Choose an available advanced boot mode."
 #define KSHIM_MENU_DESC_RESTART "Restart the device."
 #define KSHIM_MENU_DESC_OFF "Turn off the device."
 #define KSHIM_MENU_DESC_RECOVERY "Enter Android recovery mode for system maintenance."
@@ -377,3 +377,17 @@ Factory image
 Copied test payload
 Network rescue
 关机
+设备信息
+查看设备硬件信息（只读）。
+主板
+型号
+DT 型号
+DT 兼容列表
+DT 报告内存
+帧缓冲
+版本
+DT 报告
+未知
+…
+机型
+kShimC 版本

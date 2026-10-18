@@ -64,6 +64,21 @@ static const struct role_case role_cases[] = {
     { KSHIM_MENU_ROLE_INTERNAL,   "机身 ArmadaOS",  "Internal ArmadaOS", "机身存储", "internal storage" },
     { KSHIM_MENU_ROLE_TF,         "TF 卡 ArmadaOS", "TF card ArmadaOS",  "TF 卡",    "TF card" },
     { KSHIM_MENU_ROLE_DIAGNOSTIC, "Linux 诊断模式", "Linux diagnostics", "诊断环境", "diagnostic environment" },
+    { KSHIM_MENU_ROLE_DEVICE_INFO, "设备信息",       "Device info",       "只读",     "read-only" },
+    /* Appended session-settings roles: every one keeps its own localized
+     * label/description and the earlier numeric values are unchanged. */
+    { KSHIM_MENU_ROLE_SETTINGS,       "设置",              "Settings",
+      "本次启动", "this boot" },
+    { KSHIM_MENU_ROLE_DEVICE,         "设备",              "Device",
+      "机型",     "device used" },
+    { KSHIM_MENU_ROLE_DEFAULT,        "默认启动项",         "Default boot entry",
+      "默认系统", "default system" },
+    { KSHIM_MENU_ROLE_DEVICE_AUTO,    "自动识别",           "Auto detect",
+      "检测",     "detected" },
+    { KSHIM_MENU_ROLE_DEVICE_TB322FC, "Y700 四代 TB322FC", "Y700 Gen4 TB322FC",
+      "TB322FC", "TB322FC" },
+    { KSHIM_MENU_ROLE_DEVICE_TB323FU, "Y700 五代 TB323FU", "Y700 Gen5 TB323FU",
+      "TB323FU", "TB323FU" },
 };
 
 #define ROLE_CASE_COUNT (sizeof role_cases / sizeof role_cases[0])
@@ -109,8 +124,69 @@ static void check_role_fallbacks(void)
 
     assert(kshim_menu_role_name((kshim_menu_role_t)-1, fallback_name) == fallback_name);
     assert(kshim_menu_role_description((kshim_menu_role_t)-1, fallback_desc) == fallback_desc);
-    assert(kshim_menu_role_name((kshim_menu_role_t)(KSHIM_MENU_ROLE_LANG_EN + 1), fallback_name) == fallback_name);
-    assert(kshim_menu_role_description((kshim_menu_role_t)(KSHIM_MENU_ROLE_LANG_EN + 1), fallback_desc) == fallback_desc);
+    /* KSHIM_MENU_ROLE_MAX is now the last valid role, so MAX + 1 is the first
+     * out-of-range value the fallback contract must reject. */
+    assert(kshim_menu_role_name((kshim_menu_role_t)(KSHIM_MENU_ROLE_MAX + 1), fallback_name) == fallback_name);
+    assert(kshim_menu_role_description((kshim_menu_role_t)(KSHIM_MENU_ROLE_MAX + 1), fallback_desc) == fallback_desc);
+}
+
+/* The appended roles must not have shifted any earlier numeric value. */
+static void check_role_values(void)
+{
+    assert(KSHIM_MENU_ROLE_UNKNOWN == 0);
+    assert(KSHIM_MENU_ROLE_BASE == 1);
+    assert(KSHIM_MENU_ROLE_ANDROID == 2);
+    assert(KSHIM_MENU_ROLE_INTERNAL == 3);
+    assert(KSHIM_MENU_ROLE_TF == 4);
+    assert(KSHIM_MENU_ROLE_DIAGNOSTIC == 5);
+    assert(KSHIM_MENU_ROLE_ADVANCED == 6);
+    assert(KSHIM_MENU_ROLE_LANGUAGE == 7);
+    assert(KSHIM_MENU_ROLE_RESTART == 8);
+    assert(KSHIM_MENU_ROLE_OFF == 9);
+    assert(KSHIM_MENU_ROLE_RECOVERY == 10);
+    assert(KSHIM_MENU_ROLE_FASTBOOT == 11);
+    assert(KSHIM_MENU_ROLE_EDL == 12);
+    assert(KSHIM_MENU_ROLE_BACK == 13);
+    assert(KSHIM_MENU_ROLE_LANG_ZH == 14);
+    assert(KSHIM_MENU_ROLE_LANG_EN == 15);
+    assert(KSHIM_MENU_ROLE_DEVICE_INFO == 16);
+    assert(KSHIM_MENU_ROLE_SETTINGS == 17);
+    assert(KSHIM_MENU_ROLE_DEVICE == 18);
+    assert(KSHIM_MENU_ROLE_DEFAULT == 19);
+    assert(KSHIM_MENU_ROLE_DEVICE_AUTO == 20);
+    assert(KSHIM_MENU_ROLE_DEVICE_TB322FC == 21);
+    assert(KSHIM_MENU_ROLE_DEVICE_TB323FU == 22);
+    assert(KSHIM_MENU_ROLE_MAX == KSHIM_MENU_ROLE_DEVICE_TB323FU);
+}
+
+/* The changed/added session-settings strings are non-empty in both languages
+ * and keep their exact visible text; the returned pointers are recorded so the
+ * caller can prove the two languages actually differ. */
+static void check_settings_texts(int chinese, const char **out)
+{
+    static const char *const zh[] = {
+        "默认启动项", "自动识别", "Y700 四代 TB322FC", "Y700 五代 TB323FU",
+        "镜像默认", "设备：%s", "默认启动项：%s", "返回上一级。",
+    };
+    static const char *const en[] = {
+        "Default boot entry", "Auto detect", "Y700 Gen4 TB322FC", "Y700 Gen5 TB323FU",
+        "Image default", "Device: %s", "Default boot entry: %s",
+        "Return to the previous menu.",
+    };
+    const kshim_menu_text_id ids[8] = {
+        KSHIM_TEXT_DEFAULT_LABEL, KSHIM_TEXT_DEVICE_AUTO_NAME,
+        KSHIM_TEXT_DEVICE_TB322FC_NAME, KSHIM_TEXT_DEVICE_TB323FU_NAME,
+        KSHIM_TEXT_DEFAULT_MANIFEST, KSHIM_TEXT_SETTINGS_DEVICE_MANUAL_FMT,
+        KSHIM_TEXT_SETTINGS_DEFAULT_FMT, KSHIM_TEXT_DESC_BACK_PARENT,
+    };
+    size_t i;
+
+    for (i = 0; i < 8; ++i) {
+        const char *text = kshim_menu_text(ids[i]);
+        assert(text != NULL && text[0] != '\0');
+        assert(strcmp(text, chinese ? zh[i] : en[i]) == 0);
+        out[i] = text;
+    }
 }
 
 /* Countdown output plus the snprintf short-buffer contract. `expected` is the
@@ -157,6 +233,8 @@ int main(void)
 {
     const char *zh_names[ROLE_CASE_COUNT];
     const char *en_names[ROLE_CASE_COUNT];
+    const char *zh_settings[8];
+    const char *en_settings[8];
     size_t i;
 
     /* 1. Initial runtime state must be Chinese (CONFIG_KSHIM_MENU_CHINESE=1). */
@@ -171,6 +249,8 @@ int main(void)
     check_countdown("3 秒后自动启动", "");
     check_roles_in_language(1, zh_names);
     check_role_fallbacks();
+    check_role_values();
+    check_settings_texts(1, zh_settings);
 
     /* 2. Switch to English: getter and every runtime macro must follow. */
     assert(kshim_menu_set_language(KSHIM_MENU_LANG_EN) == 0);
@@ -190,10 +270,15 @@ int main(void)
     check_countdown("Booting in 3 s", "");
     check_roles_in_language(0, en_names);
     check_role_fallbacks();
+    check_settings_texts(0, en_settings);
 
     /* 2. The explicit role labels must actually differ across languages. */
     for (i = 0; i < ROLE_CASE_COUNT; ++i) {
         assert(strcmp(zh_names[i], en_names[i]) != 0);
+    }
+    /* 2. The changed settings strings differ across languages too. */
+    for (i = 0; i < 8; ++i) {
+        assert(strcmp(zh_settings[i], en_settings[i]) != 0);
     }
 
     /* 1. Switch back to Chinese and confirm the macros are restored. */

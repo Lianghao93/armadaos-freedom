@@ -89,6 +89,8 @@ CONFIG_DRM_PANEL_EDP=y
 CONFIG_PHY_QCOM_QMP=y
 CONFIG_PHY_QCOM_QMP_COMBO=y
 CONFIG_PHY_QCOM_EUSB2_REPEATER=y
+# DWC3 UDC needs the board M31 eUSB2 PHY before init mounts modules, so =y.
+CONFIG_PHY_QCOM_M31_EUSB=y
 CONFIG_PHY_SNPS_EUSB2=y
 CONFIG_REGULATOR_QCOM_REFGEN=y
 
@@ -121,6 +123,7 @@ CONFIG_DRM_PANEL_AYANEO_WT0600_2K=y         # AYN Thor
 CONFIG_DRM_PANEL_AYANEO_WT0600_1K=y         # AYANEO Pocket S 1K
 CONFIG_DRM_PANEL_MANGMI_AIR_Y_PRO=y         # MANGMI Air Y Pro
 CONFIG_DRM_PANEL_AYANEO_AR18=y              # AYANEO Pocket MICRO 2
+CONFIG_DRM_PANEL_NOVATEK_NT36536=y          # Lenovo Y700 Gen4 (TB322FC)
 
 # ============== Input ==============
 CONFIG_INPUT_JOYSTICK=y
@@ -141,6 +144,7 @@ CONFIG_RMI4_F11=y
 CONFIG_RMI4_F12=y
 CONFIG_RMI4_F30=y
 CONFIG_TOUCHSCREEN_SYNAPTICS_DSX=m
+CONFIG_TOUCHSCREEN_NOVATEK_NVT36XXX_SPI=m # Lenovo Y700 Gen4 (TB322FC)
 
 # ============== LEDs / RGB ==============
 CONFIG_LEDS_HTR3212=y
@@ -160,7 +164,7 @@ CONFIG_REGULATOR_SGM3804=y
 CONFIG_REGULATOR_QCOM_LCDB=y             # MANGMI Air Y Pro panel bias
 CONFIG_BACKLIGHT_SY7758=y
 CONFIG_BACKLIGHT_ODIN2MINI=y
-CONFIG_BACKLIGHT_AW99706=y                # KONKR Pocket FIT Elite
+CONFIG_BACKLIGHT_AW99706=y                # KONKR Pocket FIT Elite + Y700 Gen4
 # =y not =m: a modular backlight PWM provider makes the panel bind late (from
 # the rootfs). Gated by LEDS_CLASS_MULTICOLOR, which must be =y too.
 CONFIG_LEDS_CLASS_MULTICOLOR=y
@@ -181,9 +185,25 @@ CONFIG_JOYSTICK_XPAD=m
 CONFIG_JOYSTICK_XPAD_FF=y
 CONFIG_JOYSTICK_XPAD_LEDS=y
 
+# ============== USB gadget (early boot) ==============
+# Gen5 initramfs configures the gadget through configfs before it mounts
+# modules: the gadget core and libcomposite must be built in, and the configfs
+# options below select the built-in function drivers and USB_U_ETHER.
+CONFIG_USB_GADGET=y
+CONFIG_USB_CONFIGFS=y
+CONFIG_USB_CONFIGFS_ACM=y                  # early serial console
+CONFIG_USB_CONFIGFS_NCM=y                  # early USB networking
+CONFIG_USB_CONFIGFS_MASS_STORAGE=y         # first-boot storage provider
+CONFIG_USB_LIBCOMPOSITE=y
+CONFIG_USB_U_ETHER=y
+CONFIG_USB_F_ACM=y
+CONFIG_USB_F_NCM=y
+CONFIG_USB_F_MASS_STORAGE=y
+
 # ============== Audio ==============
 CONFIG_SND_SOC_AW88166=m
 CONFIG_SND_SOC_AW88261=m               # KONKR Pocket FIT Elite speaker amp
+CONFIG_SND_SOC_AW88461=m               # Lenovo Y700 Gen4 (TB322FC) speaker amp
 # absent snd-seq spams udev at boot — Fedora's snd-pcm modprobe rule pulls it in
 CONFIG_SND_SEQUENCER=m
 
@@ -220,6 +240,14 @@ CONFIG_LRU_GEN_ENABLED=y                     # bare LRU_GEN only builds MGLRU, t
 CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y        # not defconfig's ALWAYS, which bloats FEX RAM
 CONFIG_PSI=y                                 # Waydroid lmkd memory-pressure monitoring
 CONFIG_PSI_DEFAULT_DISABLED=y                # opt in with psi=1
+
+# ============== Persistent boot logging (pstore) ==============
+# Built in: ramoops must register before initramfs/root modules load, and the
+# region comes from each device's DT reservation.
+CONFIG_PSTORE=y
+CONFIG_PSTORE_RAM=y
+CONFIG_PSTORE_CONSOLE=y
+CONFIG_PSTORE_PMSG=y
 
 # ============== bootc / ostree / systemd ==============
 CONFIG_EROFS_FS=m
@@ -319,6 +347,24 @@ CONFIG_INTERCONNECT_QCOM_SM8750=y
 CONFIG_BT_QCA=m
 
 CONFIG_DEVFREQ_GOV_PERFORMANCE=y
+
+# ============== SM8850 (Kaanapali GPU) ==============
+CONFIG_CLK_KAANAPALI_GCC=y
+CONFIG_CLK_KAANAPALI_DISPCC=y
+CONFIG_CLK_KAANAPALI_GPUCC=y
+CONFIG_CLK_KAANAPALI_TCSRCC=y
+CONFIG_CLK_KAANAPALI_CAMCC=y
+CONFIG_CLK_KAANAPALI_VIDEOCC=y
+CONFIG_PINCTRL_KAANAPALI=y
+CONFIG_INTERCONNECT_QCOM_KAANAPALI=y
+CONFIG_QCOM_CPUCP_MBOX=y
+CONFIG_QCOM_SCMI_GENERIC_EXT=y
+CONFIG_SCMI_QCOM_MEMLAT_DEVFREQ=y
+CONFIG_DEVFREQ_GOV_REMOTE=y                # selected by SCMI_QCOM_MEMLAT_DEVFREQ
+CONFIG_QCOM_SPMI_ADC5_GEN3=y
+CONFIG_QCOM_SPMI_ADC_TM5_GEN3=y
+CONFIG_TOUCHSCREEN_NT36536_SPI=m           # Lenovo Y700 Gen5 (TB323FU)
+CONFIG_DRM_PANEL_NOVATEK_NT36523=y         # Lenovo Y700 Gen5 (TB323FU) panel
 
 # ============== Filesystems ==============
 CONFIG_EXFAT_FS=m

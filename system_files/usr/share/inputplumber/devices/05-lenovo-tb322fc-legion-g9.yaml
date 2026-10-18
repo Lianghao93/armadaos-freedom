@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ShadowBlip/InputPlumber/main/rootfs/usr/share/inputplumber/schema/composite_device_v1.json
+# Lenovo Legion Tab Y700 Gen4 (TB322FC) with the older GameSir Legion Gaming
+# Controller G9 attached. Basic support only: the single actual evdev gamepad
+# is sourced and mapped through the lenovo_legion_g9 capability map. No IMU,
+# tablet haptics, consumer-key blocking, RGB vendor commands, udev rules,
+# service units or helper changes are added here.
+#
+# The device-tree model string below is exactly the observed Gen4 model
+# ("Lenovo Legion Y700 Gen4"). This profile matches only that one model and
+# does not broaden to other Legion devices.
+#
+# Provenance: the YAML structure follows the existing Gen5 profile
+# (05-lenovo-tb323fu-legion-g9-2026.yaml); the capability map reuses the
+# upstream old G9 3537:1134 map from
+# https://github.com/enij90/armada-tb321fu/tree/62076530bf1ff34295d671016658965e54e597f1
+# That upstream profile's firmware-timing notes are not carried over because
+# they are not part of the ordinary mapping and were not re-verified here.
+#
+# target_devices below defaults to deck-uhid to match this machine's present
+# controller-type selection, using the same targets as the existing Gen5
+# profile. Selecting a different saved target is handled by the existing
+# controller-type apply flow; nothing is persisted across hotplug here.
+version: 1
+kind: CompositeDevice
+name: Lenovo Legion Y700 Gen4 (TB322FC) + Legion G9
+matches:
+  - udev:
+      sys_path: /sys/firmware/devicetree/base
+      attributes:
+        - name: model
+          value: Lenovo Legion Y700 Gen4
+single_source: false
+source_devices:
+  - group: gamepad
+    evdev:
+      name: GameSir Legion Gaming Controller G9
+      vendor_id: "3537"
+      product_id: "1134"
+      handler: event*
+    capability_map_id: lenovo_legion_g9
+options:
+  auto_manage: true
+target_devices:
+  - deck-uhid
+  - keyboard

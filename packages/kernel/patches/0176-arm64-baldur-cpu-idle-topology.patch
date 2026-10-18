@@ -1,0 +1,192 @@
+From: Joonhoe Kim <26rote@gmail.com>
+Date: Sun, 18 Oct 2026 00:00:00 +0800
+Subject: [PATCH] arm64: dts: qcom: kaanapali: preserve Baldur CPU idle and topology
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Preserve the Baldur CPU idle and capacity setup on the 7.2.6
+preimages, coalescing legacy patches 0031, 0106, 0117 and 0118 from
+the pinned tb323fu-linux tree at
+11a25bf89b65fff48112a91a0b25bc247e7736d8.  The code is the original
+author's work, rebased onto these preimages; the rebase adds no
+Signed-off-by.
+
+- kaanapali.dtsi: give CPU6-7 a PSCI cluster domain of their own
+  (cluster1_pd), with both clusters below the system domain, matching
+  the vendor cluster-pd1 topology.
+- kaanapali.dtsi: add capacity-dmips-mhz only: 1792 for CPU0-5 and
+  1894 for CPU6-7.  The 7.2 power-domains and pdp_scmi_perf clock
+  properties are preserved; no 7.3 scmi_perf references are added.
+- cpuidle-psci-domain: on lenovo,baldur keep the system power domain
+  always on in runtime idle (GENPD_FLAG_RPM_ALWAYS_ON), so its
+  domain-idle-state is entered only in system suspend.
+- cpuidle-psci-domain: add allow_cluster_off (default Y).  When it is
+  N, cluster domains return -EBUSY for their idle states in runtime
+  idle; system suspend still uses them.
+
+Every other machine keeps the existing behaviour.  No command line,
+config fragment, forced FDT or initramfs change is included: the
+device-specific command line must still set
+cpuidle_psci_domain.allow_cluster_off=0 before the candidate is
+built.
+
+---
+ 2 files changed, 42 insertions(+), 2 deletions(-)
+---
+
+diff --git a/arch/arm64/boot/dts/qcom/kaanapali.dtsi b/arch/arm64/boot/dts/qcom/kaanapali.dtsi
+index ec686d91b684..6cfb894b9807 100644
+--- a/arch/arm64/boot/dts/qcom/kaanapali.dtsi
++++ b/arch/arm64/boot/dts/qcom/kaanapali.dtsi
+@@ -45,6 +45,7 @@
+ 			compatible = "qcom,oryon";
+ 			reg = <0x0 0x0>;
+ 			enable-method = "psci";
++			capacity-dmips-mhz = <1792>;
+ 			next-level-cache = <&l2_0>;
+ 			power-domains = <&cpu_pd0>;
+ 			power-domain-names = "psci";
+@@ -62,6 +63,7 @@
+ 			compatible = "qcom,oryon";
+ 			reg = <0x0 0x100>;
+ 			enable-method = "psci";
++			capacity-dmips-mhz = <1792>;
+ 			next-level-cache = <&l2_0>;
+ 			power-domains = <&cpu_pd1>;
+ 			power-domain-names = "psci";
+@@ -73,6 +75,7 @@
+ 			compatible = "qcom,oryon";
+ 			reg = <0x0 0x200>;
+ 			enable-method = "psci";
++			capacity-dmips-mhz = <1792>;
+ 			next-level-cache = <&l2_0>;
+ 			power-domains = <&cpu_pd2>;
+ 			power-domain-names = "psci";
+@@ -84,6 +87,7 @@
+ 			compatible = "qcom,oryon";
+ 			reg = <0x0 0x300>;
+ 			enable-method = "psci";
++			capacity-dmips-mhz = <1792>;
+ 			next-level-cache = <&l2_0>;
+ 			power-domains = <&cpu_pd3>;
+ 			power-domain-names = "psci";
+@@ -95,6 +99,7 @@
+ 			compatible = "qcom,oryon";
+ 			reg = <0x0 0x400>;
+ 			enable-method = "psci";
++			capacity-dmips-mhz = <1792>;
+ 			next-level-cache = <&l2_0>;
+ 			power-domains = <&cpu_pd4>;
+ 			power-domain-names = "psci";
+@@ -106,6 +111,7 @@
+ 			compatible = "qcom,oryon";
+ 			reg = <0x0 0x500>;
+ 			enable-method = "psci";
++			capacity-dmips-mhz = <1792>;
+ 			next-level-cache = <&l2_0>;
+ 			power-domains = <&cpu_pd5>;
+ 			power-domain-names = "psci";
+@@ -117,6 +123,7 @@
+ 			compatible = "qcom,oryon";
+ 			reg = <0x0 0x10000>;
+ 			enable-method = "psci";
++			capacity-dmips-mhz = <1894>;
+ 			next-level-cache = <&l2_1>;
+ 			power-domains = <&cpu_pd6>;
+ 			power-domain-names = "psci";
+@@ -134,6 +141,7 @@
+ 			compatible = "qcom,oryon";
+ 			reg = <0x0 0x10100>;
+ 			enable-method = "psci";
++			capacity-dmips-mhz = <1894>;
+ 			next-level-cache = <&l2_1>;
+ 			power-domains = <&cpu_pd7>;
+ 			power-domain-names = "psci";
+@@ -308,17 +316,24 @@
+ 
+ 		cpu_pd6: power-domain-cpu6 {
+ 			#power-domain-cells = <0>;
+-			power-domains = <&cluster_pd>;
++			power-domains = <&cluster1_pd>;
+ 			domain-idle-states = <&cluster1_c4>;
+ 		};
+ 
+ 		cpu_pd7: power-domain-cpu7 {
+ 			#power-domain-cells = <0>;
+-			power-domains = <&cluster_pd>;
++			power-domains = <&cluster1_pd>;
+ 			domain-idle-states = <&cluster1_c4>;
+ 		};
+ 
+ 		cluster_pd: power-domain-cluster {
++			#power-domain-cells = <0>;
++			domain-idle-states = <&cluster_cl5>;
++			power-domains = <&system_pd>;
++		};
++
++		/* CPU6-7 are a cluster of their own, as in the vendor tree */
++		cluster1_pd: power-domain-cluster1 {
+ 			#power-domain-cells = <0>;
+ 			domain-idle-states = <&cluster_cl5>;
+ 			power-domains = <&system_pd>;
+diff --git a/drivers/cpuidle/cpuidle-psci-domain.c b/drivers/cpuidle/cpuidle-psci-domain.c
+index b9e4ad7d43a3..a0979f829114 100644
+--- a/drivers/cpuidle/cpuidle-psci-domain.c
++++ b/drivers/cpuidle/cpuidle-psci-domain.c
+@@ -12,12 +12,15 @@
+ #include <linux/cpu.h>
+ #include <linux/device.h>
+ #include <linux/kernel.h>
++#include <linux/moduleparam.h>
++#include <linux/of.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_domain.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/psci.h>
+ #include <linux/slab.h>
+ #include <linux/string.h>
++#include <linux/suspend.h>
+ 
+ #include "cpuidle-psci.h"
+ #include "dt_idle_genpd.h"
+@@ -29,10 +32,29 @@
+ 
+ static LIST_HEAD(psci_pd_providers);
+ 
++static bool allow_cluster_off = true;
++module_param(allow_cluster_off, bool, 0644);
++MODULE_PARM_DESC(allow_cluster_off,
++		 "Use the idle states of cluster domains (parents of CPU domains) in runtime idle (default: Y)");
++
++static bool psci_pd_is_cluster(struct generic_pm_domain *pd)
++{
++	struct gpd_link *link;
++
++	link = list_first_entry_or_null(&pd->parent_links, struct gpd_link,
++					parent_node);
++	return link && list_empty(&link->child->parent_links);
++}
++
+ static int psci_pd_power_off(struct generic_pm_domain *pd)
+ {
+ 	struct genpd_power_state *state = &pd->states[pd->state_idx];
+ 	u32 *pd_state;
++
++	/* s2idle needs the cluster states to reach the system domain state. */
++	if (!READ_ONCE(allow_cluster_off) && !idle_should_enter_s2idle() &&
++	    psci_pd_is_cluster(pd))
++		return -EBUSY;
+ 
+ 	if (!state->data)
+ 		return 0;
+@@ -71,6 +93,9 @@
+ 		pd->flags |= GENPD_FLAG_ACTIVE_WAKEUP;
+ 		if (IS_ENABLED(CONFIG_PREEMPT_RT))
+ 			pd->flags |= GENPD_FLAG_RPM_ALWAYS_ON;
++		if (of_machine_is_compatible("lenovo,baldur") &&
++		    of_node_name_eq(np, "power-domain-system"))
++			pd->flags |= GENPD_FLAG_RPM_ALWAYS_ON;
+ 	} else {
+ 		pd->flags |= GENPD_FLAG_ALWAYS_ON;
+ 	}

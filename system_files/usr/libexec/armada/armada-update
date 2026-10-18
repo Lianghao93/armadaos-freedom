@@ -17,13 +17,23 @@ fail() {
 }
 
 command -v bootc >/dev/null || fail "bootc is unavailable"
-reserve_bytes=$(armada_update_reserve_bytes) || fail "Could not determine the update storage reserve"
 
 booted_ref=$(armada_booted_ref)
 booted=$(armada_tag_from_ref "$booted_ref")
 target=$(armada_update_target "$booted_ref") || fail "Could not determine the update target"
 read -r repository desired <<<"$target"
 case "$booted_ref" in ostree-image-signed:*) verified=1 ;; *) verified=0 ;; esac
+
+# The resolved target is always Freedom. Any other known origin on the booted
+# deployment is an old upstream that must move with bootc switch, never upgrade.
+booted_repository=$(armada_repository_from_ref "$booted_ref") || booted_repository=""
+migrate=0
+[ "${booted_repository}" = "${repository}" ] || migrate=1
+
+# The actual signature policy must be present before any network or storage work.
+armada_update_policy_ready || fail "Freedom updates not configured"
+
+reserve_bytes=$(armada_update_reserve_bytes) || fail "Could not determine the update storage reserve"
 
 # Steam suppresses previously applied versions, so successful checks must print a per-build identity.
 if [ "${check}" = 1 ]; then
@@ -33,7 +43,14 @@ if [ "${check}" = 1 ]; then
     [ "${s_ref:-}" = "-" ] && s_ref=""
     [ "${s_ver:-}" = "-" ] && s_ver=""
     [ -n "${b_digest}" ] || fail "Could not read the booted deployment"
-    staged=$(armada_tag_from_ref "${s_ref}")
+    staged_current=0
+    if [ -n "${s_ref}" ]; then
+        read -r s_repository s_channel <<<"$(armada_ref_parts "${s_ref}")" \
+            || { s_repository=""; s_channel=""; }
+        if [ "${s_repository}" = "${repository}" ] && [ "${s_channel}" = "${desired}" ]; then
+            staged_current=1
+        fi
+    fi
     remote_info=$(armada_remote_info "${desired}" "${repository}")
     remote_status=$?
     if [ "${remote_status}" != 0 ]; then
@@ -46,18 +63,27 @@ if [ "${check}" = 1 ]; then
         armada_update_log "update target ${repository}:${desired} returned incomplete metadata"
         fail "The update target returned incomplete metadata"
     fi
-    if [ "${staged}" != "${desired}" ] && { [ "${desired}" != "${booted}" ] || [ -n "${staged}" ]; }; then
+    # A required repository migration, a channel change from the booted one, or
+    # a staged image from the wrong source all offer the new version — but only
+    # when no matching Freedom image is already staged; otherwise the pending
+    # restart is reported below.
+    if [ "${staged_current}" = 0 ] && \
+            { [ "${migrate}" = 1 ] || [ "${desired}" != "${booted}" ] || [ -n "${s_ref}" ]; }; then
         armada_update_fits "${r_required}" "${reserve_bytes}" || fail "Not enough free space for the update"
         printf '%s\n' "${r_ver:-${r_digest}}"
         exit 0
     fi
-    # bootc upgrade --check caches its verdict; registry digests allow fresh comparisons.
-    if [ "${r_digest}" != "${b_digest}" ] && [ "${r_digest}" != "${s_digest}" ]; then
+    # bootc upgrade --check caches its verdict; registry digests allow fresh
+    # comparisons. A matching staged image is compared against too, so an
+    # unchanged remote never re-offers; otherwise the booted digest is the only
+    # baseline.
+    if [ "${r_digest}" != "${b_digest}" ] && \
+            { [ "${staged_current}" = 0 ] || [ "${r_digest}" != "${s_digest}" ]; }; then
         armada_update_fits "${r_required}" "${reserve_bytes}" || fail "Not enough free space for the update"
         printf '%s\n' "${r_ver:-${r_digest}}"
         exit 0
     fi
-    if [ -n "${s_digest}" ]; then
+    if [ "${staged_current}" = 1 ] && [ -n "${s_digest}" ]; then
         # Steam maps the reprinted staged version to restart-pending.
         printf '%s\n' "${s_ver:-${s_digest}}"
         exit 0
@@ -75,10 +101,21 @@ fi
 read -r r_required _ <<<"${remote_info}"
 armada_update_fits "${r_required:-}" "${reserve_bytes}" || exit 7
 
-staged=$(armada_tag_from_ref "$(armada_staged_ref)")
+staged_ref=$(armada_staged_ref)
+staged_current=0
+if [ -n "${staged_ref}" ]; then
+    read -r s_repository s_channel <<<"$(armada_ref_parts "${staged_ref}")" \
+        || { s_repository=""; s_channel=""; }
+    if [ "${s_repository}" = "${repository}" ] && [ "${s_channel}" = "${desired}" ]; then
+        staged_current=1
+    fi
+fi
 
-# Shutdown regenerates /KERNEL after deployment finalization.
-if [ "${staged}" != "${desired}" ] && { [ "${desired}" != "${booted}" ] || [ -n "${staged}" ]; } || [ "${verified}" = 0 ]; then
+# Shutdown regenerates /KERNEL after deployment finalization. A migration, an
+# unverified origin, a channel change, or a staged image from the wrong source
+# all require an explicit switch to the Freedom channel.
+if [ "${migrate}" = 1 ] || [ "${verified}" = 0 ] || [ "${desired}" != "${booted}" ] || \
+        { [ -n "${staged_ref}" ] && [ "${staged_current}" = 0 ]; }; then
     if ! armada_bootc_with_progress bootc switch --enforce-container-sigpolicy "${repository}:${desired}"; then
         if armada_steam_channels_apply "$repository" "$desired"; then
             # Unpublished channels must not trigger repeated update offers.

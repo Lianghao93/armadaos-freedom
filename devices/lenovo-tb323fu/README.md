@@ -7,13 +7,15 @@
 ## 目录
 
 - `boot/`：kShimC 源码、quiet 温区 GPU 解绑设备树片段，以及 [STAR_CHART 构建配方](boot/star-chart-build/README.md)。
-- `kernel/`：固定版本的板级源码和 `runtime-fixes/` 中的设备补丁。
+- [`../../packages/kernel/`](../../packages/kernel/)：当前统一 Linux **7.2.6** 内核、Baldur 设备树、驱动补丁和配套模块构建入口，与 Y700 四代共用基础内核。
+- `kernel/`：历史 7.3 板级源码快照和 `runtime-fixes/` 参考补丁，用于保留来源；当前统一内核所需的回移已接入 `packages/kernel`。
 - `rootfs/`：双 USB、音频、Wi-Fi 等设备配置。扬声器配置见 [部署说明](docs/audio-deployment.md)。
 - `patches/boot/`：引导及打包器补丁。旧 kShimC 邮箱补丁用于来源追溯，不应重复叠加到当前源码快照。
 - `diagnostics/`、`tests/`：诊断工具和回归测试源码。运行生成的报告、设备日志及备份在仓库外保存。
 
 ## 已接入的功能
 
+- 统一 Linux 7.2.6 #5 已在机身系统启动到 Steam，原生 DRM／Adreno 840 和 165 Hz 显示已运行，用户确认实体画面恢复。触控、游戏、TF 启动及长期显示稳定性仍需继续验证。
 - 设备识别、CPU 拓扑、性能配置和桌面触摸校准。
 - 机型匹配的 30／60／90／120／165 Hz 档位、真实 165 Hz 面板时序和高像素时钟 EDID 修复；旧内核仍可回退到其实际公布的 164 Hz。
 - kShimC 中英文 STAR_CHART 菜单：Android、机身 ArmadaOS、TF 卡 ArmadaOS、高级启动、语言、重启和关机。高级启动包含 Linux 诊断、Recovery、Fastboot、9008；并非所有高级动作均已逐项验收。

@@ -18,7 +18,12 @@ CONTROLLER_TYPES = {
 }
 
 
-def available_types():
+def device_env():
+    """Parse one device-env run into a {key: raw value} map.
+
+    Returns an empty map when device-env is missing or fails so callers treat
+    it exactly like an unset variable.
+    """
     try:
         result = subprocess.run(
             [DEVICE_ENV],
@@ -28,16 +33,24 @@ def available_types():
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
-        return list(CONTROLLER_TYPES)
-    raw = ""
+        return {}
+    values = {}
     for line in result.stdout.splitlines():
         key, sep, value = line.partition("=")
-        if sep and key.strip() == "ARMADA_IP_TARGETS":
-            try:
-                raw = shlex.split(value)[0] if value.strip() else ""
-            except ValueError:
-                raw = value.strip()
-            break
+        if sep:
+            values[key.strip()] = value
+    return values
+
+
+def available_types(env=None):
+    if env is None:
+        env = device_env()
+    raw = ""
+    value = env.get("ARMADA_IP_TARGETS", "")
+    try:
+        raw = shlex.split(value)[0] if value.strip() else ""
+    except ValueError:
+        raw = value.strip()
     types = []
     for item in raw.split(","):
         item = item.strip()
@@ -174,7 +187,10 @@ def main(argv):
         save_type(argv[2])
         return 0
     if command == "apply":
-        return 0 if apply_with_retry(load_type(available_types())) else 1
+        env = device_env()
+        if env.get("ARMADA_BUILTIN_GAMEPAD", "").strip() == "0":
+            return 0
+        return 0 if apply_with_retry(load_type(available_types(env))) else 1
     print("usage: controller-type get|set|apply", file=sys.stderr)
     return 2
 

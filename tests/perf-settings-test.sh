@@ -487,6 +487,25 @@ check("device-env SM8750 irq unrestricted", odin3.get("ARMADA_IRQ_CORES") == "''
 check("device-env non-SM8250 Proton defaults",
       odin3.get("ARMADA_PROTON_DEFAULTS") ==
       "proton-experimental-arm64:proton_11-arm64:proton-cachyos-11.0-arm64")
+gen4 = run_device_env("Lenovo Legion Y700 Gen4")
+check("device-env Gen4 big", gen4.get("ARMADA_BIG_CORES") == "0-7")
+check("device-env Gen4 prime", gen4.get("ARMADA_PRIME_CORES") == "6-7")
+check("device-env Gen4 little unrestricted", gen4.get("ARMADA_LITTLE_CORES") == "''")
+check("device-env Gen4 irq unrestricted", gen4.get("ARMADA_IRQ_CORES") == "''")
+# The profile must not hard-assign CPU vars, so custom and explicitly empty
+# environment overrides survive.
+gen4_override = run_device_env("Lenovo Legion Y700 Gen4", {
+    "ARMADA_BIG_CORES": "4-7", "ARMADA_PRIME_CORES": "7",
+    "ARMADA_LITTLE_CORES": "", "ARMADA_IRQ_CORES": "",
+})
+check("device-env Gen4 custom big survives",
+      gen4_override.get("ARMADA_BIG_CORES") == "4-7")
+check("device-env Gen4 custom prime survives",
+      gen4_override.get("ARMADA_PRIME_CORES") == "7")
+check("device-env Gen4 explicit-empty little survives",
+      gen4_override.get("ARMADA_LITTLE_CORES") == "''")
+check("device-env Gen4 explicit-empty irq survives",
+      gen4_override.get("ARMADA_IRQ_CORES") == "''")
 thor = run_device_env("AYN Thor")
 check("device-env SM8550 irq littles", thor.get("ARMADA_IRQ_CORES") == "0-2")
 thor_override = run_device_env("AYN Thor", {"ARMADA_IRQ_CORES": ""})

@@ -1,0 +1,99 @@
+From: Armada <noreply@armada.local>
+Date: Sun, 18 Oct 2026 00:00:00 +0800
+Subject: [PATCH] drm/msm/dpu: use the checked state for Baldur bandwidth
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+dpu_core_perf_crtc_check() validates the state being committed, but
+_dpu_core_perf_calc_bw() walks drm_atomic_crtc_for_each_plane(), i.e.
+the planes of the committed state.  Right after DPMS off/on or resume
+that state has no planes, so the vote for the frame being checked is
+zero and the interface is enabled with no interconnect bandwidth.
+
+Keep the crtc argument in the signature and pass the checked state
+down: lenovo,baldur aggregates the state's planes with
+drm_atomic_crtc_state_for_each_plane_state(), every other machine keeps
+the committed-plane loop.  The bandwidth factors, limits, clock vote
+and perf tuning are unchanged; this is not a performance limit
+increase.
+
+Provenance: this project's Lenovo TB323FU tree at
+11a25bf89b65fff48112a91a0b25bc247e7736d8, patch 0105.  The machine gate
+is the only new condition; the arithmetic and the vote remain the
+original author's.  No third-party sign-off is implied.
+
+---
+ 1 files changed, 29 insertions(+), 9 deletions(-)
+---
+
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_core_perf.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_core_perf.c
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_core_perf.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_core_perf.c
+@@ -11,6 +11,7 @@
+ #include <linux/sort.h>
+ #include <linux/clk.h>
+ #include <linux/bitmap.h>
++#include <linux/of.h>
+ 
+ #include "dpu_kms.h"
+ #include "dpu_trace.h"
+@@ -55,22 +56,41 @@
+  * _dpu_core_perf_calc_bw() - to calculate BW per crtc
+  * @perf_cfg: performance configuration
+  * @crtc: pointer to a crtc
++ * @state: pointer to the crtc state being checked
+  * Return: returns aggregated BW for all planes in crtc.
+  */
+ static u64 _dpu_core_perf_calc_bw(const struct dpu_perf_cfg *perf_cfg,
+-		struct drm_crtc *crtc)
++		struct drm_crtc *crtc, struct drm_crtc_state *state)
+ {
+ 	struct drm_plane *plane;
+-	struct dpu_plane_state *pstate;
++	const struct drm_plane_state *plane_state;
++	const struct dpu_plane_state *pstate;
+ 	u64 crtc_plane_bw = 0;
+ 	u32 bw_factor;
+ 
+-	drm_atomic_crtc_for_each_plane(plane, crtc) {
+-		pstate = to_dpu_plane_state(plane->state);
+-		if (!pstate)
+-			continue;
+-
+-		crtc_plane_bw += pstate->plane_fetch_bw;
++	/*
++	 * crtc->state still holds the committed planes, which are empty right
++	 * after DPMS off/on or resume; only the state under check has the
++	 * bandwidth of the frame being committed.  Other machines keep the
++	 * committed-plane aggregation.
++	 */
++	if (of_machine_is_compatible("lenovo,baldur")) {
++		drm_atomic_crtc_state_for_each_plane_state(plane, plane_state,
++							   state) {
++			pstate = to_dpu_plane_state(plane_state);
++			if (!pstate)
++				continue;
++
++			crtc_plane_bw += pstate->plane_fetch_bw;
++		}
++	} else {
++		drm_atomic_crtc_for_each_plane(plane, crtc) {
++			pstate = to_dpu_plane_state(plane->state);
++			if (!pstate)
++				continue;
++
++			crtc_plane_bw += pstate->plane_fetch_bw;
++		}
+ 	}
+ 
+ 	bw_factor = perf_cfg->bw_inefficiency_factor;
+@@ -131,7 +151,7 @@
+ 		return;
+ 	}
+ 
+-	perf->bw_ctl = _dpu_core_perf_calc_bw(perf_cfg, crtc);
++	perf->bw_ctl = _dpu_core_perf_calc_bw(perf_cfg, crtc, state);
+ 	perf->max_per_pipe_ib = perf_cfg->min_dram_ib;
+ 	perf->core_clk_rate = _dpu_core_perf_calc_clk(perf_cfg, crtc, state);
+ 	DRM_DEBUG_ATOMIC(

@@ -54,6 +54,12 @@ struct kshim_splash_trace {
 	uint32_t last_offset;
 	uint32_t values[5];
 	uint32_t first[15];
+	/* DT failure stage of the last kshim_dt_splash attempt (0 = none/legacy),
+	 * the root "compatible" string-list count (negative = malformed list) and
+	 * whether an exact "qcom,sunp" list entry was present. Diagnostic only. */
+	unsigned dt_stage;
+	int root_compatible_count;
+	bool root_has_sunp;
 };
 
 const struct kshim_splash_trace *kshim_splash_trace_get(void);

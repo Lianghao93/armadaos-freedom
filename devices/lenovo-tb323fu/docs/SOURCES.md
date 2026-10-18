@@ -6,7 +6,8 @@
 |---|---|
 | ArmadaOS 维护起点 | [armada-os/armada](https://github.com/armada-os/armada)，`887fd306b17b3060a70cc749e09630e1a640af14` |
 | 板级源码 | [joonhoekim/tb323fu-linux](https://github.com/joonhoekim/tb323fu-linux)，`11a25bf89b65fff48112a91a0b25bc247e7736d8` |
-| Linux 基线 | `93f51579e7df248780214094418f205253383cc5`，v7.3-rc4 / `7.3.0-rc4-tb323fu-t42` |
+| 当前统一 Linux 内核 | **7.2.6**；版本入口为 [`packages/kernel/BASE.env`](../../../packages/kernel/BASE.env)，四代与五代的板级支持共用 [`packages/kernel`](../../../packages/kernel/) 的补丁集和构建流程 |
+| 历史板级内核基线 | `93f51579e7df248780214094418f205253383cc5`，v7.3-rc4 / `7.3.0-rc4-tb323fu-t42`；作为设备支持回移来源，保留原始快照 |
 | G9 基础映射和 RGB 协议参考 | [enij90/armada-tb321fu](https://github.com/enij90/armada-tb321fu)，`62076530bf1ff34295d671016658965e54e597f1` |
 
 板级来源的许可证和 `kernel/PROVENANCE.md` 保留在原源码目录。`kernel/runtime-fixes/` 的补丁与固定快照分别维护；165 Hz 补丁替换原 `0109`，不是在它之后重复追加。

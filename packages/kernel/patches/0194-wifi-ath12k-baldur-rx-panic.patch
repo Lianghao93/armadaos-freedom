@@ -1,0 +1,417 @@
+From: Joonhoe Kim <26rote@gmail.com>
+Date: Sat, 26 Sep 2026 05:50:16 +0000
+Subject: [PATCH] wifi: ath12k: preserve Baldur panic wake and RX refill
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Keep the pinned TB323FU receive fixes on the unified ath12k datapath
+for the Lenovo Y700 Gen5 (baldur).
+
+The PCI bus wake-up callback calls mhi_device_get_sync(), which needs
+the MHI thread.  A panic never schedules that thread, so the wake only
+blocks the panicking CPU.  During a panic on lenovo,baldur, return
+-EBUSY before the wake; the non-zero result also skips the matching
+release, as in the original patch.  Every other machine keeps the
+unconditional wake.
+
+The receive code imports the original 0113 hunks as a whole, with no
+rewritten strategy.  ath12k_dp_rx_bufs_replenish() tops up a deficit
+larger than one eighth of the ring from the free descriptor list, and
+the wifi7 reap path posts reaped buffers back even when no complete
+MSDU was reaped.  Those two correctness fixes from the original are
+intentionally common and are not machine-gated.  Allocation, mapping,
+missing-descriptor, no-MSDU, top-up, watchdog and stall counters plus
+the ring fill level are shown in device_dp_stats.
+
+The deferrable one-second watchdog is new policy and only arms on
+lenovo,baldur.  It quietly completes the initial fill from the
+descriptor pool, then refills a half-empty ring and warns only when
+nothing was reaped since the previous run.  Its timer_setup() runs on
+every board because ath12k_dp_rx_free() calls the stop helper
+unconditionally and that helper must find an initialized timer; it is
+set up before any ath12k_dp_rx_alloc() failure path.  The helper uses
+timer_shutdown_sync(), and ath12k_dp_cleanup() calls it before
+ath12k_dp_cc_cleanup() frees the descriptors.
+
+The generator imports the original 0058 and 0113 hunks onto the actual
+unified preimages (7 files, 16 original hunks) and diffs the result at
+U3; the hunk count in this patch comes from that diff.
+
+Provenance: this project's Lenovo TB323FU tree at
+11a25bf89b65fff48112a91a0b25bc247e7736d8, patches 0058 and 0113 by
+Joonhoe Kim, rebased onto the unified datapath.  No sign-off is added.
+
+---
+ 7 files changed, 198 insertions(+), 7 deletions(-)
+---
+
+diff --git a/drivers/net/wireless/ath/ath12k/wifi7/pci.c b/drivers/net/wireless/ath/ath12k/wifi7/pci.c
+--- a/drivers/net/wireless/ath/ath12k/wifi7/pci.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/pci.c
+@@ -4,6 +4,8 @@
+  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+  */
+ 
++#include <linux/of.h>
++#include <linux/panic.h>
+ #include <linux/pci.h>
+ 
+ #include "../pci.h"
+@@ -63,6 +65,15 @@
+ static int ath12k_wifi7_pci_bus_wake_up(struct ath12k_base *ab)
+ {
+ 	struct ath12k_pci *ab_pci = ath12k_pci_priv(ab);
++
++	/*
++	 * Panic context: the other CPUs are stopped and IRQs are off, so the M0
++	 * wake mhi_device_get_sync() waits for may never be seen. A non-zero
++	 * return also skips the matching release.
++	 */
++	if (panic_in_progress() &&
++	    of_machine_is_compatible("lenovo,baldur"))
++		return -EBUSY;
+ 
+ 	return mhi_device_get_sync(ab_pci->mhi_ctrl->mhi_dev);
+ }
+diff --git a/drivers/net/wireless/ath/ath12k/debugfs.c b/drivers/net/wireless/ath/ath12k/debugfs.c
+--- a/drivers/net/wireless/ath/ath12k/debugfs.c
++++ b/drivers/net/wireless/ath/ath12k/debugfs.c
+@@ -1031,7 +1031,11 @@
+ 	struct ath12k_device_dp_stats *device_stats = &dp->device_stats;
+ 	int len = 0, i, j, ret;
+ 	struct ath12k *ar;
+-	const int size = 4096;
++	const int size = 8192;
++	struct dp_rxdma_ring *rx_ring = &dp->rx_refill_buf_ring;
++	struct hal_srng *srng;
++	size_t free_descs;
++	int num_free;
+ 	static const char *rxdma_err[HAL_REO_ENTR_RING_RXDMA_ECODE_MAX] = {
+ 		[HAL_REO_ENTR_RING_RXDMA_ECODE_OVERFLOW_ERR] = "Overflow",
+ 		[HAL_REO_ENTR_RING_RXDMA_ECODE_MPDU_LEN_ERR] = "MPDU len",
+@@ -1200,6 +1204,31 @@
+ 		len += scnprintf(buf + len, size - len, "\n");
+ 	}
+ 
++	srng = &dp->hal->srng_list[rx_ring->refill_buf_ring.ring_id];
++	spin_lock_bh(&srng->lock);
++	num_free = ath12k_hal_srng_src_num_free(ab, srng, true);
++	spin_unlock_bh(&srng->lock);
++	spin_lock_bh(&dp->rx_desc_lock);
++	free_descs = list_count_nodes(&dp->rx_desc_free_list);
++	spin_unlock_bh(&dp->rx_desc_lock);
++
++	len += scnprintf(buf + len, size - len,
++			 "\nRX refill ring: %d of %d free, free descriptors %zu\n",
++			 num_free, rx_ring->bufs_max, free_descs);
++	len += scnprintf(buf + len, size - len,
++			 "replenish alloc fail: %u map fail: %u no desc: %u\n",
++			 device_stats->rx_replenish_alloc_fail,
++			 device_stats->rx_replenish_map_fail,
++			 device_stats->rx_replenish_no_desc);
++	len += scnprintf(buf + len, size - len,
++			 "reap without msdu: %u top-up bufs: %u watchdog runs: %u bufs: %u stalls: %u%s\n",
++			 device_stats->rx_reap_no_msdu,
++			 device_stats->rx_refill_topup_bufs,
++			 device_stats->rx_refill_wd_runs,
++			 device_stats->rx_refill_wd_bufs,
++			 device_stats->rx_refill_wd_stalls,
++			 dp->rx_refill_filling ? " (initial fill)" : "");
++
+ 	ret = simple_read_from_buffer(user_buf, count, ppos, buf, len);
+ 
+ 	return ret;
+diff --git a/drivers/net/wireless/ath/ath12k/dp.c b/drivers/net/wireless/ath/ath12k/dp.c
+--- a/drivers/net/wireless/ath/ath12k/dp.c
++++ b/drivers/net/wireless/ath/ath12k/dp.c
+@@ -1123,6 +1123,9 @@
+ 	if (!dp->ab)
+ 		return;
+ 
++	/* before the rx descriptors go away in ath12k_dp_cc_cleanup() */
++	ath12k_dp_rx_refill_wd_stop(dp);
++
+ 	ath12k_dp_link_desc_cleanup(ab, dp->link_desc_banks,
+ 				    HAL_WBM_IDLE_LINK, &dp->wbm_idle_ring);
+ 
+diff --git a/drivers/net/wireless/ath/ath12k/dp.h b/drivers/net/wireless/ath/ath12k/dp.h
+--- a/drivers/net/wireless/ath/ath12k/dp.h
++++ b/drivers/net/wireless/ath/ath12k/dp.h
+@@ -449,6 +449,15 @@
+ 	u32 tx_enqueued[DP_TCL_NUM_RING_MAX];
+ 	u32 tx_completed[DP_TCL_NUM_RING_MAX];
+ 	u32 reo_excep_msdu_buf_type;
++	/* RX refill ring accounting */
++	u32 rx_replenish_alloc_fail;
++	u32 rx_replenish_map_fail;
++	u32 rx_replenish_no_desc;
++	u32 rx_reap_no_msdu;
++	u32 rx_refill_topup_bufs;
++	u32 rx_refill_wd_runs;
++	u32 rx_refill_wd_bufs;
++	u32 rx_refill_wd_stalls;
+ };
+ 
+ struct ath12k_dp {
+@@ -506,6 +515,20 @@
+ 	spinlock_t tx_desc_lock[ATH12K_HW_MAX_QUEUES];
+ 
+ 	struct dp_rxdma_ring rx_refill_buf_ring;
++	/* completes the initial fill of rx_refill_buf_ring and tops it up
++	 * when nothing is reaped any more
++	 */
++	struct timer_list rx_refill_wd;
++	struct ratelimit_state rx_refill_wd_rs;
++	/* buffers posted to rx_refill_buf_ring, under its srng lock */
++	u32 rx_refill_posted;
++	/* rx_refill_posted as of the last watchdog run */
++	u32 rx_refill_wd_posted;
++	/* rx_refill_posted at which the initial fill ends */
++	u32 rx_refill_fill_end;
++	bool rx_refill_wd_init;
++	/* the initial fill is still going on */
++	bool rx_refill_filling;
+ 	struct dp_srng rx_mac_buf_ring[MAX_RXDMA_PER_PDEV];
+ 	struct dp_srng rxdma_err_dst_ring[MAX_RXDMA_PER_PDEV];
+ 	struct dp_rxdma_mon_ring rxdma_mon_buf_ring;
+diff --git a/drivers/net/wireless/ath/ath12k/dp_rx.c b/drivers/net/wireless/ath/ath12k/dp_rx.c
+--- a/drivers/net/wireless/ath/ath12k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/dp_rx.c
+@@ -7,6 +7,8 @@
+ #include <linux/fips.h>
+ #include <linux/ieee80211.h>
+ #include <linux/kernel.h>
++#include <linux/of.h>
++#include <linux/ratelimit.h>
+ #include <linux/skbuff.h>
+ #include "core.h"
+ #include "debug.h"
+@@ -111,13 +113,30 @@
+ 						       num_remain);
+ 		spin_unlock_bh(&dp->rx_desc_lock);
+ 		num_remain = req_entries;
++	} else if (num_free - req_entries > rx_ring->bufs_max / 8) {
++		/* Also make up for buffers that were never posted back
++		 * (allocation or mapping failure, a dropped descriptor).
++		 */
++		LIST_HEAD(extra);
++		size_t n;
++
++		spin_lock_bh(&dp->rx_desc_lock);
++		n = ath12k_dp_list_cut_nodes(&extra, &dp->rx_desc_free_list,
++					     num_free - req_entries);
++		spin_unlock_bh(&dp->rx_desc_lock);
++		list_splice_tail(&extra, used_list);
++		req_entries += n;
++		num_remain = req_entries;
++		dp->device_stats.rx_refill_topup_bufs += n;
+ 	}
+ 
+ 	while (num_remain > 0) {
+ 		skb = dev_alloc_skb(DP_RX_BUFFER_SIZE +
+ 				    DP_RX_BUFFER_ALIGN_SIZE);
+-		if (!skb)
++		if (!skb) {
++			dp->device_stats.rx_replenish_alloc_fail++;
+ 			break;
++		}
+ 
+ 		if (!IS_ALIGNED((unsigned long)skb->data,
+ 				DP_RX_BUFFER_ALIGN_SIZE)) {
+@@ -129,14 +148,18 @@
+ 		paddr = dma_map_single(dp->dev, skb->data,
+ 				       skb->len + skb_tailroom(skb),
+ 				       DMA_FROM_DEVICE);
+-		if (dma_mapping_error(dp->dev, paddr))
++		if (dma_mapping_error(dp->dev, paddr)) {
++			dp->device_stats.rx_replenish_map_fail++;
+ 			goto fail_free_skb;
++		}
+ 
+ 		rx_desc = list_first_entry_or_null(used_list,
+ 						   struct ath12k_rx_desc_info,
+ 						   list);
+-		if (!rx_desc)
++		if (!rx_desc) {
++			dp->device_stats.rx_replenish_no_desc++;
+ 			goto fail_dma_unmap;
++		}
+ 
+ 		rx_desc->skb = skb;
+ 		cookie = rx_desc->cookie;
+@@ -163,6 +186,7 @@
+ 	dev_kfree_skb_any(skb);
+ out:
+ 	ath12k_hal_srng_access_end(ab, srng);
++	dp->rx_refill_posted += req_entries - num_remain;
+ 
+ 	if (!list_empty(used_list))
+ 		ath12k_dp_rx_enqueue_free(dp, used_list);
+@@ -172,6 +196,83 @@
+ 	return req_entries - num_remain;
+ }
+ EXPORT_SYMBOL(ath12k_dp_rx_bufs_replenish);
++
++#define ATH12K_DP_RX_REFILL_WD_MS	1000
++
++/* The refill ring is only replenished from the reap paths, and WCN7850 has
++ * no host2rxdma low-threshold interrupt: once the ring runs dry nothing is
++ * reaped any more. Top it up from a timer, which also completes the initial
++ * fill from the descriptor pool.
++ */
++static void ath12k_dp_rx_refill_wd(struct timer_list *t)
++{
++	struct ath12k_dp *dp = timer_container_of(dp, t, rx_refill_wd);
++	struct dp_rxdma_ring *rx_ring = &dp->rx_refill_buf_ring;
++	struct ath12k_device_dp_stats *stats = &dp->device_stats;
++	struct ath12k_base *ab = dp->ab;
++	struct hal_srng *srng;
++	LIST_HEAD(list);
++	int num_free, n;
++	bool reaped;
++	u32 posted;
++
++	if (!test_bit(ATH12K_FLAG_EXT_IRQ_ENABLED, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_RECOVERY, &ab->dev_flags))
++		goto rearm;
++
++	srng = &dp->hal->srng_list[rx_ring->refill_buf_ring.ring_id];
++	spin_lock_bh(&srng->lock);
++	num_free = ath12k_hal_srng_src_num_free(ab, srng, true);
++	posted = dp->rx_refill_posted;
++	spin_unlock_bh(&srng->lock);
++
++	/* whatever was posted since the last run came from a reap path */
++	reaped = posted != dp->rx_refill_wd_posted;
++	dp->rx_refill_wd_posted = posted;
++
++	if (dp->rx_refill_filling &&
++	    (s32)(posted - dp->rx_refill_fill_end) >= 0)
++		dp->rx_refill_filling = false;
++
++	if (num_free <= rx_ring->bufs_max / (dp->rx_refill_filling ? 8 : 2))
++		goto rearm;
++
++	n = ath12k_dp_rx_bufs_replenish(dp, rx_ring, &list, num_free);
++	dp->rx_refill_wd_posted += n;
++	stats->rx_refill_wd_runs++;
++	stats->rx_refill_wd_bufs += n;
++
++	/* Quiet during the initial fill. After it, a ring that runs low while
++	 * buffers are still reaped is only busy, and one that cannot be
++	 * refilled holds the whole pool already.
++	 */
++	if (dp->rx_refill_filling || reaped || !n)
++		goto rearm;
++
++	stats->rx_refill_wd_stalls++;
++	if (__ratelimit(&dp->rx_refill_wd_rs))
++		ath12k_warn(ab, "rx refill ring ran low with nothing reaped for %u ms: %d of %d free, posted %d (alloc fail %u, map fail %u, no desc %u, stalls %u)\n",
++			    ATH12K_DP_RX_REFILL_WD_MS, num_free,
++			    rx_ring->bufs_max, n,
++			    stats->rx_replenish_alloc_fail,
++			    stats->rx_replenish_map_fail,
++			    stats->rx_replenish_no_desc,
++			    stats->rx_refill_wd_stalls);
++
++rearm:
++	mod_timer(&dp->rx_refill_wd,
++		  jiffies + msecs_to_jiffies(ATH12K_DP_RX_REFILL_WD_MS));
++}
++
++void ath12k_dp_rx_refill_wd_stop(struct ath12k_dp *dp)
++{
++	if (!dp->rx_refill_wd_init)
++		return;
++
++	timer_shutdown_sync(&dp->rx_refill_wd);
++	dp->rx_refill_wd_init = false;
++}
+ 
+ static int ath12k_dp_rxdma_mon_buf_ring_free(struct ath12k_base *ab,
+ 					     struct dp_rxdma_mon_ring *rx_ring)
+@@ -1592,6 +1693,7 @@
+ 	struct dp_srng *srng;
+ 	int i;
+ 
++	ath12k_dp_rx_refill_wd_stop(dp);
+ 	ath12k_dp_srng_cleanup(ab, &dp->rx_refill_buf_ring.refill_buf_ring);
+ 
+ 	for (i = 0; i < ab->hw_params->num_rxdma_per_pdev; i++) {
+@@ -1696,6 +1798,11 @@
+ 	struct dp_srng *srng;
+ 	int i, ret;
+ 
++	/* Setup before any ring can fail: rx_free is unconditional. */
++	timer_setup(&dp->rx_refill_wd, ath12k_dp_rx_refill_wd,
++		    TIMER_DEFERRABLE);
++	dp->rx_refill_wd_init = true;
++
+ 	idr_init(&dp->rxdma_mon_buf_ring.bufs_idr);
+ 	spin_lock_init(&dp->rxdma_mon_buf_ring.idr_lock);
+ 
+@@ -1760,11 +1867,20 @@
+ 		}
+ 	}
+ 
++	dp->rx_refill_fill_end = dp->rx_refill_posted + ATH12K_RX_DESC_COUNT(ab);
+ 	ret = ath12k_dp_rxdma_buf_setup(ab);
+ 	if (ret) {
+ 		ath12k_warn(ab, "failed to setup rxdma ring\n");
+ 		return ret;
+ 	}
++
++	ratelimit_state_init(&dp->rx_refill_wd_rs, 60 * HZ, 1);
++	dp->rx_refill_wd_posted = dp->rx_refill_posted;
++	dp->rx_refill_filling = true;
++	if (of_machine_is_compatible("lenovo,baldur"))
++		mod_timer(&dp->rx_refill_wd,
++			  jiffies +
++			  msecs_to_jiffies(ATH12K_DP_RX_REFILL_WD_MS));
+ 
+ 	return 0;
+ }
+diff --git a/drivers/net/wireless/ath/ath12k/dp_rx.h b/drivers/net/wireless/ath/ath12k/dp_rx.h
+--- a/drivers/net/wireless/ath/ath12k/dp_rx.h
++++ b/drivers/net/wireless/ath/ath12k/dp_rx.h
+@@ -225,6 +225,7 @@
+ int ath12k_dp_rx_htt_setup(struct ath12k_base *ab);
+ int ath12k_dp_rx_alloc(struct ath12k_base *ab);
+ void ath12k_dp_rx_free(struct ath12k_base *ab);
++void ath12k_dp_rx_refill_wd_stop(struct ath12k_dp *dp);
+ int ath12k_dp_rx_pdev_alloc(struct ath12k_base *ab, int pdev_idx);
+ void ath12k_dp_rx_pdev_free(struct ath12k_base *ab, int pdev_idx);
+ void ath12k_dp_rx_reo_cmd_list_cleanup(struct ath12k_base *ab);
+diff --git a/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c b/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
+@@ -789,9 +789,9 @@
+ 
+ 	spin_unlock_bh(&srng->lock);
+ 
+-	if (!total_msdu_reaped)
+-		goto exit;
+-
++	/* Post the reaped buffers back even if no complete MSDU was reaped,
++	 * or they are lost.
++	 */
+ 	for (device_id = 0; device_id < ATH12K_MAX_DEVICES; device_id++) {
+ 		if (!num_buffs_reaped[device_id])
+ 			continue;
+@@ -802,6 +802,14 @@
+ 		ath12k_dp_rx_bufs_replenish(partner_dp, rx_ring,
+ 					    &rx_desc_used_list[device_id],
+ 					    num_buffs_reaped[device_id]);
++
++		if (!total_msdu_reaped)
++			dp->device_stats.rx_reap_no_msdu++;
++	}
++
++	if (!total_msdu_reaped) {
++		__skb_queue_purge(&msdu_list);
++		goto exit;
+ 	}
+ 
+ 	ath12k_wifi7_dp_rx_process_received_packets(dp, napi, &msdu_list,

@@ -4,7 +4,16 @@ import subprocess
 UPDATE = "/usr/libexec/armada/armada-update"
 SELECT = "/usr/libexec/armada/armada-select-branch"
 CHANNELS = ("stable", "beta", "preview")
-REPOSITORIES = ("ghcr.io/armada-os/armada", "ghcr.io/virtudude/armada")
+FREEDOM = "ghcr.io/mydanyi/armadaos-freedom"
+REPOSITORIES = (FREEDOM,)
+# Transport prefixes bootc may report on a staged image reference.
+TRANSPORTS = (
+    "ostree-image-signed:docker://",
+    "ostree-unverified-image:docker://",
+    "ostree-unverified-registry:docker://",
+    "ostree-unverified-registry:",
+    "docker://",
+)
 
 
 def command(arguments, timeout=15):
@@ -12,6 +21,38 @@ def command(arguments, timeout=15):
         return subprocess.run(arguments, check=True, capture_output=True, text=True, timeout=timeout).stdout
     except subprocess.CalledProcessError as error:
         raise RuntimeError((error.stderr or "").strip() or str(error)) from error
+
+
+def ref_repository_tag(image):
+    """Return (repository, tag) for a supported image ref, else (None, None).
+
+    Raw references carry no transport prefix, which is how bootc reports staged
+    images. An unknown scheme, a missing tag, or a malformed repository never
+    matches, so a prefix lookalike cannot be mistaken for the Freedom channel.
+    """
+    if not image or any(character.isspace() for character in image):
+        return None, None
+    for prefix in TRANSPORTS:
+        if image.startswith(prefix):
+            image = image[len(prefix):]
+            break
+    else:
+        if "://" in image:
+            return None, None
+    image = image.split("@", 1)[0]
+    repository, separator, tag = image.rpartition(":")
+    if not separator or "/" in tag or "/" not in repository or ":" in repository:
+        return None, None
+    return repository, tag
+
+
+def staged_matches_channel(staged, channel):
+    if not staged:
+        return False
+    repository, tag = ref_repository_tag(staged.get("image", ""))
+    if repository != FREEDOM:
+        return False
+    return tag == ("testing" if channel == "preview" else channel)
 
 
 def deployment(value):
@@ -47,7 +88,10 @@ def snapshot():
 
 def status():
     state = snapshot()
-    state["reboot_ready"] = bool(state["rollback_queued"] or state["staged"])
+    # A reboot is ready for an explicit rollback, or when the staged image is
+    # actually the Freedom channel this deployment now targets.
+    state["reboot_ready"] = bool(
+        state["rollback_queued"] or staged_matches_channel(state["staged"], state["channel"]))
     return state
 
 
@@ -73,8 +117,14 @@ def execute(operation, checksum=None):
         if not state["repository"] or not state["channel"]:
             raise RuntimeError("This deployment has no supported update target")
         subprocess.run([UPDATE], check=True)
-        if not snapshot()["staged"]:
+        current = snapshot()
+        staged = current["staged"]
+        if not staged:
             return {"message": "No new image was needed."}
+        if not staged_matches_channel(staged, current["channel"]):
+            raise RuntimeError(
+                f"An unsupported pending update is staged from {staged['image']}. "
+                "Refresh and confirm the update again.")
         return {"message": "Update installed. Restart to apply."}
     if operation != "rollback":
         raise ValueError("Unknown OS operation")

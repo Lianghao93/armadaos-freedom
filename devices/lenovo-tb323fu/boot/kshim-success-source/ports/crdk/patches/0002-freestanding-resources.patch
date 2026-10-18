@@ -2156,7 +2156,7 @@ new file mode 100644
 index 0000000..103ac0b
 --- /dev/null
 +++ b/Library/DisplayLib/splash.c
-@@ -0,0 +1,590 @@
+@@ -0,0 +1,537 @@
 +/* SPDX-License-Identifier: MIT */
 +#include <Library/cr_splash.h>
 +#include <oskal/cr_string.h>
@@ -2212,65 +2212,6 @@ index 0000000..103ac0b
 +    }
 +    return 0;
 +}
-+static int active_lm(const struct CrSplashResources *r, const struct CrIo *io, struct routing *route)
-+{
-+    cr_memset(route, 0, sizeof(*route));
-+    for (unsigned p = 0; p < 10; ++p) route->mixer[p] = -1;
-+    for (unsigned c = 0; c < r->ctl_count; ++c) {
-+        unsigned base = r->ctl[c];
-+        if (!rd(r, io, base + 0xf4)) continue;
-+        uint32_t pipe_active = rd(r, io, base + 0x12c);
-+        uint32_t lm_active = rd(r, io, base + 0x130);
-+        if ((pipe_active & ~0x000f003fU) || !pipe_active || !lm_active) return CR_BUS_UNSUPPORTED;
-+        unsigned supplied = 0;
-+        for (unsigned m = 0; m < r->mixer_count; ++m) supplied |= 1U << r->mixer_id[m];
-+        if (lm_active & ~supplied) return CR_BUS_UNSUPPORTED;
-+        unsigned acc = 0;
-+        for (unsigned i = 0; i < 8; ++i) {
-+            if (!(lm_active & (1U << i))) continue;
-+            unsigned m;
-+            for (m = 0; m < r->mixer_count; ++m) if (r->mixer_id[m] == i) break;
-+            if (m == r->mixer_count) return CR_BUS_UNSUPPORTED;
-+            uint32_t lbase = r->mixer[m];
-+            uint32_t sel[1 + 11];
-+            unsigned n = 0, chosen = 0, selected = 0;
-+            sel[n++] = rd(r, io, lbase + 0x14);
-+            for (unsigned s = 0; s < r->stage_count; ++s)
-+                sel[n++] = rd(r, io, lbase + r->stage[s] + 4);
-+            for (unsigned g = 0; g < n; ++g) {
-+                uint32_t v = sel[g];
-+                if (v >> 16) return CR_BUS_UNSUPPORTED;
-+                for (unsigned b = 0; b < 2; ++b) {
-+                    unsigned byte = (v >> (b * 8)) & 0xff;
-+                    if (byte == 0xc0) continue;
-+                    unsigned type = (byte >> 6) & 3;
-+                    unsigned id = byte & 0xf;
-+                    if (((byte >> 4) & 3) || type > 1) return CR_BUS_UNSUPPORTED;
-+                    unsigned mapped;
-+                    if (type == 0) { if (id > 5) return CR_BUS_UNSUPPORTED; mapped = 4 + id; }
-+                    else { if (id > 3) return CR_BUS_UNSUPPORTED; mapped = id; }
-+                    unsigned p;
-+                    for (p = 0; p < r->pipe_count; ++p) if (r->pipe_id[p] == mapped) break;
-+                    if (p == r->pipe_count || route->mixer[p] >= 0) return CR_BUS_UNSUPPORTED;
-+                    unsigned hw = mapped < 4 ? 16 + mapped : mapped - 4;
-+                    if (!(pipe_active & (1U << hw))) return CR_BUS_UNSUPPORTED;
-+                    if (selected) return CR_BUS_UNSUPPORTED;
-+                    selected = 1; chosen = p;
-+                    acc |= 1U << hw;
-+                }
-+            }
-+            if (!selected) return CR_BUS_UNSUPPORTED;
-+            route->mask |= 1U << chosen;
-+            route->mixer[chosen] = (int)m;
-+            route->out[chosen] = rd(r, io, lbase + 4);
-+            route->op[chosen] = rd(r, io, lbase) & (1U << 31);
-+        }
-+        if (acc != pipe_active) return CR_BUS_UNSUPPORTED;
-+    }
-+    return 0;
-+}
-+static int active(const struct CrSplashResources *r, const struct CrIo *io, struct routing *route)
-+{ return r->lm_source_select ? active_lm(r, io, route) : active_legacy(r, io, route); }
 +static int format(const struct scan *s, enum CrSplashFormat *f, unsigned *bytes)
 +{
 +    /* Linear, tightly packed, interleaved RGB only; no rotate/YUV/DX/solid-fill. */
@@ -2285,7 +2226,7 @@ index 0000000..103ac0b
 +    else return -1;
 +    return 0;
 +}
-+/* ---- DPU13 LM routing discovery (routing only, no framebuffer decode) ---- */
++/* ---- DPU12/DPU13 shared LM routing discovery (routing only, no framebuffer decode) ---- */
 +
 +#define REC_PIPE_MASK  0x000f003fu  /* DMA bits 0..5, VIG bits 16..19 */
 +#define REC_BG_OFF     0x14u
@@ -2457,6 +2398,10 @@ index 0000000..103ac0b
 +static void snapshot_rec(const struct CrSplashResources *r, const struct CrIo *io, unsigned p, struct rec_scan *t)
 +{
 +    cr_memset(t, 0, sizeof(*t));
++    if (!r->sspp_rec_separated) {
++        snapshot(r, io, p, &t->s);
++        return;
++    }
 +    t->s.rect = rd(r, io, r->pipe[p] + 0x10);
 +    uint32_t base = r->pipe[p] + 0x1000;
 +    t->s.format = rd(r, io, base + 0x00);
@@ -2554,12 +2499,14 @@ index 0000000..103ac0b
 +        unsigned b = 0;
 +
 +        snapshot_rec(r, io, pipes[i], s);
-+        if (s->s.rect || s->s.secure || s->odx[0] || s->odx[1] ||
-+            s->odx[2] || s->odx[3] ||
++        if (s->s.rect || s->s.secure ||
++            (r->sspp_rec_separated &&
++             (s->odx[0] || s->odx[1] || s->odx[2] || s->odx[3])) ||
 +            (s->s.op & ~((1u << 31) | (1u << 4))))
 +            return CR_BUS_UNSUPPORTED;
 +        if (s->s.src != s->s.out || (s->s.xy >> 16) || (s->s.out_xy >> 16) ||
-+            s->current != s->s.addr || (s->s.stride >> 16))
++            (r->sspp_rec_separated &&
++             (s->current != s->s.addr || (s->s.stride >> 16))))
 +            return CR_BUS_UNSUPPORTED;
 +        if (format(&s->s, &formats[i], &b))
 +            return CR_BUS_UNSUPPORTED;
@@ -2703,9 +2650,9 @@ index 0000000..103ac0b
 +            }
 +        }
 +    }
-+    if (r->sspp_rec_separated) return read_rec(r, io, fb);
++    if (r->lm_source_select) return read_rec(r, io, fb);
 +    struct routing route, again;
-+    if (active(r, io, &route) || !route.mask) return CR_BUS_UNSUPPORTED;
++    if (active_legacy(r, io, &route) || !route.mask) return CR_BUS_UNSUPPORTED;
 +    struct scan scans[2]; unsigned count = 0, pipe[2], bytes = 0;
 +    struct CrSplash part[2];
 +    for (unsigned p = 0; p < r->pipe_count; ++p) {
@@ -2743,7 +2690,7 @@ index 0000000..103ac0b
 +        struct scan next; snapshot(r, io, pipe[i], &next);
 +        if (cr_memcmp(&next, &scans[i], sizeof(next))) return CR_BUS_AGAIN;
 +    }
-+    if (active(r, io, &again) || cr_memcmp(&again, &route, sizeof(route))) return CR_BUS_AGAIN;
++    if (active_legacy(r, io, &again) || cr_memcmp(&again, &route, sizeof(route))) return CR_BUS_AGAIN;
 +    *fb = part[0];
 +    return 0;
 +}

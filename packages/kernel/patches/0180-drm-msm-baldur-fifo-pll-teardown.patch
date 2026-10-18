@@ -1,0 +1,227 @@
+From: Armada <noreply@armada.local>
+Date: Sun, 18 Oct 2026 00:00:00 +0800
+Subject: [PATCH] drm/msm: Baldur PPB FIFO, PLL state and bonded teardown
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Baldur (Lenovo Legion Tab Y700 gen5 / TB323FU) drives a bonded DSI
+video-mode panel.  Three deltas from the downstream tb323fu tree are
+needed, gated so that every other machine keeps its current paths.
+
+- dpu_encoder: size each PPB latency FIFO before the physical encoders
+  are enabled; no-op unless the pingpong op exists and the machine is
+  Baldur.  Also stop a bonded DSI video panel's slave before its master,
+  keeping the existing phys_encs[] order for everyone else.
+- dpu_hw_pingpong: add setup_ppb_fifo_size() programming offset 0x01c
+  (one FIFO entry is 4 pixels).  The op is registered only for Baldur
+  on DPU 13, not for every DPU 12+ part as in the downstream tree.
+- dsi_phy_7nm: track whether a VCO rate was successfully configured and,
+  for Baldur only, skip redundant prepare and unbalanced unprepare.  The
+  existing Elden equal-rate protection, failed-enable cleanup and DIGTOP
+  power bits are untouched.
+
+The PPB FIFO programming, the VCO configured-state guards and the
+slave-before-master teardown are derived from the GPL-2.0-only
+tb323fu-linux tree at commit
+11a25bf89b65fff48112a91a0b25bc247e7736d8 (patches 0007, 0008 and 0097).
+The Baldur-only gating is original Armada work; no third-party
+sign-off is implied.
+
+---
+ 4 files changed, 88 insertions(+), 5 deletions(-)
+---
+
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
+index 592aff1c9b0b..8ec6a3c9ccca 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
+@@ -1389,6 +1389,36 @@
+ 	mutex_unlock(&dpu_enc->enc_lock);
+ }
+ 
++/* pixel latency lines buffered by each PPB; used to size the per-PP PPB FIFO */
++#define DPU_PPB_BUF_MAX_LINES 4
++
++/*
++ * DPU 12.0+ programs the pingpong latency buffer (PPB) FIFO size per-PP; a
++ * zero-sized PPB never feeds the DSC/INTF, so it must be set at enable time.
++ */
++static void dpu_encoder_update_ppb_size(struct dpu_encoder_virt *dpu_enc,
++					const struct drm_display_mode *mode)
++{
++	u32 num_pp = 0, pixels_per_pp;
++	int i;
++
++	if (!of_machine_is_compatible("lenovo,baldur"))
++		return;
++
++	for (i = 0; i < MAX_CHANNELS_PER_ENC; i++)
++		if (dpu_enc->hw_pp[i])
++			num_pp++;
++
++	if (!num_pp || !dpu_enc->hw_pp[0]->ops.setup_ppb_fifo_size)
++		return;
++
++	pixels_per_pp = mult_frac(mode->hdisplay, DPU_PPB_BUF_MAX_LINES, num_pp);
++
++	for (i = 0; i < num_pp; i++)
++		dpu_enc->hw_pp[i]->ops.setup_ppb_fifo_size(dpu_enc->hw_pp[i],
++							   pixels_per_pp);
++}
++
+ static void dpu_encoder_virt_atomic_enable(struct drm_encoder *drm_enc,
+ 					struct drm_atomic_commit *state)
+ {
+@@ -1410,6 +1440,8 @@
+ 	cur_mode = &dpu_enc->base.crtc->state->adjusted_mode;
+ 
+ 	dpu_enc->wide_bus_en = dpu_encoder_is_widebus_enabled(drm_enc);
++
++	dpu_encoder_update_ppb_size(dpu_enc, cur_mode);
+ 
+ 	trace_dpu_enc_enable(DRMID(drm_enc), cur_mode->hdisplay,
+ 			     cur_mode->vdisplay);
+@@ -1468,11 +1500,25 @@
+ 
+ 	dpu_encoder_resource_control(drm_enc, DPU_ENC_RC_EVENT_PRE_STOP);
+ 
+-	for (i = 0; i < dpu_enc->num_phys_encs; i++) {
+-		struct dpu_encoder_phys *phys = dpu_enc->phys_encs[i];
+-
+-		if (phys->ops.disable)
+-			phys->ops.disable(phys);
++	/*
++	 * Baldur's bonded DSI video panel shares one CTL: stop the slave's
++	 * timing engine before the master's cleanup resets that CTL.
++	 */
++	if (of_machine_is_compatible("lenovo,baldur") &&
++	    dpu_enc->disp_info.intf_type == INTF_DSI &&
++	    !dpu_enc->disp_info.is_cmd_mode && dpu_enc->cur_slave) {
++		if (dpu_enc->cur_slave->ops.disable)
++			dpu_enc->cur_slave->ops.disable(dpu_enc->cur_slave);
++
++		if (dpu_enc->cur_master && dpu_enc->cur_master->ops.disable)
++			dpu_enc->cur_master->ops.disable(dpu_enc->cur_master);
++	} else {
++		for (i = 0; i < dpu_enc->num_phys_encs; i++) {
++			struct dpu_encoder_phys *phys = dpu_enc->phys_encs[i];
++
++			if (phys->ops.disable)
++				phys->ops.disable(phys);
++		}
+ 	}
+ 
+ 
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_pingpong.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_pingpong.c
+index 138071be5649..36d7b60cdddf 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_pingpong.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_pingpong.c
+@@ -3,6 +3,7 @@
+  */
+ 
+ #include <linux/iopoll.h>
++#include <linux/of.h>
+ 
+ #include <drm/drm_managed.h>
+ 
+@@ -34,6 +35,13 @@
+ #define PP_DCE_DATA_IN_SWAP             0x0ac
+ #define PP_DCE_DATA_OUT_SWAP            0x0c8
+ 
++/*
++ * DPU 12.0+: the pingpong latency buffer (PPB) size is programmed per-PP at
++ * this offset (which on DPU 7+ overlays the legacy PP tear PP_START_POS, since
++ * tear check moved to the separate PP_TE block). One FIFO entry holds 4 pixels.
++ */
++#define PP_PPB_FIFO_SIZE                0x01c
++
+ #define PP_DITHER_EN			0x000
+ #define PP_DITHER_BITDEPTH		0x004
+ #define PP_DITHER_MATRIX		0x008
+@@ -281,6 +289,11 @@
+ 	data |= BIT(18); /* endian flip */
+ 	DPU_REG_WRITE(pp_c, PP_DCE_DATA_OUT_SWAP, data);
+ 	return 0;
++}
++
++static void dpu_hw_pp_setup_ppb_fifo_size(struct dpu_hw_pingpong *pp, u32 pixels)
++{
++	DPU_REG_WRITE(&pp->hw, PP_PPB_FIFO_SIZE, (pixels / 4) & 0xfff);
+ }
+ 
+ /**
+@@ -325,6 +338,10 @@
+ 		c->ops.disable_dsc = dpu_hw_pp_dsc_disable;
+ 	}
+ 
++	if (mdss_rev->core_major_ver >= 13 &&
++	    of_machine_is_compatible("lenovo,baldur"))
++		c->ops.setup_ppb_fifo_size = dpu_hw_pp_setup_ppb_fifo_size;
++
+ 	if (mdss_rev->core_major_ver >= 3)
+ 		c->ops.setup_dither = dpu_hw_pp_setup_dither;
+ 
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_pingpong.h b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_pingpong.h
+index effd012d864a..88e46a7a7d95 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_pingpong.h
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_hw_pingpong.h
+@@ -91,6 +91,11 @@
+ 	 * @setup_dsc: Setup DSC
+ 	 */
+ 	int (*setup_dsc)(struct dpu_hw_pingpong *pp);
++
++	/**
++	 * @setup_ppb_fifo_size: set the pingpong latency buffer size (DPU 12.0+)
++	 */
++	void (*setup_ppb_fifo_size)(struct dpu_hw_pingpong *pp, u32 pixels);
+ };
+ 
+ struct dpu_hw_merge_3d;
+diff --git a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+index 843c4a38f6be..6a65e7b5c976 100644
+--- a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
++++ b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+@@ -97,6 +97,8 @@
+ 	 */
+ 	spinlock_t pll_enable_lock;
+ 	int pll_enable_cnt;
++
++	bool vco_configured;
+ 
+ 	struct pll_7nm_cached_state cached_state;
+ 
+@@ -393,6 +395,8 @@
+ 	/* flush, ensure all register writes are done*/
+ 	wmb();
+ 
++	pll_7nm->vco_configured = true;
++
+ 	return 0;
+ }
+ 
+@@ -521,6 +525,14 @@
+ 	struct dsi_pll_7nm *pll_7nm = to_pll_7nm(hw);
+ 	int rc;
+ 
++	if (of_machine_is_compatible("lenovo,baldur")) {
++		if (unlikely(pll_7nm->phy->pll_on))
++			return 0;
++
++		if (!pll_7nm->vco_configured)
++			return 0;
++	}
++
+ 	dsi_pll_enable_pll_bias(pll_7nm);
+ 	if (pll_7nm->slave)
+ 		dsi_pll_enable_pll_bias(pll_7nm->slave);
+@@ -582,6 +594,9 @@
+ static void dsi_pll_7nm_vco_unprepare(struct clk_hw *hw)
+ {
+ 	struct dsi_pll_7nm *pll_7nm = to_pll_7nm(hw);
++
++	if (of_machine_is_compatible("lenovo,baldur") && !pll_7nm->phy->pll_on)
++		return;
+ 
+ 	/*
+ 	 * To avoid any stray glitches while abruptly powering down the PLL
