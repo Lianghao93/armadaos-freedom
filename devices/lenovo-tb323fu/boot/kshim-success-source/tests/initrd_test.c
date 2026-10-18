@@ -16,8 +16,11 @@
  * untouched.
  */
 #include <assert.h>
+#include <errno.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "initrd.h"
@@ -777,8 +780,125 @@ static void test_pack_capacity(void)
     assert_initrd_absent();
 }
 
-int main(void)
+/* ---- group 11: K523 actual packed-layout replay (tests only) ------------- */
+
+/*
+ * Replay the byte intervals observed in a real packed image through the
+ * production kshim_initrd_apply(). The actual Linux entry maps to fixture
+ * entry 0 and the actual shared selected BLOB (real BLOB7) maps to fixture
+ * entry 1; those two source intervals, the raw Image header flags/image_size
+ * (header+24 / header+16), the selected payload DT source and the manifest
+ * payload size are actual. Every other context range (runtime, runtime_fdt,
+ * handoff buffer) keeps the synthetic fixture address and is not claimed to
+ * be an actual physical address.
+ *
+ * This mode replays byte intervals on synthetic RAM only: it is neither a raw
+ * current-ABL capture nor a hardware validation, and the full selector-7
+ * decision is validated separately by the real packer.
+ */
+static int layout_replay(const uint64_t v[9])
 {
+    uint64_t blob_start = PACKED_BASE + v[4];
+    uint64_t blob_end = blob_start + v[5];
+    uint64_t dt_base = PACKED_BASE + v[6];
+    uint64_t dt_end = dt_base + v[7];
+    uint64_t s, e;
+    int rc;
+
+    fixture_reset(4, v[3]);           /* raw Image image_size, then raw flags */
+    write_le64(g_hdr + 24, v[0]);
+    g_store[0].offset = v[1];         /* actual Linux source interval */
+    g_store[0].size = v[2];
+    g_store[1].offset = v[4];         /* actual selected BLOB source interval */
+    g_store[1].size = v[5];
+    g_ctx.packed_payload_size = v[8]; /* manifest offset from the packed base */
+    g_ctx.payload_fdt.base = dt_base;
+    g_ctx.payload_fdt.size = v[7];
+
+    tree_begin();
+    add_default_mem();
+    add_chosen(0);
+    set_reference_u32(1);
+
+    printf("layout flags=0x%" PRIx64 " blob=[0x%" PRIx64 ",0x%" PRIx64
+           ") selected_dt=[0x%" PRIx64 ",0x%" PRIx64 ")\n",
+           v[0], blob_start, blob_end, dt_base, dt_end);
+
+    memcpy(g_snap, g_fdt, FDT_BYTES);
+    memcpy(g_hdr_snap, g_hdr, sizeof g_hdr);
+    memcpy(g_store_snap, g_store, sizeof g_store);
+    g_ctx_snap = g_ctx;
+
+    rc = apply_cap(FDT_BYTES);
+    printf("layout rc=%d\n", rc);
+
+    if (rc != 0) {
+        /* Old packed layouts stay red: the production guard is not removed. */
+        if (memcmp(g_fdt, g_snap, FDT_BYTES) != 0) {
+            printf("layout FAIL: handoff tree mutated on rejection\n");
+            return 1;
+        }
+        printf("layout REJECT: packed layout is not usable; guard kept\n");
+        return 1;
+    }
+
+    if (dt_validate(g_fdt, FDT_BYTES) != 0 ||
+        fdt_totalsize(g_fdt) > (int)FDT_BYTES) {
+        printf("layout FAIL: invalid handoff tree\n");
+        return 1;
+    }
+    get_initrd(&s, &e);
+    if (s != blob_start || e != blob_end) {
+        printf("layout FAIL: advertised [0x%" PRIx64 ",0x%" PRIx64
+               ") != blob [0x%" PRIx64 ",0x%" PRIx64 ")\n",
+               s, e, blob_start, blob_end);
+        return 1;
+    }
+    assert_chosen_extras(1);
+    if (memcmp(g_hdr, g_hdr_snap, sizeof g_hdr) != 0 ||
+        memcmp(g_store, g_store_snap, sizeof g_store) != 0 ||
+        memcmp(&g_ctx, &g_ctx_snap, sizeof g_ctx) != 0) {
+        printf("layout FAIL: header/entries/context changed\n");
+        return 1;
+    }
+
+    printf("layout PASS\n");
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 1) {
+        uint64_t v[9];
+        int i;
+
+        if (argc != 11 || strcmp(argv[1], "--layout") != 0) {
+            fprintf(stderr,
+                    "usage: %s [--layout FLAGS LINUX_OFFSET LINUX_FILE_SIZE "
+                    "IMAGE_SIZE BLOB_OFFSET BLOB_SIZE SELECTED_DTB_OFFSET "
+                    "SELECTED_DTB_SIZE PACKED_PAYLOAD_SIZE]\n",
+                    argv[0]);
+            return 2;
+        }
+        for (i = 0; i < 9; ++i) {
+            const char *arg = argv[2 + i];
+            const char *p = arg;
+            char *end = NULL;
+            unsigned long long parsed;
+
+            while (*p == ' ' || *p == '\t')
+                ++p;
+            errno = 0;
+            parsed = strtoull(arg, &end, 0);
+            if (*p == '-' || errno != 0 || end == arg || *end != '\0') {
+                fprintf(stderr, "invalid numeric argument: %s\n", arg);
+                return 2;
+            }
+            v[i] = (uint64_t)parsed;
+        }
+        return layout_replay(v);
+    }
+
     test_valid_exact();
     test_valid_nonpagealigned();
     test_independent_selectors();

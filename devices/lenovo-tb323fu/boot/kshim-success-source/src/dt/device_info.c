@@ -109,17 +109,18 @@ static int memory_total(const void *fdt, uint64_t *total)
     return 0;
 }
 
-/* The measured .096 stock TB322FC active-panel fingerprint. Only this exact
- * active-reference shape has evidence: the .259 BL runtime FDT is unverified
- * and any layout that does not match stays UNKNOWN. This is display
- * information only, not a boot/payload filter. The fingerprint requires the
- * exact /soc/qcom,dsi-display-primary node (single "qcom,dsi-display"
- * compatible, "primary" label, itself and its ancestors available) to resolve
- * its single-cell qcom,dsi-default-panel, via dt_reference index 0, to one
- * unique enabled node named exactly the Elden NT36523 panel whose
- * qcom,mdss-dsi-panel-name is the exact 165Hz CPHY name. No alternative
- * primary and no standby panel is ever searched. */
-static bool tb322fc_stock_panel(const void *fdt)
+/* The measured stock active-reference fingerprint shared by the two stock
+ * board callers: the .096 TB322FC (Elden, CPHY) and the DTB12+DTBO47 TB323FU
+ * (Baldur, DPHY). Only this exact shape has evidence; the .259 BL runtime FDT
+ * is unverified and any other layout stays UNKNOWN. The caller supplies the
+ * exact panel node name and qcom,mdss-dsi-panel-name it measured. The
+ * fingerprint requires the exact /soc/qcom,dsi-display-primary node (single
+ * "qcom,dsi-display" compatible, "primary" label, itself and its ancestors
+ * available) to resolve its single-cell nonzero qcom,dsi-default-panel, via
+ * dt_reference index 0, to one unique enabled node whose name and panel name
+ * match. No alternative primary and no standby panel is ever searched. */
+static bool stock_active_panel(const void *fdt, const char *node_name,
+                               const char *panel_name)
 {
     int primary, target;
     uint32_t phandle;
@@ -141,10 +142,10 @@ static bool tb322fc_stock_panel(const void *fdt)
     if (target < 0)
         return false;
     name = fdt_get_name(fdt, target, NULL);
-    if (!name || strcmp(name, "qcom,mdss_dsi_elden_nt36523_csot_3k_dsc_vid") != 0)
+    if (!name || strcmp(name, node_name) != 0)
         return false;
     s = dt_string(fdt, target, "qcom,mdss-dsi-panel-name");
-    if (!s || strcmp(s, "nt36523 3k fhd plus 165Hz CPHY video panel") != 0)
+    if (!s || strcmp(s, panel_name) != 0)
         return false;
     return true;
 }
@@ -215,9 +216,22 @@ void device_info_read(const void *validated_fdt, struct device_info *info)
         tb322 = (list_contains(compatible, compat_len, "lenovo,elden") &&
                  list_contains(compatible, compat_len, "qcom,sm8750")) ||
                 (list_contains(compatible, compat_len, "qcom,sunp") && !soc8850 &&
-                 tb322fc_stock_panel(validated_fdt));
+                 stock_active_panel(
+                     validated_fdt,
+                     "qcom,mdss_dsi_elden_nt36523_csot_3k_dsc_vid",
+                     "nt36523 3k fhd plus 165Hz CPHY video panel"));
+
+        /* A stock TB323FU carries the exact qcom,canoep root without any
+         * SM8750-family marker; its board identity comes only from the
+         * measured Baldur panel fingerprint. Named Lenovo entries are
+         * accepted as before. */
         tb323 = list_contains(compatible, compat_len, "lenovo,tb323fu") ||
-                list_contains(compatible, compat_len, "lenovo,baldur");
+                list_contains(compatible, compat_len, "lenovo,baldur") ||
+                (list_contains(compatible, compat_len, "qcom,canoep") && !soc8750 &&
+                 stock_active_panel(
+                     validated_fdt,
+                     "qcom,mdss_dsi_baldur_nt36523_csot_3k_dsc_vid",
+                     "nt36523 3k fhd plus 165Hz DPHY video panel"));
         if (tb322 != tb323)
             info->board = tb322 ? DEVICE_BOARD_TB322FC : DEVICE_BOARD_TB323FU;
 

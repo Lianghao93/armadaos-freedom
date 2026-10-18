@@ -388,6 +388,37 @@ static void test_original_apis(void)
     assert(memcmp(blob, snap, BLOBSZ) == 0);
 }
 
+/* Normal manifest runtime: the repacker leaves both source slots pending and
+ * main() activates them before the first m14/m15 write. */
+static void test_manifest_activation(void)
+{
+    _Alignas(8) static uint8_t blob[BLOBSZ];
+    static uint8_t snap[BLOBSZ];
+    int chosen, blen, alen;
+    const char *ba;
+
+    set_pair(blob, "console=tty0 ", 1, " q=1");
+    chosen = fdt_path_offset(blob, "/chosen");
+    assert(chosen >= 0);
+    ba = fdt_getprop(blob, chosen, "bootargs", &blen);
+    assert(ba != NULL && strstr(ba, SRC_PROBE) && strstr(ba, SRC_S0));
+    memcpy(snap, blob, BLOBSZ);
+
+    assert(dt_diagnostic_report_slots(blob, "pending", "pending") == 0);
+    assert(fdt_totalsize(blob) == fdt_totalsize(snap));
+    ba = fdt_getprop(blob, chosen, "bootargs", &alen);
+    assert(ba != NULL && alen == blen);
+    assert(strstr(ba, TGT_PROBE) && strstr(ba, TGT_S0));
+    assert(strstr(ba, SRCPFX) == NULL);
+
+    assert(dt_probe_report(blob, "m14:base=selected") == 0);
+    memcpy(snap, blob, BLOBSZ);
+    assert(dt_probe_report(blob, "m14:base=selected") != 0);
+    assert(memcmp(blob, snap, BLOBSZ) == 0);
+
+    assert(dt_probe_report_slot(blob, 0, "r22:cfg=0") == 0);
+}
+
 int main(void)
 {
     init_ph();
@@ -401,6 +432,7 @@ int main(void)
     test_malformed();
     test_null_args();
     test_original_apis();
+    test_manifest_activation();
 
     puts("dt_diagnostic_report_test: OK");
     return 0;

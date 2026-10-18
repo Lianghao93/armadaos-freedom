@@ -657,6 +657,11 @@ int kshim_main(
     return kshim_platform_main(device_tree_address, kernel_arg1, kernel_arg2, kernel_arg3);
 #endif
     if (linux_base != 0) {
+        /* Activate optional repacker source prefixes while retaining the
+         * pending/write-once values for m14/m15 and the legacy APIs. */
+        if (runtime_fdt)
+            (void)dt_diagnostic_report_slots((void *)runtime_fdt, "pending",
+                                             "pending");
         MANIFEST_VIEW view = {0};
         if (!get_manifest(
                 linux_base, manifest_address, manifest_size, &view)) {
@@ -686,7 +691,9 @@ int kshim_main(
              * no kshim,inherit-runtime-memory gate.  Entries without a custom
              * DTB keep the original bootloader DT pointer. */
             int status = memory_status;
+            const char *handoff_stage = "capture";
             if (status == 0) {
+                handoff_stage = "memory";
                 status = dt_memory_apply(
                     RuntimeMemorySnapshot,
                     sizeof(RuntimeMemorySnapshot),
@@ -710,6 +717,7 @@ int kshim_main(
                      * failed DT.  A failed capture reports the missing backend
                      * once and leaves the original Linux path untouched. */
                     if (ramoops_capture_status == TB323FU_RAMOOPS_OK) {
+                        handoff_stage = "ramoops";
                         int bind_status = tb323fu_ramoops_bind(
                             HandoffDtb, sizeof(HandoffDtb),
                             &ramoops_layout);
@@ -759,11 +767,13 @@ int kshim_main(
                                     .size = dtb->size,
                                 },
                         };
+                        handoff_stage = "initrd";
                         status = kshim_initrd_apply(blob, sizeof(HandoffDtb),
                                                     &initrd_context);
                     }
                     if (status == 0) {
                         struct kshim_resources *r = kshim_resources_get();
+                        handoff_stage = "simplefb";
                         status = dt_simplefb_apply(blob, sizeof(HandoffDtb),
                                                    r && r->splash_status == 0
                                                        ? &r->framebuffer
@@ -772,11 +782,14 @@ int kshim_main(
                     if (status == 0) {
                         /* Re-pack the modified DT, then validate the result. */
                         (void)kshim_boot_metrics_export(blob);
+                        handoff_stage = "pack";
                         int packed = fdt_pack(blob);
-                        if (packed != 0)
+                        if (packed != 0) {
                             status = packed;
-                        else
+                        } else {
+                            handoff_stage = "validate";
                             status = dt_validate(blob, sizeof(HandoffDtb));
+                        }
                     }
                 }
             }
@@ -1083,8 +1096,8 @@ int kshim_main(
             if (status != 0) {
                 char report[81];
                 int n = snprintf(report, sizeof(report),
-                                 "m15:c=%d:a=%d:d=%s",
-                                 memory_status, status,
+                                 "m15:s=%s:c=%d:a=%d:d=%s",
+                                 handoff_stage, memory_status, status,
                                  dt_handoff_failure_detail());
                 if (n > 0 && n < (int)sizeof(report))
                     dt_probe_report((void *)runtime_fdt, report);

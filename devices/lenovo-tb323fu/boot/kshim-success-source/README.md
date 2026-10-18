@@ -32,6 +32,28 @@ for a Manifest runtime. CMake evaluates Kconfig at configure time and selects
 CrDK and UI sources by capability; `cmake --build` regenerates after config
 changes. The firmware uses the boot DT to obtain device addresses.
 
+### Unified external-initrd profile
+
+`configs/tb323fu_unified_defconfig` is the TB323FU profile for the external
+initrd Manifest work. It is derived from the accepted Gen5 runtime `.config`
+and carries the common latest launcher menu: the session-only settings page,
+the read-only Device info row and the shared automatic/manual default-boot
+behaviour now match the latest shared source rather than the earlier Gen5 row
+set. Session-only settings still apply to the current boot only and are never
+written to storage. Every other choice is retained: STAR_CHART style,
+270-degree counter-clockwise UI rotation, 243712-byte LVGL buffers, zero
+entrance animation, Simplified Chinese with entry details, base-Android
+wording, power and advanced actions with QCOM reboot targets, boot timing, and
+SPMI keys with two debounce samples; touch, SMP, the UEFI test menu and the
+QEMU platform remain off.
+
+```sh
+python3 tools/build_runtime.py --config configs/tb323fu_unified_defconfig --out build/tb323fu-unified
+```
+
+The profile only selects build options; its hardware behaviour is untested.
+Building it does not establish hardware or on-device behaviour.
+
 ## Pack multiple kernels
 
 Build the parent `MultiBootKernelPatcher` repository, then create an INI file:
@@ -173,6 +195,21 @@ cleans writable runtime-owned WB mappings before disabling its MMU. It then
 quiesces GENI UART and restores inherited settings. Reserved/no-map memory is
 never mapped as general RAM; explicit framebuffer/CmdDB consumers use NC mappings. A failed shutdown prevents handoff.
 Unavailable PSCI falls back to rendering on the boot CPU.
+
+## Board identification
+
+`src/dt/device_info.c` uses exact root matches for explicit board and SoC identities. Root
+`compatible` entries must match exactly. A stock board that carries no Lenovo identity is accepted
+from one measured active-panel reference, never from the model text, a packed
+payload, the SoC alone, a numeric phandle or any standby panel: the exact
+`/soc/qcom,dsi-display-primary` node (single `qcom,dsi-display` compatible,
+`primary` label, itself and its ancestors available) must resolve its
+single-cell `qcom,dsi-default-panel` to one unique enabled panel whose node name
+and `qcom,mdss-dsi-panel-name` match exactly. That fingerprint is used for the
+Elden CPHY panel with an exact `qcom,sunp` root and for the Baldur DPHY panel
+with an exact `qcom,canoep` root and no SM8750-family entry. Any other layout,
+including a near match of case, prefix, suffix, primary or panel, stays UNKNOWN:
+only these measured shapes have evidence.
 
 ## Validation
 

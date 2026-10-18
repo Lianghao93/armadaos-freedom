@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import struct
 
+from qemu_menu import run_with_label
+
 
 def run(command, **kwargs):
     return subprocess.run([str(x) for x in command], check=True, **kwargs)
@@ -199,16 +201,24 @@ expected_ram:
         run(["aarch64-linux-gnu-objcopy", "-O", "binary", out / (name + ".elf"),
              out / (name + ".bin")])
 
+    # The default-A case stays automatic. The payload/copy/DT cases below boot
+    # the generic "Alternate B" payload, which under SESSION_SETTINGS=y is
+    # rendered in the menu but is deliberately not an automatic candidate, so
+    # they select it by label like select-linux does. The distinct-base-dtb
+    # fixture also selects explicitly: its base DT variant has a generic
+    # UNKNOWN role, so the production menu renders Android 原厂, Linux A and
+    # Alternate B and waits rather than running the automatic Android
+    # placeholder, so fixture E is reached by choosing "Linux A" by label.
     cases = [
         {"name": "default", "default": "Image-A", "key": b"", "copied": False, "dtb": False, "new": False},
-        {"name": "select-linux", "default": "Image-A", "key": b"2\n", "copied": False, "dtb": False, "new": False},
-        {"name": "copy-freeexec", "default": "Image-B", "key": b"", "copied": True, "dtb": False, "new": False},
-        {"name": "payload-dtb", "default": "Image-B", "key": b"", "copied": False, "dtb": True, "new": False},
+        {"name": "select-linux", "default": "Image-A", "key": b"", "label": "Alternate B", "copied": False, "dtb": False, "new": False},
+        {"name": "copy-freeexec", "default": "Image-B", "key": b"", "label": "Alternate B", "copied": True, "dtb": False, "new": False},
+        {"name": "payload-dtb", "default": "Image-B", "key": b"", "label": "Alternate B", "copied": False, "dtb": True, "new": False},
         {"name": "short-dtb-entry", "default": "Image-B", "key": b"", "copied": False, "dtb": True, "new": False},
         {"name": "bad-dtb-structure", "default": "Image-B", "key": b"", "copied": False, "dtb": True, "new": False},
-        {"name": "distinct-base-dtb", "default": "Image-A", "key": b"", "copied": False, "dtb": False, "new": True},
-        {"name": "distinct-alt-dtb", "default": "Image-B", "key": b"", "copied": False, "dtb": False, "new": True},
-        {"name": "freeexec-dtb", "default": "Image-B", "key": b"", "copied": False, "dtb": True, "new": False},
+        {"name": "distinct-base-dtb", "default": "Image-A", "key": b"", "label": "Linux A", "copied": False, "dtb": False, "new": True},
+        {"name": "distinct-alt-dtb", "default": "Image-B", "key": b"", "label": "Alternate B", "copied": False, "dtb": False, "new": True},
+        {"name": "freeexec-dtb", "default": "Image-B", "key": b"", "label": "Alternate B", "copied": False, "dtb": True, "new": False},
         {"name": "base-only-android", "default": "Image-A", "key": b"", "copied": False, "dtb": False, "new": False, "base_only": True},
     ]
     expected_map = {
@@ -297,7 +307,17 @@ Type=Manifest
                    "-accel", "tcg", "-cpu", "cortex-a76", "-smp", "1", "-m", "256M",
                    "-display", "none", "-monitor", "none", "-serial", "stdio",
                    "-no-reboot", "-kernel", packed]
-        result = run(command, input=key, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20)
+        try:
+            if case.get("label"):
+                result = run_with_label(command, case["label"], 20)
+                # Keep the check=True contract of the no-selection path.
+                result.check_returncode()
+            else:
+                result = run(command, input=key, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, timeout=20)
+        except subprocess.SubprocessError as error:
+            (out / (name + ".log")).write_bytes(error.stdout or b"")
+            raise
         output = result.stdout.decode(errors="replace")
         (out / (name + ".log")).write_text(output)
         expected = expected_map[name]

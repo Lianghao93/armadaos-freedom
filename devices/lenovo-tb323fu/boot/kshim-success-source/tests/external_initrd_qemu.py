@@ -20,6 +20,8 @@ import struct
 import subprocess
 from pathlib import Path
 
+from qemu_menu import run_with_label
+
 # Manifest ABI constants (src/include/manifest.h).
 MANIFEST_MAGIC = 0x464D504B
 MF_LINUX, MF_FREE_EXEC, MF_SHIM, MF_BLOB, MF_DTB, MF_MANIFEST = 1, 2, 3, 4, 5, 6
@@ -66,10 +68,23 @@ def run(cmd, log=None, timeout=None, check=False, cwd=None):
     return p.returncode, data
 
 
-def qemu_run(cmd, log, input_bytes):
+def qemu_run(cmd, log, input_bytes, selection_label=None):
     """Run QEMU with pipes and an explicit timeout. Timeout => logged FAIL."""
     cmd = [str(c) for c in cmd]
     print("+", " ".join(cmd), flush=True)
+    if selection_label is not None:
+        try:
+            p = run_with_label(cmd, selection_label, QEMU_TIMEOUT)
+            data = p.stdout or b""
+            Path(log).write_bytes(data)
+            return p.returncode, data.decode("utf-8", "replace"), False, None
+        except subprocess.TimeoutExpired as e:
+            data = e.stdout or b""
+            Path(log).write_bytes(data)
+            return None, data.decode("utf-8", "replace"), True, "TimeoutExpired"
+        except OSError as e:
+            Path(log).write_text("spawn error: %s\n" % e)
+            return None, "", False, "spawn error: %s" % e
     try:
         p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            input=input_bytes, timeout=QEMU_TIMEOUT)
@@ -390,10 +405,12 @@ def main():
           and MARKER_A not in text and MARKER_B not in text)
     record("direct-no-initrd", ok, rc, timed_out, cmd, log, err, None)
 
-    # 2. selected-a: default A from the shared pack, empty serial input.
+    # 2. selected-a: pick Linux A by label from the full-settings UNKNOWN-role
+    #    fixture, whose alternate rows are visible but not automatic. This case
+    #    verifies the archive-A real /init handoff, not the default policy.
     log = out / "case2-selected-a.log"
     cmd = qemu_base() + ["-kernel", str(main_bin)]
-    rc, text, timed_out, err = qemu_run(cmd, log, b"")
+    rc, text, timed_out, err = qemu_run(cmd, log, b"", selection_label="Linux A")
     ok = (not timed_out and rc == 0 and err is None
           and "Linux version" in text
           and MARKER_A in text and MARKER_B not in text
@@ -404,7 +421,7 @@ def main():
     # 3. selected-b: same pack/hash, choose B via the menu.
     log = out / "case3-selected-b.log"
     cmd = qemu_base() + ["-kernel", str(main_bin)]
-    rc, text, timed_out, err = qemu_run(cmd, log, b"3\n")
+    rc, text, timed_out, err = qemu_run(cmd, log, b"", selection_label="Linux B")
     ok = (not timed_out and rc == 0 and err is None
           and "Linux version" in text
           and MARKER_B in text and MARKER_A not in text
@@ -416,7 +433,7 @@ def main():
     #    falls back to the base image.
     log = out / "case4-invalid-b-reference.log"
     cmd = qemu_base() + ["-kernel", str(bad_bin)]
-    rc, text, timed_out, err = qemu_run(cmd, log, b"3\n")
+    rc, text, timed_out, err = qemu_run(cmd, log, b"", selection_label="Linux B")
     ok = (not timed_out and rc == 0 and err is None
           and "Memory handoff failed; booting base image" in text
           and BASE_MARKER in text

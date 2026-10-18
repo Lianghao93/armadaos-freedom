@@ -236,7 +236,8 @@ target_link_libraries(dt_diagnostic_report_test PRIVATE kshim_dt)
 
 target_compile_definitions(kshim_dt PRIVATE KSHIM_DIAGNOSTIC_RESOURCES_ONLY=1)
 
-kshim_test(memory_overlay_test memory_overlay_test.c)
+kshim_test(memory_overlay_test memory_overlay_test.c
+    "${KSHIM_ROOT}/src/dt/simplefb.c")
 target_link_libraries(memory_overlay_test PRIVATE kshim_dt)
 
 kshim_test(device_info_test device_info_test.c)

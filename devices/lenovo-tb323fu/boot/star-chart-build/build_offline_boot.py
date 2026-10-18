@@ -45,6 +45,7 @@ AVB_MAGIC = b"AVBf"
 
 MF_TYPE_LINUX = 1
 MF_TYPE_SHIM = 3
+MF_TYPE_BLOB = 4
 MF_TYPE_DTB = 5
 FLAG_BASE = 1
 FLAG_EXEC = 4
@@ -63,8 +64,26 @@ EXPECTED_ENTRIES = [
     ("Attached Shim", MF_TYPE_SHIM, FLAG_EXEC, 2, "shim"),
 ]
 
-DEFAULT_LABEL = "Image-01"
-DEFAULT_INDEX = 1
+# Optional external-initramfs extension: preserve entries 0..6 verbatim, add a
+# shared blob at entry 7 and move the auto-attached shim to entry 8.
+INITRD_ENTRY_NAME = "External Initramfs"
+INITRD_ENTRY_INDEX = 7
+INITRD_DT_PROPERTY = "kshim,initrd-entry"
+STALE_INITRD_PROPERTIES = ("linux,initrd-start", "linux,initrd-end")
+EXPECTED_INITRD_ENTRY = (INITRD_ENTRY_NAME, MF_TYPE_BLOB, 0, 16, "initrd")
+EXPECTED_ENTRIES_EXTERNAL = (EXPECTED_ENTRIES[:INITRD_ENTRY_INDEX]
+                             + [EXPECTED_INITRD_ENTRY]
+                             + [EXPECTED_ENTRIES[INITRD_ENTRY_INDEX]])
+
+# --default-entry choice -> (manifest default label, manifest default index).
+# Indices 0..3 are the four Linux-menu entries of the fixed layout.
+DEFAULT_ENTRY_TARGETS = {
+    "android": ("Image-00", 0),
+    "internal": ("Image-01", 1),
+    "tf": ("Image-02", 2),
+    "diagnostic": ("Image-03", 3),
+}
+DEFAULT_ENTRY = "internal"
 TIMEOUT_MS = 8000
 
 STAGE = "init"
@@ -209,6 +228,66 @@ def payload(raw, entry):
     return raw[entry["offset"]:entry["offset"] + entry["size"]]
 
 
+def expected_entries(external_initrd):
+    return EXPECTED_ENTRIES_EXTERNAL if external_initrd else EXPECTED_ENTRIES
+
+
+def external_image_section(initrd_path):
+    """Config lines for the shared external-initrd blob.
+
+    The packer's accepted type string is ``Blob`` (parse_image_type in
+    src/pack_config.c), not ``BlobPath``. Alignment exponent 16 (64 KiB)
+    keeps the page-rounded initrd away from the preceding selected DTB for
+    every supported 4/16/64 KiB page size, and is conservative on unknown
+    page sizes.
+    """
+    return [
+        "[Image-%02d]" % INITRD_ENTRY_INDEX,
+        "Name=" + INITRD_ENTRY_NAME,
+        "Path=" + initrd_path,
+        "Type=Blob",
+        "BaseImage=false",
+        "Align=16",
+        "",
+    ]
+
+
+def blob_entry_errors(entry, blob):
+    """Return every reason the manifest blob entry cannot be consumed."""
+    errors = []
+    if entry["type"] != MF_TYPE_BLOB:
+        errors.append("type=%d" % entry["type"])
+    if entry["flags"] != 0:
+        errors.append("flags=%d" % entry["flags"])
+    if entry["alignment"] != EXPECTED_INITRD_ENTRY[3]:
+        errors.append("alignment=%d" % entry["alignment"])
+    if entry["entry_offset"] != 0:
+        errors.append("entry_offset=%d" % entry["entry_offset"])
+    if entry["dtb_index"] != 0:
+        errors.append("dtb_index=%d" % entry["dtb_index"])
+    if entry["load_address"] != 0:
+        errors.append("load_address=%d" % entry["load_address"])
+    if entry["copy_size_max"] != 0:
+        errors.append("copy_size_max=%d" % entry["copy_size_max"])
+    if len(blob) == 0:
+        errors.append("empty initrd")
+    if entry["size"] != len(blob):
+        errors.append("size=%d expected=%d" % (entry["size"], len(blob)))
+    return errors
+
+
+def without_initrd_properties(lines):
+    """Drop exactly the DT properties this tool rewrites, keeping all else."""
+    filtered = []
+    for line in lines:
+        if INITRD_DT_PROPERTY in line:
+            continue
+        if any(prop in line for prop in STALE_INITRD_PROPERTIES):
+            continue
+        filtered.append(line)
+    return filtered
+
+
 def main():
     global OUT, WORK, LOGS, TMP, ENV
 
@@ -220,11 +299,17 @@ def main():
     parser.add_argument("--runtime", required=True)
     parser.add_argument("--tf-dtb", required=True)
     parser.add_argument("--internal-dtb", required=True)
+    parser.add_argument("--initrd", default=None,
+                        help="external initramfs blob; enables the 9-entry layout")
     parser.add_argument("--packer", required=True)
     parser.add_argument("--unpacker", required=True)
     parser.add_argument("--repacker", required=True)
     parser.add_argument("--avbtool", required=True)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--default-entry", choices=list(DEFAULT_ENTRY_TARGETS),
+                        default=DEFAULT_ENTRY,
+                        help="manifest default menu entry (default: %s)"
+                        % DEFAULT_ENTRY)
     args = parser.parse_args()
 
     # Resolve every input and tool to an absolute path BEFORE any cwd change.
@@ -240,10 +325,12 @@ def main():
         "repacker": os.path.abspath(args.repacker),
         "avbtool": os.path.abspath(args.avbtool),
     }
+    if args.initrd:
+        inputs["initrd"] = os.path.abspath(args.initrd)
     OUT = os.path.abspath(args.out)
 
     try:
-        return run_driver(inputs)
+        return run_driver(inputs, args.default_entry)
     except StageError as error:
         stage, message = error.stage, error.message
     except Exception as error:  # unexpected failure still leaves evidence
@@ -314,8 +401,9 @@ def args_out_raw():
     return OUT
 
 
-def run_driver(inputs):
+def run_driver(inputs, default_entry=DEFAULT_ENTRY):
     prepare_environment(inputs)
+    default_label, default_index = DEFAULT_ENTRY_TARGETS[default_entry]
 
     set_stage("validate-inputs")
     stock_boot = read_bytes(inputs["stock_boot"], "stock boot")
@@ -324,6 +412,11 @@ def run_driver(inputs):
     runtime = read_bytes(inputs["runtime"], "runtime shim")
     tf_src = read_bytes(inputs["tf_dtb"], "TF dtb")
     internal_src = read_bytes(inputs["internal_dtb"], "internal dtb")
+    external = "initrd" in inputs
+    initrd = (read_bytes(inputs["initrd"], "external initrd")
+              if external else None)
+    if external:
+        check("initrd:size", len(initrd) > 0, "empty initrd file")
 
     check("stock_boot:size", len(stock_boot) == BOOT_SIZE,
           "len=%d expected=%d" % (len(stock_boot), BOOT_SIZE))
@@ -360,6 +453,8 @@ def run_driver(inputs):
         "tf_dtb": sha256_bytes(tf_src),
         "internal_dtb": sha256_bytes(internal_src),
     }
+    if external:
+        source_digests["initrd"] = sha256_bytes(initrd)
 
     set_stage("dtb")
     require_tool("fdtput")
@@ -381,8 +476,71 @@ def run_driver(inputs):
         with open(out_log, "rb") as handle:
             return handle.read().decode("utf-8", "replace").strip()
 
+    def fdtget_text(dtb, node, prop, tag):
+        rc, out_log, _ = run(["fdtget", "-t", "s", dtb, node, prop], tag,
+                             expect_success=False)
+        if rc != 0:
+            return None
+        with open(out_log, "rb") as handle:
+            return handle.read().decode("utf-8", "replace").strip()
+
+    def fdtget_u32(dtb, node, prop, tag):
+        rc, out_log, _ = run(["fdtget", "-t", "u", dtb, node, prop], tag,
+                             expect_success=False)
+        if rc != 0:
+            return None
+        with open(out_log, "rb") as handle:
+            text = handle.read().decode("utf-8", "replace").strip()
+        return int(text) if text.isdigit() else None
+
+    def require_baldur_dts(dtb, label):
+        bootargs = fdtget_text(dtb, "/chosen", "bootargs",
+                               "fdtget_bootargs_" + label)
+        check("dtb:%s:chosen-bootargs" % label, bootargs is not None,
+              "missing /chosen bootargs")
+        bootargs_tokens = bootargs.split()
+        check("dtb:%s:bootargs-baldur-end" % label,
+              "baldur.end=hold" in bootargs_tokens,
+              "bootargs=%r" % bootargs)
+        check("dtb:%s:bootargs-cluster-off" % label,
+              "cpuidle_psci_domain.allow_cluster_off=0" in bootargs_tokens,
+              "bootargs=%r" % bootargs)
+        compatible = fdtget_text(dtb, "/", "compatible",
+                                 "fdtget_compatible_" + label)
+        check("dtb:%s:compatible" % label, compatible is not None,
+              "missing root compatible")
+        compatibles = compatible.split()
+        check("dtb:%s:compatible-lenovo-baldur" % label,
+              "lenovo,baldur" in compatibles, repr(compatible))
+        check("dtb:%s:compatible-qcom-kaanapali" % label,
+              "qcom,kaanapali" in compatibles, repr(compatible))
+
+    def apply_initrd_handoff(dtb, label):
+        # A missing stale property is expected; the derived-DTS comparison
+        # below proves that none survives.
+        for prop in STALE_INITRD_PROPERTIES:
+            run(["fdtput", "-d", dtb, "/chosen", prop],
+                "fdtput_del_%s_%s" % (label, prop.replace(",", "_")),
+                expect_success=False)
+        run(["fdtput", "-p", "-t", "u", dtb, "/chosen", INITRD_DT_PROPERTY,
+             str(INITRD_ENTRY_INDEX)], "fdtput_initrd_" + label)
+        value = fdtget_u32(dtb, "/chosen", INITRD_DT_PROPERTY,
+                           "fdtget_initrd_" + label)
+        check("dtb:%s:initrd-entry" % label, value == INITRD_ENTRY_INDEX,
+              "value=%r expected=%d" % (value, INITRD_ENTRY_INDEX))
+
+    if external:
+        for label, dtb in (("internal", dtb_internal), ("tf", dtb_tf)):
+            require_baldur_dts(dtb, label)
+        for label, dtb in (("internal", dtb_internal), ("tf", dtb_tf),
+                           ("diag", dtb_diag)):
+            apply_initrd_handoff(dtb, label)
+
     original_stage = fdtget_stage(dtb_internal)
     check("dtb:original-stage", original_stage == "os", repr(original_stage))
+    if external:
+        tf_stage = fdtget_stage(dtb_tf)
+        check("dtb:tf-stage", tf_stage == "os", repr(tf_stage))
     run(["fdtput", "-t", "s", dtb_diag, "/chosen", "armada,boot-stage",
          "maintenance"], "fdtput_diag")
     diagnostic_stage = fdtget_stage(dtb_diag)
@@ -405,12 +563,45 @@ def run_driver(inputs):
     run(["dtc", "-I", "dtb", "-O", "dts", "-s", dtb_check],
         "dtc_check", stdout_path=dts_check)
 
+    source_dts = {}
+    if external:
+        dtb_source_internal = os.path.join(WORK, "dtb_source_internal.dtb")
+        dtb_source_tf = os.path.join(WORK, "dtb_source_tf.dtb")
+        shutil.copyfile(inputs["internal_dtb"], dtb_source_internal)
+        shutil.copyfile(inputs["tf_dtb"], dtb_source_tf)
+        dts_tf = os.path.join(WORK, "tf.dts")
+        for label, dtb, path in (
+                ("source_internal", dtb_source_internal,
+                 os.path.join(WORK, "source_internal.dts")),
+                ("source_tf", dtb_source_tf,
+                 os.path.join(WORK, "source_tf.dts")),
+                ("tf", dtb_tf, dts_tf)):
+            run(["dtc", "-I", "dtb", "-O", "dts", "-s", dtb],
+                "dtc_" + label, stdout_path=path)
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                source_dts[label] = handle.read().splitlines()
+
     with open(dts_internal, encoding="utf-8", errors="replace") as handle:
         canonical = handle.read().splitlines()
     with open(dts_diag, encoding="utf-8", errors="replace") as handle:
         diag_lines = handle.read().splitlines()
     with open(dts_check, encoding="utf-8", errors="replace") as handle:
         check_lines = handle.read().splitlines()
+
+    if external:
+        for label, derived in (("internal", canonical), ("tf", source_dts["tf"])):
+            source = source_dts["source_" + label]
+            check("dtb:%s:diff-only-initrd" % label,
+                  without_initrd_properties(source)
+                  == without_initrd_properties(derived),
+                  "derived DT changed more than initrd properties")
+            added = [line for line in derived if INITRD_DT_PROPERTY in line]
+            check("dtb:%s:single-initrd-property" % label, len(added) == 1,
+                  "%d initrd properties" % len(added))
+            stale = [line for line in derived
+                     if any(prop in line for prop in STALE_INITRD_PROPERTIES)]
+            check("dtb:%s:no-stale-initrd" % label, not stale,
+                  "stale initrd bounds remain: %r" % stale)
 
     occurrences = [line for line in canonical if "armada,boot-stage" in line]
     check("dtb:unique-occurrence", len(occurrences) == 1,
@@ -454,7 +645,7 @@ def run_driver(inputs):
         "[Pack]",
         "Shim=" + config_safe(inputs["runtime"], "shim"),
         "Output=" + config_safe(packed_kernel, "output"),
-        "Default=" + DEFAULT_LABEL,
+        "Default=" + default_label,
         "Timeout=%d" % TIMEOUT_MS,
         "",
         "[Image-00]",
@@ -512,10 +703,15 @@ def run_driver(inputs):
         "BaseImage=false",
         "Align=3",
         "",
+    ]
+    if external:
+        config_lines.extend(external_image_section(
+            config_safe(inputs["initrd"], "image07")))
+    config_lines.extend([
         "[Manifest]",
         "Type=Manifest",
         "",
-    ]
+    ])
     with open(config_path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(config_lines))
 
@@ -542,8 +738,11 @@ def run_driver(inputs):
     check("manifest:version",
           manifest["version_major"] == 0 and manifest["version_minor"] == 1,
           "%d.%d" % (manifest["version_major"], manifest["version_minor"]))
-    check("manifest:count", manifest["count"] == 8, "%d" % manifest["count"])
-    check("manifest:default", manifest["default"] == DEFAULT_INDEX,
+    specs = expected_entries(external)
+    shim_index = len(specs) - 1
+    check("manifest:count", manifest["count"] == len(specs),
+          "%d" % manifest["count"])
+    check("manifest:default", manifest["default"] == default_index,
           "%d" % manifest["default"])
     check("manifest:timeout", manifest["timeout"] == TIMEOUT_MS,
           "%d" % manifest["timeout"])
@@ -563,7 +762,7 @@ def run_driver(inputs):
           "entry table does not fill manifest")
 
     for index, entry in enumerate(entries):
-        name, e_type, e_flags, e_align, _role = EXPECTED_ENTRIES[index]
+        name, e_type, e_flags, e_align, _role = specs[index]
         check("entry%d:name" % index,
               entry["name_bytes"].decode("utf-8") == name,
               entry["name_bytes"].decode("utf-8", "replace"))
@@ -639,8 +838,19 @@ def run_driver(inputs):
         check("dtb%d:totalsize" % index, 0 < totalsize <= len(body),
               "totalsize=%d len=%d" % (totalsize, len(body)))
 
-    # Attached shim.
-    shim = entries[7]
+    # Optional shared external-initramfs blob (entry 7, before the shim).
+    if external:
+        blob = entries[INITRD_ENTRY_INDEX]
+        blob_errors = blob_entry_errors(blob, initrd)
+        check("blob:entry", not blob_errors, "; ".join(blob_errors))
+        check("blob:offset-aligned",
+              blob["offset"] % (1 << EXPECTED_INITRD_ENTRY[3]) == 0,
+              "offset=%d" % blob["offset"])
+        check("blob:payload==initrd", payload(raw, blob) == initrd,
+              "blob payload differs from --initrd")
+
+    # Attached shim (last entry in both layouts).
+    shim = entries[shim_index]
     check("shim:offset==header", shim["offset"] == shim_offset,
           "entry=%d header=%d" % (shim["offset"], shim_offset))
     check("shim:size", shim["size"] == RUNTIME_SIZE, "%d" % shim["size"])
@@ -670,9 +880,14 @@ def run_driver(inputs):
          entries[5]["size"]),
         ("dtb6", entries[6]["offset"], entries[6]["offset"] + entries[6]["size"],
          entries[6]["size"]),
-        ("manifest", manifest_offset, manifest_offset + manifest_size,
-         manifest_size),
     ]
+    if external:
+        blob = entries[INITRD_ENTRY_INDEX]
+        regions.append(
+            ("initrd", blob["offset"], blob["offset"] + blob["size"],
+             blob["size"]))
+    regions.append(("manifest", manifest_offset, manifest_offset + manifest_size,
+                    manifest_size))
     previous_end = 0
     for name, start, end, used in regions:
         check("layout:%s:ordered" % name, start >= previous_end,
@@ -741,6 +956,14 @@ def run_driver(inputs):
         check("unpack:dtb%d-bytes" % index,
               read_bytes(os.path.join(unpacked_dir, path), section) == expected,
               "%s bytes differ" % section)
+
+    if external:
+        _, path7 = section_ref("Image-%02d" % INITRD_ENTRY_INDEX)
+        check("unpack:initrd-path", path7 is not None, "Image-07 has no Path")
+        check("unpack:initrd-bytes",
+              read_bytes(os.path.join(unpacked_dir, path7),
+                         "Image-%02d" % INITRD_ENTRY_INDEX) == initrd,
+              "restored initrd differs from --initrd")
 
     set_stage("repack")
     run([packer, os.path.join(unpacked_dir, "config.cfg")], "repacker-packer")
@@ -855,7 +1078,7 @@ def run_driver(inputs):
     set_stage("report")
     report_entries = []
     for index, entry in enumerate(entries):
-        name, e_type, e_flags, e_align, role = EXPECTED_ENTRIES[index]
+        name, e_type, e_flags, e_align, role = specs[index]
         report_entries.append({
             "index": index,
             "role": role,
@@ -906,8 +1129,8 @@ def run_driver(inputs):
             "avbtool": inputs["avbtool"],
         },
         "config_path": config_path,
-        "default_label": DEFAULT_LABEL,
-        "default_index": DEFAULT_INDEX,
+        "default_label": default_label,
+        "default_index": default_index,
         "timeout_ms": TIMEOUT_MS,
         "manifest": {
             "magic": hex(manifest["magic"]),
@@ -954,6 +1177,20 @@ def run_driver(inputs):
         "commands": COMMANDS,
         "checks": CHECKS,
     }
+
+    report["shim_index"] = shim_index
+    report["external_initrd"] = {
+        "enabled": external,
+        "entry_index": INITRD_ENTRY_INDEX if external else None,
+        "dt_property": INITRD_DT_PROPERTY if external else None,
+        "shared_by_linux_entries": [1, 2, 3] if external else [],
+    }
+    if external:
+        report["sources"]["initrd"] = {
+            "path": inputs["initrd"],
+            "length": len(initrd),
+            "sha256": source_digests["initrd"],
+        }
 
     with open(os.path.join(OUT, "report.json"), "w", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2, ensure_ascii=False)

@@ -7,11 +7,14 @@
  * All device trees are synthesized in-process with libfdt; there are no
  * external fixtures. The function is a pure read-only decoder: the input blob
  * is byte-compared before and after the representative call, and the whole
- * record must be reset on every call.
+ * record must be reset on every call. The only exception is the opt-in
+ * --stock-tb323fu <dtb> acceptance run, which reads a caller-named blob and
+ * performs the same byte comparison.
  */
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <libfdt.h>
 #include "dt.h"
@@ -599,6 +602,233 @@ static void test_stock_panel_tb323fu_conflict(void)
     assert(info.soc == DEVICE_SOC_SM8750);
 }
 
+/* ---- stock Gen5 TB323FU active-panel fingerprint ------------------------- */
+
+/* Measured DTB12+DTBO47 shape: an exact root "qcom,canoep" with no
+ * SM8750-family marker, and an enabled exact /soc/qcom,dsi-display-primary
+ * (single "qcom,dsi-display" compatible, "primary" label) whose single-cell
+ * qcom,dsi-default-panel resolves to the one enabled Baldur NT36523 panel
+ * under /soc/qcom,mdss_mdp@9800000. The reference is symbolic on purpose: the
+ * captured phandle (0x7ec) is not part of the fingerprint. */
+#define MDSS_MDP_GEN5  "qcom,mdss_mdp@9800000"
+#define BALDUR_NODE    "qcom,mdss_dsi_baldur_nt36523_csot_3k_dsc_vid"
+#define BALDUR_PANEL   "nt36523 3k fhd plus 165Hz DPHY video panel"
+#define BALDUR_PHANDLE 7u
+#define GEN5_COMPAT    "qcom,canoep"
+
+static void disable_node(void *f, int node)
+{
+    assert(fdt_setprop_string(f, node, "status", "disabled") == 0);
+}
+
+/* Root properties must already be set (offsets shift when a root property is
+ * added after /soc). */
+static void build_stock_display_gen5(void *f)
+{
+    uint32_t one[1] = { BALDUR_PHANDLE };
+    int soc = add_child(f, 0, "soc");
+    int mdp = add_child(f, soc, MDSS_MDP_GEN5);
+
+    add_panel(f, mdp, BALDUR_NODE, BALDUR_PHANDLE, BALDUR_PANEL, 1);
+    add_primary(f, soc, DSI_DISPLAY, "primary", one, 1, 1);
+}
+
+/* The regression this file exists for: a stock Gen5 tree is currently read
+ * as board UNKNOWN even though the root identifies the SoC as SM8850. */
+static void test_gen5_stock_panel_exact(void)
+{
+    static const char *const compat[] = { GEN5_COMPAT };
+    struct device_info info;
+    void *f = new_tree();
+
+    set_compat(f, compat, 1);
+    build_stock_display_gen5(f);
+    run(f, &info);
+    assert(info.board == DEVICE_BOARD_TB323FU);
+    assert(info.soc == DEVICE_SOC_SM8850);
+}
+
+/* Only the actively referenced panel counts: the node name and the panel name
+ * must both be exact, and a standby Baldur panel is never used. */
+static void test_gen5_stock_panel_wrong_panel(void)
+{
+    static const char *const compat[] = { GEN5_COMPAT };
+    uint32_t baldur[1] = { BALDUR_PHANDLE };
+    uint32_t other[1] = { 8 };
+    struct device_info info;
+    void *f;
+    int soc, mdp;
+
+    /* wrong target node name */
+    f = new_tree();
+    set_compat(f, compat, 1);
+    soc = add_child(f, 0, "soc");
+    mdp = add_child(f, soc, MDSS_MDP_GEN5);
+    add_panel(f, mdp, "qcom,mdss_dsi_other_panel", BALDUR_PHANDLE, BALDUR_PANEL, 1);
+    add_primary(f, soc, DSI_DISPLAY, "primary", baldur, 1, 1);
+    run(f, &info);
+    assert(info.board == DEVICE_BOARD_UNKNOWN);
+    assert(info.soc == DEVICE_SOC_SM8850);
+
+    /* wrong target panel name */
+    f = new_tree();
+    set_compat(f, compat, 1);
+    soc = add_child(f, 0, "soc");
+    mdp = add_child(f, soc, MDSS_MDP_GEN5);
+    add_panel(f, mdp, BALDUR_NODE, BALDUR_PHANDLE, "wrong panel name", 1);
+    add_primary(f, soc, DSI_DISPLAY, "primary", baldur, 1, 1);
+    run(f, &info);
+    assert(info.board == DEVICE_BOARD_UNKNOWN);
+
+    /* the reference aims at another enabled panel while Baldur is standby */
+    f = new_tree();
+    set_compat(f, compat, 1);
+    soc = add_child(f, 0, "soc");
+    mdp = add_child(f, soc, MDSS_MDP_GEN5);
+    add_panel(f, mdp, BALDUR_NODE, BALDUR_PHANDLE, BALDUR_PANEL, 1); /* standby */
+    add_panel(f, mdp, "qcom,mdss_dsi_other_panel", 8, "other panel", 1);
+    add_primary(f, soc, DSI_DISPLAY, "primary", other, 1, 1);
+    run(f, &info);
+    assert(info.board == DEVICE_BOARD_UNKNOWN);
+}
+
+/* Missing, multi-cell and ambiguous references never resolve. */
+static void test_gen5_stock_panel_bad_reference(void)
+{
+    static const char *const compat[] = { GEN5_COMPAT };
+    uint32_t one[1] = { BALDUR_PHANDLE };
+    uint32_t two[2] = { BALDUR_PHANDLE, BALDUR_PHANDLE };
+    struct device_info info;
+    void *f;
+    int soc, mdp;
+
+    /* missing qcom,dsi-default-panel */
+    f = new_tree();
+    set_compat(f, compat, 1);
+    soc = add_child(f, 0, "soc");
+    mdp = add_child(f, soc, MDSS_MDP_GEN5);
+    add_panel(f, mdp, BALDUR_NODE, BALDUR_PHANDLE, BALDUR_PANEL, 1);
+    add_primary(f, soc, DSI_DISPLAY, "primary", NULL, 0, 1);
+    run(f, &info);
+    assert(info.board == DEVICE_BOARD_UNKNOWN);
+
+    /* two-cell (multiple-cell) reference is rejected before any lookup */
+    f = new_tree();
+    set_compat(f, compat, 1);
+    soc = add_child(f, 0, "soc");
+    mdp = add_child(f, soc, MDSS_MDP_GEN5);
+    add_panel(f, mdp, BALDUR_NODE, BALDUR_PHANDLE, BALDUR_PANEL, 1);
+    add_primary(f, soc, DSI_DISPLAY, "primary", two, 2, 1);
+    run(f, &info);
+    assert(info.board == DEVICE_BOARD_UNKNOWN);
+
+    /* a duplicated target phandle is ambiguous: never resolved */
+    f = new_tree();
+    set_compat(f, compat, 1);
+    soc = add_child(f, 0, "soc");
+    mdp = add_child(f, soc, MDSS_MDP_GEN5);
+    add_panel(f, mdp, BALDUR_NODE, BALDUR_PHANDLE, BALDUR_PANEL, 1);
+    add_panel(f, mdp, "qcom,mdss_dsi_dup_panel", BALDUR_PHANDLE, "dup", 1);
+    add_primary(f, soc, DSI_DISPLAY, "primary", one, 1, 1);
+    run(f, &info);
+    assert(info.board == DEVICE_BOARD_UNKNOWN);
+}
+
+/* A disabled primary, target or ancestor makes the layout unavailable. */
+static void test_gen5_stock_panel_disabled(void)
+{
+    static const char *const compat[] = { GEN5_COMPAT };
+    uint32_t one[1] = { BALDUR_PHANDLE };
+    struct device_info info;
+    void *f;
+    int soc, mdp;
+
+    /* disabled primary */
+    f = new_tree();
+    set_compat(f, compat, 1);
+    soc = add_child(f, 0, "soc");
+    mdp = add_child(f, soc, MDSS_MDP_GEN5);
+    add_panel(f, mdp, BALDUR_NODE, BALDUR_PHANDLE, BALDUR_PANEL, 1);
+    add_primary(f, soc, DSI_DISPLAY, "primary", one, 1, 0);
+    run(f, &info);
+    assert(info.board == DEVICE_BOARD_UNKNOWN);
+
+    /* disabled target */
+    f = new_tree();
+    set_compat(f, compat, 1);
+    soc = add_child(f, 0, "soc");
+    mdp = add_child(f, soc, MDSS_MDP_GEN5);
+    add_panel(f, mdp, BALDUR_NODE, BALDUR_PHANDLE, BALDUR_PANEL, 0);
+    add_primary(f, soc, DSI_DISPLAY, "primary", one, 1, 1);
+    run(f, &info);
+    assert(info.board == DEVICE_BOARD_UNKNOWN);
+
+    /* disabled target ancestor (mdss_mdp) */
+    f = new_tree();
+    set_compat(f, compat, 1);
+    soc = add_child(f, 0, "soc");
+    mdp = add_child(f, soc, MDSS_MDP_GEN5);
+    disable_node(f, mdp);
+    add_panel(f, mdp, BALDUR_NODE, BALDUR_PHANDLE, BALDUR_PANEL, 1);
+    add_primary(f, soc, DSI_DISPLAY, "primary", one, 1, 1);
+    run(f, &info);
+    assert(info.board == DEVICE_BOARD_UNKNOWN);
+
+    /* disabled primary ancestor (/soc) */
+    f = new_tree();
+    set_compat(f, compat, 1);
+    soc = add_child(f, 0, "soc");
+    disable_node(f, soc);
+    mdp = add_child(f, soc, MDSS_MDP_GEN5);
+    add_panel(f, mdp, BALDUR_NODE, BALDUR_PHANDLE, BALDUR_PANEL, 1);
+    add_primary(f, soc, DSI_DISPLAY, "primary", one, 1, 1);
+    run(f, &info);
+    assert(info.board == DEVICE_BOARD_UNKNOWN);
+}
+
+/* The fingerprint is gated on the exact qcom,canoep root: other SM8850-family
+ * markers never substitute for it, and an SM8750-family entry suppresses it. */
+static void test_gen5_stock_panel_root_gating(void)
+{
+    static const char *const canoep[] = { GEN5_COMPAT };
+    static const char *const canoe[] = { "qcom,canoe" };
+    static const char *const kaanapali[] = { "qcom,kaanapali" };
+    static const char *const mixed[] = { "qcom,sunp", "qcom,canoep" };
+    struct device_info info;
+    void *f;
+
+    /* root-only qcom,canoep without the display fingerprint stays UNKNOWN */
+    f = new_tree();
+    set_compat(f, canoep, 1);
+    run(f, &info);
+    assert(info.board == DEVICE_BOARD_UNKNOWN);
+    assert(info.soc == DEVICE_SOC_SM8850);
+
+    /* qcom,canoe alone is not the measured root */
+    f = new_tree();
+    set_compat(f, canoe, 1);
+    build_stock_display_gen5(f);
+    run(f, &info);
+    assert(info.board == DEVICE_BOARD_UNKNOWN);
+    assert(info.soc == DEVICE_SOC_SM8850);
+
+    /* qcom,kaanapali alone is not the measured root either */
+    f = new_tree();
+    set_compat(f, kaanapali, 1);
+    build_stock_display_gen5(f);
+    run(f, &info);
+    assert(info.board == DEVICE_BOARD_UNKNOWN);
+    assert(info.soc == DEVICE_SOC_SM8850);
+
+    /* sunp plus canoep: the fingerprint is suppressed, SoC stays mixed */
+    f = new_tree();
+    set_compat(f, mixed, 2);
+    build_stock_display_gen5(f);
+    run(f, &info);
+    assert(info.board == DEVICE_BOARD_UNKNOWN);
+    assert(info.soc == DEVICE_SOC_UNKNOWN);
+}
+
 static void test_missing_properties(void)
 {
     struct device_info info;
@@ -960,8 +1190,70 @@ static void test_read_only(void)
     assert(memcmp(g_blob, g_snap, BYTES) == 0);
 }
 
-int main(void)
+/* ---- optional real-blob acceptance --------------------------------------- */
+
+/* Not a harness: only the no-argument run above is the test suite. This reads
+ * a captured stock DTB the caller names explicitly, validates it, checks the
+ * measured board/SoC classification and that the blob was not modified. */
+static int stock_accept(const char *path)
 {
+    struct device_info info;
+    unsigned char *blob, *copy;
+    long length;
+    size_t size;
+    FILE *fp = fopen(path, "rb");
+
+    if (!fp) {
+        fprintf(stderr, "stock: cannot open %s\n", path);
+        return 1;
+    }
+    if (fseek(fp, 0, SEEK_END) || (length = ftell(fp)) <= 0 ||
+        fseek(fp, 0, SEEK_SET)) {
+        fclose(fp);
+        fprintf(stderr, "stock: cannot size %s\n", path);
+        return 1;
+    }
+    size = (size_t)length;
+    blob = malloc(size);
+    copy = malloc(size);
+    if (!blob || !copy || fread(blob, 1, size, fp) != size) {
+        fclose(fp);
+        free(blob);
+        free(copy);
+        fprintf(stderr, "stock: cannot read %s\n", path);
+        return 1;
+    }
+    fclose(fp);
+    memcpy(copy, blob, size);
+    if (dt_validate(blob, size)) {
+        fprintf(stderr, "stock: %s is not a valid FDT\n", path);
+        free(blob);
+        free(copy);
+        return 1;
+    }
+    device_info_read(blob, &info);
+    if (info.board != DEVICE_BOARD_TB323FU ||
+        info.soc != DEVICE_SOC_SM8850 || memcmp(blob, copy, size)) {
+        fprintf(stderr, "stock: %s board/soc/mutation mismatch\n", path);
+        free(blob);
+        free(copy);
+        return 1;
+    }
+    free(blob);
+    free(copy);
+    printf("stock-tb323fu PASS\n");
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 1) {
+        if (argc == 3 && strcmp(argv[1], "--stock-tb323fu") == 0)
+            return stock_accept(argv[2]);
+        fprintf(stderr, "usage: %s [--stock-tb323fu <dtb>]\n", argv[0]);
+        return 2;
+    }
+
     test_tb322fc_exact();
     test_tb323fu_identities();
     test_same_soc_unrelated_stays_unknown();
@@ -977,6 +1269,11 @@ int main(void)
     test_stock_panel_root_gating();
     test_stock_panel_wrong_names();
     test_stock_panel_tb323fu_conflict();
+    test_gen5_stock_panel_exact();
+    test_gen5_stock_panel_wrong_panel();
+    test_gen5_stock_panel_bad_reference();
+    test_gen5_stock_panel_disabled();
+    test_gen5_stock_panel_root_gating();
     test_missing_properties();
     test_malformed_string_list();
     test_truncated_display();
