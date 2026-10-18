@@ -180,6 +180,37 @@ mod tests {
     }
 
     #[test]
+    fn packaged_profiles_have_exact_gen4_legion_g9_entry() {
+        let catalog: ProfileCatalog = parse_catalog(include_str!("../profiles.json")).unwrap();
+        let gen4: Vec<&DeviceProfile> = catalog
+            .profiles
+            .iter()
+            .filter(|profile| {
+                profile
+                    .models
+                    .iter()
+                    .any(|model| model == "Lenovo Legion Y700 Gen4")
+            })
+            .collect();
+        assert_eq!(gen4.len(), 1);
+        assert_eq!(gen4[0].models.len(), 1);
+        assert_eq!(gen4[0].models[0], "Lenovo Legion Y700 Gen4");
+        match &gen4[0].backend {
+            BackendProfile::Gcmhid {
+                vendor,
+                product,
+                strips,
+            } => {
+                assert_eq!(vendor, "3537");
+                assert_eq!(product, "1134");
+                assert_eq!(strips, &vec![1u8, 2u8]);
+            }
+            _ => panic!("Gen4 Legion G9 profile must use the gcmhid backend"),
+        }
+        assert!(gen4[0].correction.is_none());
+    }
+
+    #[test]
     fn validates_catalog_version_and_models() {
         assert!(parse_catalog(r#"{"version":2,"profiles":[]}"#).is_err());
         assert!(parse_catalog(

@@ -1154,6 +1154,280 @@ class ReadLoopTests(unittest.TestCase):
         self.assertEqual(client.calls, [client.path])
 
 
+# --- profile selection and cross-pair identity -----------------------------
+
+GEN4_NAME = mod.GEN4_PROFILE.evdev_name
+GEN4_CONSUMER = mod.GEN4_PROFILE.consumer_evdev_name
+GEN4_COMPOSITE = mod.GEN4_PROFILE.composite_name
+
+
+class ProfileSelectionTests(unittest.TestCase):
+    def test_gen4_model_selects_gen4_profile(self):
+        self.assertEqual(
+            mod.profile_for_model("Lenovo Legion Y700 Gen4"),
+            mod.GEN4_PROFILE,
+        )
+        self.assertEqual(
+            mod.profile_for_model("Lenovo Legion Y700 Gen4\x00"),
+            mod.GEN4_PROFILE,
+        )
+        self.assertTrue(
+            mod.model_permitted("Lenovo Legion Y700 Gen4", mod.GEN4_PROFILE)
+        )
+
+    def test_gen5_models_still_select_gen5(self):
+        for name in (
+            "Lenovo Legion Tab Y700 5th Gen",
+            "Lenovo Legion Y700 Gen 5 (TB323FU)",
+            "Lenovo Legion Tab Y700 (TB323FU)",
+        ):
+            self.assertEqual(mod.profile_for_model(name), mod.GEN5_PROFILE)
+        # The old public helper keeps its Gen5-only default.
+        self.assertTrue(mod.model_permitted("Lenovo Legion Tab Y700 5th Gen"))
+
+    def test_gen4_model_is_not_permitted_by_default(self):
+        self.assertFalse(mod.model_permitted("Lenovo Legion Y700 Gen4"))
+
+    def test_unknown_model_selects_nothing(self):
+        for name in ("Lenovo Legion Go", "", "Lenovo Legion Y700 Gen 5"):
+            self.assertIsNone(mod.profile_for_model(name))
+
+
+class CrossProfileIdentityTests(unittest.TestCase):
+    def test_gen4_exact_pair_accepted(self):
+        self.assertTrue(
+            mod.evdev_identity_matches(
+                GEN4_NAME, "3537", "1134", mod.GEN4_PROFILE
+            )
+        )
+        self.assertTrue(
+            mod.consumer_identity_matches(
+                GEN4_CONSUMER, "3537", "1134", mod.GEN4_PROFILE
+            )
+        )
+        self.assertEqual(
+            GEN4_COMPOSITE, "Lenovo Legion Y700 Gen4 (TB322FC) + Legion G9"
+        )
+
+    def test_gen4_profile_rejects_gen5_name_and_wrong_ids(self):
+        for name, vendor, product in (
+            (GEN4_NAME, "3537", "1136"),
+            (GEN4_NAME, "3537", "1135"),
+            (mod.EVDEV_NAME, "3537", "1134"),
+            (GEN4_NAME, "1134", "1134"),
+        ):
+            self.assertFalse(
+                mod.evdev_identity_matches(
+                    name, vendor, product, mod.GEN4_PROFILE
+                )
+            )
+        self.assertFalse(
+            mod.consumer_identity_matches(
+                mod.CONSUMER_EVDEV_NAME, "3537", "1134", mod.GEN4_PROFILE
+            )
+        )
+        self.assertFalse(
+            mod.consumer_identity_matches(
+                GEN4_CONSUMER, "3537", "1136", mod.GEN4_PROFILE
+            )
+        )
+
+    def test_default_profile_rejects_old_g9_pair(self):
+        self.assertFalse(mod.evdev_identity_matches(GEN4_NAME, "3537", "1134"))
+        self.assertFalse(
+            mod.consumer_identity_matches(GEN4_CONSUMER, "3537", "1134")
+        )
+
+    def test_composite_name_is_pair_specific(self):
+        node = "/dev/input/event4"
+        caps = [mod.QUICKACCESS_CAP]
+        self.assertTrue(
+            mod.match_composite(
+                node, [node], [GEN4_COMPOSITE], caps, mod.GEN4_PROFILE
+            )
+        )
+        # The Gen4 composite name must not satisfy the default Gen5 profile.
+        self.assertFalse(
+            mod.match_composite(node, [node], [GEN4_COMPOSITE], caps)
+        )
+        # ...and the Gen5 composite name must not satisfy the Gen4 profile.
+        self.assertFalse(
+            mod.match_composite(
+                node, [node], [mod.EXPECTED_COMPOSITE_NAME], caps,
+                mod.GEN4_PROFILE,
+            )
+        )
+        self.assertFalse(
+            mod.match_composite(
+                node, [node], [GEN4_COMPOSITE + "x"], caps, mod.GEN4_PROFILE
+            )
+        )
+
+    def test_gen4_sibling_requires_same_hid_parent(self):
+        parent = "/sys/devices/pci/0003:3537:1134.0003"
+        self.assertTrue(
+            mod.sibling_matches(
+                parent, GEN4_CONSUMER, "3537", "1134", parent,
+                mod.GEN4_PROFILE,
+            )
+        )
+        self.assertFalse(
+            mod.sibling_matches(
+                parent, mod.CONSUMER_EVDEV_NAME, "3537", "1136", parent,
+                mod.GEN4_PROFILE,
+            )
+        )
+        self.assertFalse(
+            mod.sibling_matches(
+                parent, GEN4_CONSUMER, "3537", "1134", parent + ".0004",
+                mod.GEN4_PROFILE,
+            )
+        )
+
+
+# --- per-profile runtime policy --------------------------------------------
+
+
+class Gen4RuntimePolicyTests(unittest.TestCase):
+    NODE = "/dev/input/event4"
+    CONSUMER_NODE = "/dev/input/event6"
+
+    def _service(self, profile):
+        client = RecordingClient()
+        service = mod.Service(
+            client,
+            sleep=lambda _seconds: None,
+            source_validator=lambda _node: True,
+            consumer_validator=lambda _primary, _consumer: True,
+            logger=lambda _message: None,
+            profile=profile,
+        )
+        service._primary_node = self.NODE
+        service._consumer_node = self.CONSUMER_NODE
+        return service, client
+
+    def test_gen4_two_physical_taps_emit(self):
+        service, client = self._service(mod.GEN4_PROFILE)
+        for code, value, timestamp in (
+            (mod.BTN_MODE, 1, 1.00),
+            (mod.BTN_MODE, 0, 1.05),
+            (mod.BTN_MODE, 1, 1.10),
+            (mod.BTN_MODE, 0, 1.15),
+        ):
+            service._feed_primary(mod.EV_KEY, code, value, timestamp)
+        self.assertEqual(client.calls, [client.path])
+
+    def test_gen4_consumer_pulse_alone_emits_one_chord(self):
+        # Verified 1134 behaviour: the firmware double can arrive as a lone
+        # KEY_HOMEPAGE down/up group, so it is one queued chord on its own.
+        service, client = self._service(mod.GEN4_PROFILE)
+        service._feed_consumer(mod.EV_KEY, mod.KEY_HOMEPAGE, 1, 1.00)
+        service._feed_consumer(mod.EV_KEY, mod.KEY_HOMEPAGE, 0, 1.20)
+        self.assertEqual(client.calls, [client.path])
+        # A duplicate paired BTN_MODE stream inside the cooldown must not add a
+        # second chord for the same physical gesture.
+        for code, value, timestamp in (
+            (mod.BTN_MODE, 1, 1.15),
+            (mod.BTN_MODE, 0, 1.20),
+            (mod.BTN_MODE, 1, 1.25),
+            (mod.BTN_MODE, 0, 1.30),
+        ):
+            service._feed_primary(mod.EV_KEY, code, value, timestamp)
+        self.assertEqual(client.calls, [client.path])
+
+    def test_gen4_single_tap_plus_consumer_pulse_emits_one_chord(self):
+        # Verified 1134 behaviour: a physical first tap followed by the
+        # firmware's KEY_HOMEPAGE group is exactly one double -> one chord.
+        service, client = self._service(mod.GEN4_PROFILE)
+        service._feed_primary(mod.EV_KEY, mod.BTN_MODE, 1, 1.00)
+        service._feed_primary(mod.EV_KEY, mod.BTN_MODE, 0, 1.05)
+        service._feed_consumer(mod.EV_KEY, mod.KEY_HOMEPAGE, 1, 1.10)
+        service._feed_consumer(mod.EV_KEY, mod.KEY_HOMEPAGE, 0, 1.30)
+        self.assertEqual(client.calls, [client.path])
+        # The consumed first tap must not pair with a later lone Home press
+        # into a phantom double.
+        service._feed_primary(mod.EV_KEY, mod.BTN_MODE, 1, 1.40)
+        service._feed_primary(mod.EV_KEY, mod.BTN_MODE, 0, 1.45)
+        self.assertEqual(client.calls, [client.path])
+
+    def test_gen4_captured_real_sequence_one_chord_per_firmware_group(self):
+        # Exact captured 1134 sequence: one lone physical BTN_MODE tap (event4)
+        # gives nothing, then four firmware double groups arrive only as
+        # KEY_HOMEPAGE down/up pairs on the sibling Consumer Control node
+        # (event6, same HID parent). Each group gives exactly one chord; the
+        # release, a replayed key-up and a repeat add nothing.
+        service, client = self._service(mod.GEN4_PROFILE)
+        service._feed_primary(mod.EV_KEY, mod.BTN_MODE, 1, 1792262289.876258)
+        service._feed_primary(mod.EV_KEY, mod.BTN_MODE, 0, 1792262289.926330)
+        self.assertEqual(client.calls, [])
+        groups = (
+            (1792262293.233280, 1792262293.434278),
+            (1792262294.862364, 1792262295.061280),
+            (1792262296.276285, 1792262296.480372),
+            (1792262298.189306, 1792262298.390296),
+        )
+        for index, (down_t, up_t) in enumerate(groups, 1):
+            service._feed_consumer(mod.EV_KEY, mod.KEY_HOMEPAGE, 1, down_t)
+            service._feed_consumer(mod.EV_KEY, mod.KEY_HOMEPAGE, 2, down_t + 0.05)
+            service._feed_consumer(mod.EV_KEY, mod.KEY_HOMEPAGE, 0, up_t)
+            service._feed_consumer(mod.EV_KEY, mod.KEY_HOMEPAGE, 0, up_t + 0.01)
+            self.assertEqual(client.calls, [client.path] * index)
+
+    def test_gen5_profile_keeps_consumer_policy(self):
+        service, client = self._service(mod.GEN5_PROFILE)
+        service._feed_consumer(mod.EV_KEY, mod.KEY_HOMEPAGE, 1, 1.00)
+        self.assertEqual(client.calls, [client.path])
+
+
+class RuntimeProfileSelectionTests(unittest.TestCase):
+    def test_unknown_model_exits_before_discovery(self):
+        calls = []
+        original_model = mod.read_device_model
+        original_discover = mod.discover_evdev_node
+        mod.read_device_model = lambda: "Lenovo Legion Go"
+        mod.discover_evdev_node = (
+            lambda *args, **kwargs: calls.append(args) or None
+        )
+        try:
+            service = mod.Service(
+                RecordingClient(),
+                sleep=lambda _seconds: None,
+                logger=lambda _message: None,
+            )
+            self.assertEqual(service.run(), 0)
+            self.assertEqual(calls, [])
+        finally:
+            mod.read_device_model = original_model
+            mod.discover_evdev_node = original_discover
+
+    def test_gen4_model_rebinds_before_discovery(self):
+        seen = []
+        holder = {}
+        original_model = mod.read_device_model
+        original_discover = mod.discover_evdev_node
+        mod.read_device_model = lambda: "Lenovo Legion Y700 Gen4"
+
+        def fake_discover(profile=None):
+            seen.append(profile)
+            holder["service"]._stop = True
+            return None
+
+        mod.discover_evdev_node = fake_discover
+        try:
+            service = mod.Service(
+                RecordingClient(),
+                sleep=lambda _seconds: None,
+                logger=lambda _message: None,
+            )
+            holder["service"] = service
+            self.assertEqual(service.run(), 0)
+        finally:
+            mod.read_device_model = original_model
+            mod.discover_evdev_node = original_discover
+        self.assertEqual(seen, [mod.GEN4_PROFILE])
+        self.assertEqual(service.profile, mod.GEN4_PROFILE)
+
+
 # --- packaging regression --------------------------------------------------
 
 

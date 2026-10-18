@@ -3,8 +3,12 @@
 # Copyright (C) 2026 danyi and the armadaos-freedom contributors
 """Double-Home -> Steam Quick Access Menu helper.
 
-Target hardware: Lenovo Legion Tab Y700 5th Gen / TB323FU with the GameSir
-Legion Gaming Controller G9 2026 (3537:1136).
+Target hardware (two explicit pairs):
+
+* Lenovo Legion Tab Y700 5th Gen / TB323FU with the GameSir Legion Gaming
+  Controller G9 2026 (3537:1136).
+* Lenovo Legion Tab Y700 Gen4 / TB322FC with the older GameSir Legion Gaming
+  Controller G9 (3537:1134).
 
 Design intent (deliberately narrow):
 
@@ -25,9 +29,17 @@ Design intent (deliberately narrow):
   taps. It may deliver the fast double -- sometimes the whole gesture, with no
   BTN_MODE at all -- as a ~200 ms ``KEY_HOMEPAGE`` pulse on the sibling
   "Consumer Control" node of the same HID device. That sibling is discovered
-  and observed read-only alongside the gamepad, and a matched first down is
-  accepted on its own as the firmware double action; either path still produces
-  at most one chord.
+  and observed read-only alongside the gamepad, and on the 1136 pair a matched
+  first down is accepted on its own as the firmware double action; either path
+  still produces at most one chord.
+* The 1134 (older G9) pair behaves the same way: physical captures confirm the
+  firmware delivers the double only as ``KEY_HOMEPAGE`` pulses on the sibling
+  Consumer Control node, with no paired BTN_MODE events. This is an explicit
+  per-profile policy (``consumer_homepage_is_double``), not a global guess, and
+  it is verified for both supported pairs.
+* The tablet + controller pair is selected from the exact device-tree model
+  before any listener starts; an unknown model exits without opening or
+  observing any input node.
 * Normal Guide events are never suppressed or modified, so a single Home press
   keeps its existing Steam behaviour. A double press may briefly open then
   close the Steam menu before Quick Access appears.
@@ -47,6 +59,7 @@ import struct
 import subprocess
 import sys
 import time
+from collections import namedtuple
 
 try:
     import fcntl
@@ -56,40 +69,85 @@ except ImportError:  # pragma: no cover - non-Linux hosts cannot use the ioctl
 # ---------------------------------------------------------------------------
 # Device identity
 # ---------------------------------------------------------------------------
+#
+# Two explicit tablet + controller pairs are supported. Each is an immutable
+# record, and every identity gate below takes the selected profile as an
+# argument, so one pair's names, USB ids and composite name are never accepted
+# for the other pair. The default is still the Gen5/TB323FU pair, which keeps
+# the previous single-pair behaviour for existing callers and tests.
 
-# Exact evdev device name of the physical controller.
-EVDEV_NAME = "GameSir Legion Gaming Controller G9 2026"
-
-# Exact evdev device name of the *Consumer Control* node on that same HID
-# device. It is not a gamepad and carries no shared-gamepad marker; it is only
-# observed as the alternate delivery path for the second tap of a fast double.
-CONSUMER_EVDEV_NAME = (
-    "GameSir Legion Gaming Controller G9 2026 Consumer Control"
+PairProfile = namedtuple(
+    "PairProfile",
+    [
+        "key",
+        "model_aliases",
+        "evdev_name",
+        "consumer_evdev_name",
+        "vid_hex",
+        "pid_hex",
+        "composite_name",
+        "consumer_homepage_is_double",
+    ],
 )
 
-# USB HID ids, stored as the zero-padded lowercase hex used by sysfs id files.
-VID_HEX = "3537"
-PID_HEX = "1136"
-
-# The permitted device-tree model aliases for this tablet. Anything else is
-# rejected before any listening begins.
-MODEL_ALIASES = frozenset(
-    {
-        "Lenovo Legion Tab Y700 5th Gen",
-        "Lenovo Legion Y700 Gen 5 (TB323FU)",
-        "Lenovo Legion Tab Y700 (TB323FU)",
-    }
+GEN5_PROFILE = PairProfile(
+    key="gen5-tb323fu-g9-2026",
+    model_aliases=frozenset(
+        {
+            "Lenovo Legion Tab Y700 5th Gen",
+            "Lenovo Legion Y700 Gen 5 (TB323FU)",
+            "Lenovo Legion Tab Y700 (TB323FU)",
+        }
+    ),
+    evdev_name="GameSir Legion Gaming Controller G9 2026",
+    consumer_evdev_name=(
+        "GameSir Legion Gaming Controller G9 2026 Consumer Control"
+    ),
+    vid_hex="3537",
+    pid_hex="1136",
+    composite_name=(
+        "Lenovo Legion Tab Y700 5th Gen (TB323FU) + Legion G9 2026"
+    ),
+    # Verified on this 1136 G9 2026: a fast double may arrive only as a
+    # KEY_HOMEPAGE pulse on the Consumer Control sibling.
+    consumer_homepage_is_double=True,
 )
+
+GEN4_PROFILE = PairProfile(
+    key="gen4-tb322fc-g9",
+    model_aliases=frozenset({"Lenovo Legion Y700 Gen4"}),
+    evdev_name="GameSir Legion Gaming Controller G9",
+    consumer_evdev_name=(
+        "GameSir Legion Gaming Controller G9 Consumer Control"
+    ),
+    vid_hex="3537",
+    pid_hex="1134",
+    composite_name="Lenovo Legion Y700 Gen4 (TB322FC) + Legion G9",
+    # Verified on this 1134 older G9 by physical capture: the firmware delivers
+    # a fast double only as KEY_HOMEPAGE down/up groups on the Consumer Control
+    # sibling, with no paired BTN_MODE events. A matched first down is therefore
+    # accepted on its own as the firmware double action, exactly as on 1136.
+    consumer_homepage_is_double=True,
+)
+
+PROFILES = (GEN5_PROFILE, GEN4_PROFILE)
+
+# The default profile keeps the Gen5 API behaviour used by existing tests.
+DEFAULT_PROFILE = GEN5_PROFILE
+
+# Backwards-compatible names describing the default (Gen5) profile.
+EVDEV_NAME = GEN5_PROFILE.evdev_name
+CONSUMER_EVDEV_NAME = GEN5_PROFILE.consumer_evdev_name
+VID_HEX = GEN5_PROFILE.vid_hex
+PID_HEX = GEN5_PROFILE.pid_hex
+MODEL_ALIASES = GEN5_PROFILE.model_aliases
+EXPECTED_COMPOSITE_NAME = GEN5_PROFILE.composite_name
 
 # The device-tree model may be exposed under either of these paths.
 MODEL_PATHS = (
     "/proc/device-tree/model",
     "/sys/firmware/devicetree/base/model",
 )
-
-# Expected composite device name after an InputPlumber composite matches this
-# tablet + controller pair.
-EXPECTED_COMPOSITE_NAME = "Lenovo Legion Tab Y700 5th Gen (TB323FU) + Legion G9 2026"
 
 # udev marker proving the existing patch shares the raw gamepad to non-Steam
 # readers. Without it we must not touch the input stream.
@@ -180,17 +238,29 @@ def normalize_model(raw):
     return raw.replace("\x00", "").strip()
 
 
-def model_permitted(model):
-    """Return True only for an exact permitted device-tree model alias."""
-    return normalize_model(model) in MODEL_ALIASES
+def model_permitted(model, profile=DEFAULT_PROFILE):
+    """Return True only for an exact device-tree model alias of ``profile``."""
+    return normalize_model(model) in profile.model_aliases
 
 
-def evdev_identity_matches(name, vendor, product):
+def profile_for_model(raw):
+    """Return the single profile whose exact model alias matches, else None.
+
+    Profiles are disjoint; an unknown model must not fall back to any pair.
+    """
+    model = normalize_model(raw)
+    for profile in PROFILES:
+        if model in profile.model_aliases:
+            return profile
+    return None
+
+
+def evdev_identity_matches(name, vendor, product, profile=DEFAULT_PROFILE):
     """Exact match on evdev name plus sysfs id/vendor and id/product."""
     return (
-        (name or "").strip() == EVDEV_NAME
-        and (vendor or "").strip().lower() == VID_HEX
-        and (product or "").strip().lower() == PID_HEX
+        (name or "").strip() == profile.evdev_name
+        and (vendor or "").strip().lower() == profile.vid_hex
+        and (product or "").strip().lower() == profile.pid_hex
     )
 
 
@@ -199,12 +269,14 @@ def parse_string_list(output):
     return re.findall(r'"([^"]*)"', output or "")
 
 
-def match_composite(source_path, source_paths, names, target_caps):
-    """True when a composite maps our exact node, has the expected name, and
-    advertises the Quick Access capability."""
+def match_composite(
+    source_path, source_paths, names, target_caps, profile=DEFAULT_PROFILE
+):
+    """True when a composite maps our exact node, has this pair's expected
+    name, and advertises the Quick Access capability."""
     if source_path not in source_paths:
         return False
-    if EXPECTED_COMPOSITE_NAME not in names:
+    if profile.composite_name not in names:
         return False
     if QUICKACCESS_CAP not in target_caps:
         return False
@@ -260,8 +332,8 @@ def shared_marker_present(node):
     return _marker_in_lines(lines)
 
 
-def discover_evdev_node():
-    """Return /dev/input/eventN for the G9 2026, or None.
+def discover_evdev_node(profile=DEFAULT_PROFILE):
+    """Return /dev/input/eventN for this profile's controller, or None.
 
     Matches on sysfs name plus id/vendor and id/product; never assumes a fixed
     event number.
@@ -277,7 +349,7 @@ def discover_evdev_node():
             product = _read_text(os.path.join(dev_dir, "device", "id", "product"))
         except OSError:
             continue
-        if evdev_identity_matches(name, vendor, product):
+        if evdev_identity_matches(name, vendor, product, profile):
             return "/dev/input/" + os.path.basename(dev_dir)
     return None
 
@@ -299,30 +371,34 @@ def sysfs_identity_for_node(node):
     return (name, vendor, product)
 
 
-def default_source_validator(node):
-    """Re-check, just before acting, that this node is still the G9 2026 and
-    that the shared-gamepad marker is still present."""
+def default_source_validator(node, profile=DEFAULT_PROFILE):
+    """Re-check, just before acting, that this node is still this profile's
+    controller and that the shared-gamepad marker is still present."""
     identity = sysfs_identity_for_node(node)
     if identity is None:
         return False
-    if not evdev_identity_matches(*identity):
+    if not evdev_identity_matches(*identity, profile=profile):
         return False
     return shared_marker_present(node)
 
 
-def consumer_identity_matches(name, vendor, product):
+def consumer_identity_matches(name, vendor, product, profile=DEFAULT_PROFILE):
     """Exact match on the Consumer Control evdev name plus sysfs id/vendor and
     id/product. The consumer node is not a gamepad, so no marker is checked."""
     return (
-        (name or "").strip() == CONSUMER_EVDEV_NAME
-        and (vendor or "").strip().lower() == VID_HEX
-        and (product or "").strip().lower() == PID_HEX
+        (name or "").strip() == profile.consumer_evdev_name
+        and (vendor or "").strip().lower() == profile.vid_hex
+        and (product or "").strip().lower() == profile.pid_hex
     )
 
 
-def sibling_matches(primary_hid_parent, name, vendor, product, hid_parent):
-    """True only when a node is the exact Consumer Control sibling of the
-    primary gamepad: correct name/ids *and* the same resolved HID parent.
+def sibling_matches(
+    primary_hid_parent, name, vendor, product, hid_parent,
+    profile=DEFAULT_PROFILE,
+):
+    """True only when a node is the exact Consumer Control sibling of this
+    profile's primary gamepad: correct name/ids *and* the same resolved HID
+    parent.
 
     The HID parent is the directory that owns the ``input/inputN`` children
     (e.g. ``.../0003:3537:1136.0001``), so event7 (input7) and event8 (input8)
@@ -332,7 +408,7 @@ def sibling_matches(primary_hid_parent, name, vendor, product, hid_parent):
         primary_hid_parent is not None
         and hid_parent is not None
         and primary_hid_parent == hid_parent
-        and consumer_identity_matches(name, vendor, product)
+        and consumer_identity_matches(name, vendor, product, profile)
     )
 
 
@@ -351,9 +427,9 @@ def sysfs_hid_parent(node):
     return os.path.dirname(os.path.dirname(input_dev))
 
 
-def discover_consumer_node(primary_node):
-    """Return /dev/input/eventN for the G9 2026 Consumer Control sibling of the
-    primary gamepad on the same HID device, or None.
+def discover_consumer_node(primary_node, profile=DEFAULT_PROFILE):
+    """Return /dev/input/eventN for this profile's Consumer Control sibling of
+    the primary gamepad on the same HID device, or None.
 
     Never assumes a fixed event number and never inspects the sharing marker on
     the consumer (it is not a gamepad).
@@ -378,21 +454,23 @@ def discover_consumer_node(primary_node):
         except OSError:
             continue
         if sibling_matches(
-            primary_parent, name, vendor, product, sysfs_hid_parent(node)
+            primary_parent, name, vendor, product, sysfs_hid_parent(node),
+            profile,
         ):
             return node
     return None
 
 
-def default_consumer_validator(primary_node, consumer_node):
+def default_consumer_validator(primary_node, consumer_node,
+                               profile=DEFAULT_PROFILE):
     """Re-check, just before a consumer Home action, that the primary is still
     validated and the consumer is still its exact sibling Consumer Control."""
-    if not default_source_validator(primary_node):
+    if not default_source_validator(primary_node, profile):
         return False
     identity = sysfs_identity_for_node(consumer_node)
     if identity is None:
         return False
-    if not consumer_identity_matches(*identity):
+    if not consumer_identity_matches(*identity, profile=profile):
         return False
     primary_parent = sysfs_hid_parent(primary_node)
     consumer_parent = sysfs_hid_parent(consumer_node)
@@ -533,13 +611,14 @@ class DoubleHomeDetector(object):
 class ConsumerHomeDetector(object):
     """Detects the Consumer Control ``KEY_HOMEPAGE`` pulse.
 
-    The G9 2026 firmware turns a fast double Home into a fixed ~200 ms
-    ``KEY_HOMEPAGE`` pulse on the sibling Consumer Control node. Sometimes this
-    pulse is the whole gesture (no ``BTN_MODE`` is emitted at all), so a matched
-    down edge must be accepted on its own. This detector reports exactly one
-    action on the first down edge; the release, auto-repeat and duplicate downs
-    produce nothing. Volume, Power and every other key are ignored.
-    ``SYN_DROPPED`` discards events until the resynchronising ``SYN_REPORT``.
+    The G9 firmware (verified on both the 1136 G9 2026 and the older 1134 G9)
+    turns a fast double Home into a fixed ~200 ms ``KEY_HOMEPAGE`` pulse on the
+    sibling Consumer Control node. Sometimes this pulse is the whole gesture
+    (no ``BTN_MODE`` is emitted at all), so a matched down edge must be accepted
+    on its own. This detector reports exactly one action on the first down edge;
+    the release, auto-repeat and duplicate downs produce nothing. Volume, Power
+    and every other key are ignored. ``SYN_DROPPED`` discards events until the
+    resynchronising ``SYN_REPORT``.
 
     This class only tracks the edge; the caller owns device/pair validation.
     """
@@ -608,9 +687,14 @@ def _busctl_runner(args, timeout):
 class InputPlumberClient(object):
     """Minimal wrapper around the existing InputPlumber composite DBus object."""
 
-    def __init__(self, runner=None, timeout=BUSCTL_TIMEOUT):
+    def __init__(self, runner=None, timeout=BUSCTL_TIMEOUT,
+                 profile=DEFAULT_PROFILE):
         self._runner = runner or _busctl_runner
         self._timeout = timeout
+        # The pair profile used to identify the composite. It is set by main()
+        # from the exact device-tree model; Service.run re-binds it before any
+        # listening starts.
+        self.profile = profile
 
     def _busctl(self, args):
         return self._runner(["busctl", "--system"] + list(args), self._timeout)
@@ -648,7 +732,9 @@ class InputPlumberClient(object):
                 )
             except (InputPlumberError, OSError):
                 continue
-            if match_composite(source_path, sources, names, caps):
+            if match_composite(
+                source_path, sources, names, caps, self.profile
+            ):
                 return path
         return None
 
@@ -696,16 +782,17 @@ class Service(object):
         self,
         client,
         sleep=time.sleep,
-        source_validator=default_source_validator,
-        consumer_validator=default_consumer_validator,
-        consumer_discovery=discover_consumer_node,
+        source_validator=None,
+        consumer_validator=None,
+        consumer_discovery=None,
         logger=log,
+        profile=DEFAULT_PROFILE,
     ):
         self.client = client
         self._sleep = sleep
-        self._validator = source_validator
-        self._consumer_validator = consumer_validator
-        self._consumer_discovery = consumer_discovery
+        self._source_validator_override = source_validator
+        self._consumer_validator_override = consumer_validator
+        self._consumer_discovery_override = consumer_discovery
         self._log = logger
         self._stop = False
         # Event-timestamp of the last emitted chord, for the short duplicate
@@ -715,24 +802,55 @@ class Service(object):
         self._consumer_node = None
         self._primary_det = DoubleHomeDetector()
         self._consumer_det = ConsumerHomeDetector()
+        self._bind_profile(profile)
+
+    def _bind_profile(self, profile):
+        """Bind all identity checks to one immutable pair profile."""
+        self.profile = profile
+        self._validator = (
+            self._source_validator_override
+            if self._source_validator_override is not None
+            else lambda node: default_source_validator(node, profile)
+        )
+        self._consumer_validator = (
+            self._consumer_validator_override
+            if self._consumer_validator_override is not None
+            else lambda primary, consumer: default_consumer_validator(
+                primary, consumer, profile
+            )
+        )
+        self._consumer_discovery = (
+            self._consumer_discovery_override
+            if self._consumer_discovery_override is not None
+            else lambda node: discover_consumer_node(node, profile)
+        )
 
     def request_stop(self, signum=None, frame=None):
         self._stop = True
 
     def run(self):
         model = read_device_model()
-        if not model_permitted(model):
+        profile = profile_for_model(model)
+        if profile is None:
             self._log("unsupported device model %r; not listening" % (model,))
             return 0
-        self._log("device model ok: %s" % model)
+        self._log("device model ok: %s (%s)" % (model, profile.key))
+        # Choose the pair before any node is opened or observed, and make the
+        # InputPlumber client validate against the same pair.
+        if profile != self.profile:
+            self._bind_profile(profile)
+        if hasattr(self.client, "profile"):
+            self.client.profile = profile
 
         last_status = None
         while not self._stop:
-            node = discover_evdev_node()
+            node = discover_evdev_node(self.profile)
             if node is None:
                 # Log the absence only when the state changes, not every scan.
                 if last_status != "no-node":
-                    self._log("GameSir G9 2026 evdev node not found; waiting")
+                    self._log(
+                        "%s evdev node not found; waiting" % profile.evdev_name
+                    )
                     last_status = "no-node"
                 self._sleep(SCAN_INTERVAL)
                 continue
@@ -919,13 +1037,17 @@ class Service(object):
     def _feed_consumer(self, ev_type, code, value, timestamp):
         """Runtime dispatch for one Consumer Control record.
 
-        A machine-matched ``KEY_HOMEPAGE`` down on the exact sibling node *is*
-        the firmware's fast-double action, so it triggers on its own -- the G9
-        sometimes emits only this pulse with no BTN_MODE at all. Release,
-        auto-repeat and duplicate downs emit nothing, the exact sibling pair is
-        re-validated before acting, and the chord is always routed to the
-        *primary* source's composite.
+        Whether a KEY_HOMEPAGE down *is* the firmware's fast-double action is a
+        per-profile policy. It is verified on both supported pairs: the 1136 G9
+        2026 and, by physical capture, the older 1134 G9, whose firmware emits
+        the double only as these pulses with no BTN_MODE events at all.
+
+        On a triggering profile, release, auto-repeat and duplicate downs emit
+        nothing, the exact sibling pair is re-validated before acting, and the
+        chord is always routed to the *primary* source's composite.
         """
+        if not self.profile.consumer_homepage_is_double:
+            return
         action = self._consumer_det.feed(ev_type, code, value, timestamp)
         if action != ACTION_QUICKACCESS:
             return
@@ -995,7 +1117,14 @@ class Service(object):
 
 
 def main():
-    service = Service(InputPlumberClient())
+    model = read_device_model()
+    profile = profile_for_model(model)
+    if profile is None:
+        log("unsupported device model %r; not listening" % (model,))
+        return 0
+    service = Service(
+        InputPlumberClient(profile=profile), profile=profile
+    )
     signal.signal(signal.SIGTERM, service.request_stop)
     signal.signal(signal.SIGINT, service.request_stop)
     try:
