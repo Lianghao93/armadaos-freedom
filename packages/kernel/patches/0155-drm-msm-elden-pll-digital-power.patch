@@ -54,9 +54,7 @@ Signed-off-by: Dmitry Baryshkov <dmitry.baryshkov@oss.qualcomm.com>
 diff --git a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
 --- a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
 +++ b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
-@@ -433,10 +433,12 @@ static void dsi_pll_disable_pll_bias(struct dsi_pll_7nm *pll)
- 		return;
- 	} /* else: == 0 */
+@@ -435,6 +435,8 @@ static void dsi_pll_disable_pll_bias(struct dsi_pll_7nm *pll)
  
  	data = readl(pll->phy->base + REG_DSI_7nm_PHY_CMN_CTRL_0);
  	data &= ~DSI_7nm_PHY_CMN_CTRL_0_PLL_SHUTDOWNB;
@@ -65,11 +63,7 @@ diff --git a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c b/drivers/gpu/drm/msm/dsi
  	writel(0, pll->phy->pll_base + REG_DSI_7nm_PHY_PLL_SYSTEM_MUXES);
  	writel(data, pll->phy->base + REG_DSI_7nm_PHY_CMN_CTRL_0);
  	spin_unlock_irqrestore(&pll->pll_enable_lock, flags);
- 	ndelay(250);
- }
-@@ -453,9 +455,11 @@ static void dsi_pll_enable_pll_bias(struct dsi_pll_7nm *pll)
- 		return;
- 	}
+@@ -455,6 +457,8 @@ static void dsi_pll_enable_pll_bias(struct dsi_pll_7nm *pll)
  
  	data = readl(pll->phy->base + REG_DSI_7nm_PHY_CMN_CTRL_0);
  	data |= DSI_7nm_PHY_CMN_CTRL_0_PLL_SHUTDOWNB;
@@ -78,6 +72,5 @@ diff --git a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c b/drivers/gpu/drm/msm/dsi
  	writel(data, pll->phy->base + REG_DSI_7nm_PHY_CMN_CTRL_0);
  
  	writel(0xc0, pll->phy->pll_base + REG_DSI_7nm_PHY_PLL_SYSTEM_MUXES);
- 	spin_unlock_irqrestore(&pll->pll_enable_lock, flags);
 -- 
 2.55.0

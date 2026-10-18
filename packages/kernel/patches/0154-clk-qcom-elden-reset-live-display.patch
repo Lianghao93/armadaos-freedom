@@ -31,7 +31,10 @@ Signed-off-by: SuperKali <hello@superkali.me>
 diff --git a/drivers/clk/qcom/dispcc-sm8750.c b/drivers/clk/qcom/dispcc-sm8750.c
 --- a/drivers/clk/qcom/dispcc-sm8750.c
 +++ b/drivers/clk/qcom/dispcc-sm8750.c
-@@ -7,5 +7,7 @@
+@@ -4,11 +4,13 @@
+  * Copyright (c) 2023-2024, Linaro Ltd.
+  */
+ 
  #include <linux/clk-provider.h>
 +#include <linux/delay.h>
  #include <linux/err.h>
@@ -39,10 +42,10 @@ diff --git a/drivers/clk/qcom/dispcc-sm8750.c b/drivers/clk/qcom/dispcc-sm8750.c
  #include <linux/module.h>
 +#include <linux/of.h>
  #include <linux/platform_device.h>
-@@ -1916,9 +1918,34 @@ static int disp_cc_sm8750_probe(struct platform_device *pdev)
- 	regmap = qcom_cc_map(pdev, &disp_cc_sm8750_desc);
- 	if (IS_ERR(regmap)) {
- 		ret = PTR_ERR(regmap);
+ #include <linux/regmap.h>
+ #include <linux/pm_runtime.h>
+ 
+@@ -1919,6 +1921,31 @@ static int disp_cc_sm8750_probe(struct platform_device *pdev)
  		goto err_put_rpm;
  	}
  
