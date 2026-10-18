@@ -68,7 +68,7 @@ initramfs 内的模块镜像只用于早期启动。与当前完整 KVER 匹配�
 
 默认命令不变，仍生成八条目 manifest（条目 0..6 加条目 7 `Attached Shim`），默认 `Image-01`、超时 8000 ms。追加 `--initrd <path>` 后切换为九条目布局：条目 0..6 保持原索引，条目 7 为三份 Linux 菜单共享的字节精确 blob（`Type=Blob`、flags 0、`Align=16`，即 64 KiB 对齐），`Attached Shim` 顺延到条目 8。64 KiB 对齐使 initrd 按页取整后的保护区间不与其前面的已选 DTB 重叠：对支持的 4/16/64 KiB 页大小均成立，页大小未知时也取保守值。打包配置为 `[Image-07] ... Type=Blob` 后接 `[Manifest]`，shim 仍由 `[Pack] Shim=` 自动追加，不复制 Linux payload。
 
-外置模式会在三份派生 DTB（internal、TF、diagnostic）的 `/chosen` 写入 `kshim,initrd-entry = <7>`，并删除其中的 `linux,initrd-start` / `linux,initrd-end`；输入 DTB 本身不被修改。脚本要求传入的 internal/TF DTB 已含 `/chosen` 与 `bootargs`，根 `compatible` 同时含 `lenovo,baldur`、`qcom,kaanapali`，且 `bootargs` 含 `baldur.end=hold` 与 `cpuidle_psci_domain.allow_cluster_off=0`。校验还比对源/派生 DTS：除上述 initrd 属性外不得有任何差异，`armada,boot-stage` 仍为 internal/TF 的 `os`、diagnostic 的 `maintenance`。
+外置模式会在三份派生 DTB（internal、TF、diagnostic）的 `/chosen` 写入 `kshim,initrd-entry = <7>`，并删除其中的 `linux,initrd-start` / `linux,initrd-end`；输入 DTB 本身不被修改。脚本要求传入的 internal/TF DTB 已含 `/chosen` 与 `bootargs`，根 `compatible` 同时含 `lenovo,baldur`、`qcom,kaanapali`，且 `bootargs` 含 `baldur.end=hold`、`cpuidle_psci_domain.allow_cluster_off=0` 与 `msm.dpu_use_virtual_planes=0`。后者用于 TB323FU/Gen5 的固定 SSPP 映射，并不关闭全部 multirect；公共内核与 Gen4 的默认行为不变。校验还比对源/派生 DTS：除上述 initrd 属性外不得有任何差异，`armada,boot-stage` 仍为 internal/TF 的 `os`、diagnostic 的 `maintenance`。
 
 `--initrd` 文件同时参与输入哈希、blob 字节精确比对、布局不重叠、UnpackTool 回读和重打包逐字节一致性检查；报告记录条目索引与 shim 索引。九条目外置 initrd 路径已在 TB323FU 的机身系统上验证：统一 Linux 7.2.6 #5 启动到 Steam，原生 DRM／Adreno 840 和 165 Hz 显示已运行，用户确认实体画面恢复。最终镜像的 307 项离线检查、15 项生产 initrd 布局回放及四项真实 Linux QEMU 检查均通过。离线检查本身不代表真机验收；TF 启动、触屏与游戏体验、休眠及长期显示稳定性仍待进一步验证，公共安装／OTA 流程也尚未接通。实际打包仍需在 Linux Docker 中执行。
 

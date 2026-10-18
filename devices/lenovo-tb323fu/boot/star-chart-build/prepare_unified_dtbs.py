@@ -47,7 +47,8 @@ DERIVED_PROPS = IDENTITY_PROPS + (BOOTARGS,)
 REQUIRED_COMPATIBLES = ("lenovo,baldur", "qcom,kaanapali")
 FORBIDDEN_COMPATIBLE = "sm8750"
 REQUIRED_BOOTARGS = ("baldur.end=hold",
-                     "cpuidle_psci_domain.allow_cluster_off=0")
+                     "cpuidle_psci_domain.allow_cluster_off=0",
+                     "msm.dpu_use_virtual_planes=0")
 GUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")

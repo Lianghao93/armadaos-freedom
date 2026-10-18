@@ -505,6 +505,9 @@ def run_driver(inputs, default_entry=DEFAULT_ENTRY):
         check("dtb:%s:bootargs-cluster-off" % label,
               "cpuidle_psci_domain.allow_cluster_off=0" in bootargs_tokens,
               "bootargs=%r" % bootargs)
+        check("dtb:%s:bootargs-fixed-planes" % label,
+              "msm.dpu_use_virtual_planes=0" in bootargs_tokens,
+              "bootargs=%r" % bootargs)
         compatible = fdtget_text(dtb, "/", "compatible",
                                  "fdtget_compatible_" + label)
         check("dtb:%s:compatible" % label, compatible is not None,
