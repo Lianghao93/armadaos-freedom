@@ -5,8 +5,7 @@
 
 Standard library only. These exercise the pure detector, the identity/model
 matching helpers, the busctl reply parsing and the emit/release sequence with
-injected fakes. They do not touch any device, DBus or the network and are not
-device acceptance; they are intended to be run remotely by Codex in Docker.
+injected fakes. They do not touch any device, DBus or the network.
 """
 
 import importlib.util

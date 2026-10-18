@@ -2,15 +2,14 @@
 # -*- coding: utf-8 -*-
 """Behavioral checks for the Kaanapali DP0 descriptor and idle guard.
 
-This is a narrow host test, not a framework.  It extracts the real
-``struct msm_dp_desc``, the real descriptor arrays, the real
-``msm_dp_dt_match`` table and the real ``msm_dp_bridge_atomic_disable()``
-body from a live ``dp_display.c``, then compiles them into a small C
-harness with stubs for types and helpers only.
+This is a narrow host test.  It extracts the real ``struct msm_dp_desc``, the
+real descriptor arrays, the real ``msm_dp_dt_match`` table and the real
+``msm_dp_bridge_atomic_disable()`` body from a live ``dp_display.c``, then
+compiles them into a small C harness with stubs for types and helpers only.
 
 Usage:
     python3 -B tests/test_kaanapali_dp_backport.py \
-        --source /path/to/dp_display.c --work-dir /work/K527-check
+        --source /path/to/dp_display.c --work-dir /work/dp-backport-check
 
 Baseline (current 7.2.6 without the backport) is expected to report:
 
@@ -18,7 +17,7 @@ Baseline (current 7.2.6 without the backport) is expected to report:
     idle_off:   FAIL (one PUSH_IDLE MMIO call)
     idle_on:    PASS
 
-After the K528 fix all three checks must pass.  The C file and compiler
+With the backport applied all three checks must pass.  The C file and compiler
 output stay in the required work directory; there is no tempfile fallback.
 """
 
@@ -364,7 +363,7 @@ def run_tool(label, command, work_dir):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="K527 Kaanapali DP descriptor and idle-guard check")
+        description="Kaanapali DP descriptor and idle-guard check")
     parser.add_argument("--source", required=True, type=Path,
                         help="live dp_display.c to extract production code from")
     parser.add_argument("--work-dir", required=True, type=Path,

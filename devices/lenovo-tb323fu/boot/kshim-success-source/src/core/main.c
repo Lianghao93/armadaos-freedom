@@ -430,18 +430,13 @@ int kshim_main(
         RuntimeMemorySnapshot,
         sizeof(RuntimeMemorySnapshot));
 #if KSHIM_DIAGNOSTIC_DT_ONLY
-    /* DT-only diagnostic entry (compile-time): the runtime DT was already
-     * validated, read-only device info was read, the ramoops layout was
-     * captured read-only and the memory snapshot was taken exactly once, in
-     * the original order.  From here only two ASCII reports are formatted in
-     * local buffers and offered once to the new two-slot DT API; every
-     * failure (missing/invalid slots, bad FDT, report API error) is ignored
-     * for boot, so an unavailable report still returns to Android rather
-     * than halting.  Nothing here initializes the console, probes resources,
-     * touches MMU/UI, reads the ramoops region or changes x1..x3.  The
-     * original incoming DT pointer is forwarded unchanged even when DT
-     * validation zeroed the local copy.  arm64_boot_image() is noreturn, so
-     * console/resources/MMIO/MMU/UI are never reached in this build. */
+    /* DT-only diagnostic entry (compile-time): the runtime DT and the
+     * ramoops layout were captured read-only and the memory snapshot was
+     * taken once.  Only two ASCII reports are formatted in local buffers and
+     * offered to dt_diagnostic_report_slots(); any report failure is ignored
+     * for boot, so an unavailable report still returns to Android rather than
+     * halting.  The original incoming DT pointer is forwarded unchanged even
+     * when DT validation zeroed the local copy, and x1..x3 are preserved. */
     if (runtime_fdt) {
         char probe_report[81];
         char s0_report[81];

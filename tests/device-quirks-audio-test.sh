@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# T009 -- focused test for the TB322FC-only WirePlumber Iris camera-probe
+# Focused test for the TB322FC-only WirePlumber Iris camera-probe
 # workaround installed by device-quirks. Runs the REAL device-quirks against a
 # stub device-env and tmp paths; no host state, device, or service is touched.
 

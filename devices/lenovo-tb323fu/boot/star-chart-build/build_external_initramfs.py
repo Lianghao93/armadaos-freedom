@@ -10,15 +10,10 @@ target and device numbers. /lib/modules is replaced by one ZSTD squashfs image
 named after the kernel release; the unified kernel is built with
 CONFIG_SQUASHFS_ZSTD=y and XZ off, so no XZ support is assumed.
 
-Deliberately narrow:
-  * no device access, no flashing, no boot, no OTA/bootc/installer changes;
-  * the accepted init and root-resolver policy are not modified;
-  * the initramfs only carries early-boot modules. Matching full-KVER modules
-    must be installed separately in the selected internal/TF root; without a
-    TF root, TF-side modules and boot behaviour are not validated;
-  * --early-only is opt-in: it builds the full module index first, then prunes
-    the temporary staging copy to the transitive modules.dep closure of the
-    required early modules. The default keeps every staged module.
+Matching full-KVER modules must be installed separately in the selected
+internal/TF root. By default all staged modules are included in the
+initramfs; --early-only instead keeps the transitive modules.dep closure
+of the required early modules after building the full module index.
 
 Requires a Linux host/container with gzip, cpio, depmod and mksquashfs (ZSTD).
 The template may contain device nodes, so extraction must run as root.

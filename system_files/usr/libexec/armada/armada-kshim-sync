@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Native deployment -> verified kShimC boot_a transaction orchestrator.
 
-This layer joins the tested T020/T022 selection+preparation path and the T023
-raw writer. It matches the currently booted OSTree deployment by
+Selection and preparation come from kshim-select-boot.py (select_deployments,
+build_plan, read_entry) and armada-kshim-prepare; the raw write is delegated to
+kshim-write-boot.py. The plan matches the currently booted OSTree deployment by
 (checksum, stateroot, serial), maps it to exactly one native BLS entry, builds
 that entry first as the explicit fallback, then builds the native default entry
-as the candidate and writes it with the T023 writer.
+as the candidate and writes it with the raw writer.
 
 Native finalization can already have moved boot.0/boot.1 symlinks, so a raw
 before.img is not treated as a bootable fallback: the fallback is always a
@@ -13,9 +14,8 @@ freshly prepared image for the booted deployment's current BLS.
 
 This tool does not mount, format, reboot, call bootc/ostree admin mutation,
 touch boot_b/misc, use the network, or alter native BLS ordering. The raw
-write is not atomic and this layer makes no full-lifecycle claim; the caller
-keeps the work directory and must not enable automatic OTA use before the
-native lifecycle has been validated.
+write is not atomic, so the caller keeps the work directory and must not
+enable automatic OTA use before the native lifecycle has been validated.
 """
 import argparse
 import fcntl

@@ -780,7 +780,7 @@ static void test_pack_capacity(void)
     assert_initrd_absent();
 }
 
-/* ---- group 11: K523 actual packed-layout replay (tests only) ------------- */
+/* ---- group 11: actual packed-layout replay (tests only) ------------------ */
 
 /*
  * Replay the byte intervals observed in a real packed image through the

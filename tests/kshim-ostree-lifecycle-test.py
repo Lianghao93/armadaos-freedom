@@ -196,8 +196,8 @@ def build_tree(tag, kver, kernel, initrd, dtb, version):
                "PRETTY_NAME=Armada lifecycle %s\n"
                "VERSION_ID=%s\n" % (tag, tag, version)).encode()
     files = {
-        # The ticket names usr/etc/os-release; usr/lib/os-release is what
-        # ostree parses for the BLS title, so both carry the same text.
+        # ostree parses usr/lib/os-release for the BLS title, so
+        # usr/etc/os-release carries the same text.
         "usr/etc/os-release": release,
         "usr/lib/os-release": release,
         "usr/lib/modules/%s/vmlinuz" % kver: kernel,

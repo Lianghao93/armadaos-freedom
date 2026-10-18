@@ -21,7 +21,7 @@ python3 tools/build_runtime.py --config configs/tb322fc_android_defconfig --out 
 ```
 
 该 profile 保留：QCOM_KEYS、QCOM_SPMI、debounce2、FRAMEBUFFER/LVGL、
-UI 旋转 270（已在 TB322FC 真机菜单确认）、LVGL_BUFFER_BYTES=243712、
+UI 旋转 270、LVGL_BUFFER_BYTES=243712、
 入场动画 0、STAR_CHART 主题、语言切换/中文/条目详情/Android 基座，
 以及 KSHIM_MENU_POWER_ACTIONS、KSHIM_MENU_ADVANCED_ACTIONS、
 KSHIM_MENU_SESSION_SETTINGS、KSHIM_QCOM_REBOOT。显式关闭：
@@ -30,7 +30,8 @@ KSHIM_DEBUG_CONSOLE 与 KSHIM_BOOT_TIMING。设备信息为共享实现，无需
 
 ## 打包 CLI
 
-在受控的远端 Docker 构建环境中，使用本目录的独立驱动（默认复用同级 TB323FU 的
+runtime 构建、测试与打包在 Linux Docker 构建环境中执行；脚本本身不访问设备、不联网。
+打包使用本目录的独立驱动（默认复用同级 TB323FU 的
 `star-chart-build/repack_boot_v4.py`，也可用 `--repacker` 覆盖）：
 
 ```sh
@@ -47,12 +48,6 @@ python3 <repo>/devices/lenovo-tb322fc/boot/build_android_boot.py \
 
 `--source-label` 仅作记录用途。
 
-## 执行环境
-
-编译、测试与打包只在受控的远端 Docker 构建环境中执行；运行前由操作者自行确认
-连接、资源、任务路径、容器名与 Docker 环境。脚本本身不访问设备、不联网。
-源码、产物与日志统一回传到授权的存储位置，该位置为源码与证据的权威副本。
-
 ## 输入约束
 
 - `--stock-boot` 必须是 96 MiB（100663296 字节）、魔数 `ANDROID!`、header
@@ -63,12 +58,10 @@ python3 <repo>/devices/lenovo-tb322fc/boot/build_android_boot.py \
   非 `UNCOMPRESSED_IMG`、且不是 gzip。
 - `--runtime` 必须恰好 4 MiB。
 
-## 菜单与验收边界
+## 菜单与校验边界
 
 菜单为 Android 基座（默认项）+ 设备信息 + 语言切换/中文 + 按键操作；电源、
-高级与会话设置项已启用，调试串口、触屏与 SMP 已关闭。方向、按键、菜单
-与 Android 基座启动均已在真机确认。
+高级与会话设置项已启用，调试串口、触屏与 SMP 已关闭。
 
-离线检查覆盖 Manifest ABI 校验、字节级往返与 avbtool 校验，但**不等于**
-屏幕/按键/Android 的真机验收。校验用的 AVB 元数据是**未签名**的，需要解锁
-bootloader，无法保留原厂 Lenovo 签名。本文件不提供刷机命令，也不含任何发布流程。
+离线检查覆盖 Manifest ABI 校验、字节级往返与 avbtool 校验。校验用的 AVB
+元数据是**未签名**的，需要解锁 bootloader，无法保留原厂 Lenovo 签名。

@@ -3,11 +3,10 @@
  * TB323FU M2 persistent-console (ramoops) offline interface.
  *
  * This header is the frozen interface between the offline console utility and
- * the three data-free stages: capture, bind and read_console.  The design was
- * fixed by Codex; this file only declares it.  Implementations live in
- * tb323fu_ramoops.c (currently a failure stub so the positive tests stay red).
+ * the three data-free stages: capture, bind and read_console.  Implementations
+ * live in tb323fu_ramoops.c.
  *
- * Profile (fixed TB323FU M2, see PLAN.md and inputs/main-m21.c):
+ * Profile (fixed TB323FU M2):
  *   region  = 0xc2000000 + 0xc0000, reserved child of /reserved-memory
  *   record  = 0x10000 (dmesg), console = 0x40000, pmsg = 0x40000
  *   ecc     = 16 bytes, block = 128, mem-type = 2, ftrace = 0, max-reason = 4

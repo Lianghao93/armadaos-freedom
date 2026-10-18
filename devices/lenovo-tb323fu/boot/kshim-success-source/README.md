@@ -35,12 +35,10 @@ changes. The firmware uses the boot DT to obtain device addresses.
 ### Unified external-initrd profile
 
 `configs/tb323fu_unified_defconfig` is the TB323FU profile for the external
-initrd Manifest work. It is derived from the accepted Gen5 runtime `.config`
-and carries the common latest launcher menu: the session-only settings page,
-the read-only Device info row and the shared automatic/manual default-boot
-behaviour now match the latest shared source rather than the earlier Gen5 row
-set. Session-only settings still apply to the current boot only and are never
-written to storage. Every other choice is retained: STAR_CHART style,
+initrd Manifest work. It carries the shared launcher menu: the session-only
+settings page, the read-only Device info row, and automatic/manual default-boot
+behaviour. Session-only settings still apply to the current boot only and are
+never written to storage. Every other choice is retained: STAR_CHART style,
 270-degree counter-clockwise UI rotation, 243712-byte LVGL buffers, zero
 entrance animation, Simplified Chinese with entry details, base-Android
 wording, power and advanced actions with QCOM reboot targets, boot timing, and
@@ -51,8 +49,7 @@ QEMU platform remain off.
 python3 tools/build_runtime.py --config configs/tb323fu_unified_defconfig --out build/tb323fu-unified
 ```
 
-The profile only selects build options; its hardware behaviour is untested.
-Building it does not establish hardware or on-device behaviour.
+See [current device status](../../README.md).
 
 ## Pack multiple kernels
 

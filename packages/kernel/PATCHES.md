@@ -841,19 +841,19 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
 - `patches/0147-power-sequencing-qcom-wcn-add-wcn7861-pmu.patch`
   source: https://github.com/h0cheung/tb322fc-linux-kernel/blob/6f97250ead155fc3b980856323e99a4623dae73d/drivers/power/sequencing/pwrseq-qcom-wcn.c
   upstream: unknown
-  notes: Local adaptation of the tb322fc WCN7861 PMU provider. Adds a `qcom,wcn7861-pmu` platform-data entry and a 7861-only AOSS/PDC initialisation that runs before any supply or enable vote; votes seven external supplies by voltage range and load so the variable RPMh rails are not left at their floor. The existing WCN7860 path is untouched. Bounded scope: the reference's Bluetooth reset timing and its OL-CPR / QMI dynamic-map and mutex code are omitted. The msm PCIe endpoint waits on ldo9 until the 7861 PMU binds, so the patch must still be built and validated for PMU binding and PCI enumeration; no hardware success is claimed.
+  notes: Local adaptation of the tb322fc WCN7861 PMU provider. Adds a `qcom,wcn7861-pmu` platform-data entry and a 7861-only AOSS/PDC initialisation that runs before any supply or enable vote; votes seven external supplies by voltage range and load so the variable RPMh rails are not left at their floor. The existing WCN7860 path is untouched. Bounded scope: the reference's Bluetooth reset timing and its OL-CPR / QMI dynamic-map and mutex code are omitted. The msm PCIe endpoint waits on ldo9 until the 7861 PMU binds.
 - `patches/0153-drm-msm-elden-video-teardown.patch`
   source: https://github.com/h0cheung/tb322fc-linux-kernel/commit/6f97250ead155fc3b980856323e99a4623dae73d
   upstream: unknown
-  notes: Elden-only video teardown ordering, narrowed to `lenovo,elden`: the master issues the pipeline cleanup, whose CTL flush video mode only consumes at a frame boundary, before stopping the timing engine; the slave skips the shared teardown, and its enable half marks the slave enabled without restarting the timing engine. Every other board keeps the existing disable ordering, cleanup placement and kickoff path. Built from the pinned reference behaviour; a full ARM64 Image, dtbs and modules build passed, while the hardware restart fix remains unverified.
+  notes: Elden-only video teardown ordering, narrowed to `lenovo,elden`: the master issues the pipeline cleanup, whose CTL flush video mode only consumes at a frame boundary, before stopping the timing engine; the slave skips the shared teardown, and its enable half marks the slave enabled without restarting the timing engine. Every other board keeps the existing disable ordering, cleanup placement and kickoff path.
 - `patches/0154-clk-qcom-elden-reset-live-display.patch`
   source: https://github.com/retro98boy/armada/commit/c3e466807d545991d94c0c4548e58489d656b709
   upstream: unknown
-  notes: SuperKali's dispcc "DisableDisplayHW" reset from the Armbian-fed armada tree, narrowed to `lenovo,elden`: at probe, assert the MDSS core, core INT2 and RSCC block resets, hold for 50 ms, then release them in reverse order before `clk_*_pll_configure()`. Only `linux/delay.h` and `linux/of.h` are added; no other probe behaviour changes. Full ARM64 build passed. Combined candidate209 (0153-0155) passed one device boot and one graceful Gamescope session restart, with user-confirmed visible Steam and accurate touch. Per-patch effects were not isolated; remaining GPU translation faults and vblank timeouts are tracked separately, so broad display stability is not claimed.
+  notes: SuperKali's dispcc "DisableDisplayHW" reset from the Armbian-fed armada tree, narrowed to `lenovo,elden`: at probe, assert the MDSS core, core INT2 and RSCC block resets, hold for 50 ms, then release them in reverse order before `clk_*_pll_configure()`. Only `linux/delay.h` and `linux/of.h` are added; no other probe behaviour changes.
 - `patches/0155-drm-msm-elden-pll-digital-power.patch`
   source: https://github.com/retro98boy/armada/blob/c3e466807d545991d94c0c4548e58489d656b709/packages/kernel/patches/1403-drm-msm-dsi-phy-power-up-the-digital-top-before-star.patch
   upstream: unknown
-  notes: Baryshkov's "power up the digital top before starting the 7nm PLL", narrowed to `lenovo,elden`: `PLL_SHUTDOWNB` handling is unchanged for every machine, and the additional `DIGTOP_PWRDN_B` set in `dsi_pll_enable_pll_bias()` and clear in `dsi_pll_disable_pll_bias()` runs only on that board. Refcounts, spinlocks and delays are preserved. Full ARM64 build passed. Combined candidate209 (0153-0155) passed one device boot and one graceful Gamescope session restart, with user-confirmed visible Steam and accurate touch. Per-patch effects were not isolated; remaining GPU translation faults and vblank timeouts are tracked separately, so broad display stability is not claimed.
+  notes: Baryshkov's "power up the digital top before starting the 7nm PLL", narrowed to `lenovo,elden`: `PLL_SHUTDOWNB` handling is unchanged for every machine, and the additional `DIGTOP_PWRDN_B` set in `dsi_pll_enable_pll_bias()` and clear in `dsi_pll_disable_pll_bias()` runs only on that board. Refcounts, spinlocks and delays are preserved.
 - `patches/0160-arm64-dts-qcom-kaanapali-add-the-GPU-SMMU-node.patch`
   source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
   upstream: unknown
@@ -873,7 +873,7 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
 - `patches/0164-Input-touchscreen-import-NT36536-host-download-SPI-d.patch`
   source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
   upstream: unknown
-  notes: Gen5 (Lenovo Y700 / TB323FU) touchscreen bring-up, imported byte-for-byte from the pinned tree as original `patches/0025`; author headers and SPDX terms preserved. This is a different driver from the Gen4 Novatek NT36XXX SPI driver (`0140`, `CONFIG_TOUCHSCREEN_NOVATEK_NVT36XXX_SPI`), with different compatibles; the two coexist. Included in the unified 7.2.6 ARM64 build and TB323FU boot/display checkpoint; touchscreen operation has not been separately accepted on this checkpoint.
+  notes: Gen5 (Lenovo Y700 / TB323FU) touchscreen bring-up, imported byte-for-byte from the pinned tree as original `patches/0025`; author headers and SPDX terms preserved. This is a different driver from the Gen4 Novatek NT36XXX SPI driver (`0140`, `CONFIG_TOUCHSCREEN_NOVATEK_NVT36XXX_SPI`), with different compatibles; the two coexist.
 - `patches/0165-input-touchscreen-NT36536-host-download-SPI-driver-N.patch`
   source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
   upstream: unknown
@@ -881,23 +881,23 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
 - `patches/0166-input-nt36536-fixes-for-tb323fu.patch`
   source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
   upstream: unknown
-  notes: Gen5 TB323FU NT36536 fixes, imported byte-for-byte as original `patches/0027`. Included in the unified 7.2.6 ARM64 build and TB323FU boot/display checkpoint; individual touch/pen behaviour is not independently accepted.
+  notes: Gen5 TB323FU NT36536 fixes, imported byte-for-byte as original `patches/0027`.
 - `patches/0167-input-nt36536-make-the-pen-a-tablet-libinput-accepts.patch`
   source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
   upstream: unknown
-  notes: Gen5 TB323FU NT36536 pen-as-tablet change, imported byte-for-byte as original `patches/0053`. Included in the unified 7.2.6 ARM64 build and TB323FU boot/display checkpoint; individual touch/pen behaviour is not independently accepted.
+  notes: Gen5 TB323FU NT36536 pen-as-tablet change, imported byte-for-byte as original `patches/0053`.
 - `patches/0168-clk-qcom-dispcc-kaanapali-solve-display-artifacts-at.patch`
   source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
   upstream: unknown
-  notes: Gen5 Kaanapali dispcc display-artifact fix, imported byte-for-byte as original `patches/0009`; no acceptance claim.
+  notes: Gen5 Kaanapali dispcc display-artifact fix, imported byte-for-byte as original `patches/0009`.
 - `patches/0169-arm64-dts-qcom-kaanapali-add-the-second-DSI-controll.patch`
   source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
   upstream: unknown
-  notes: Gen5 Kaanapali second DSI controller devicetree node, imported byte-for-byte as original `patches/0019`; no acceptance claim.
+  notes: Gen5 Kaanapali second DSI controller devicetree node, imported byte-for-byte as original `patches/0019`.
 - `patches/0170-drm-panel-nt36523-add-DSC-and-the-Lenovo-TB323FU-CSO.patch`
   source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
   upstream: unknown
-  notes: Gen5 NT36523 DSC and Lenovo TB323FU CSOT panel support, imported byte-for-byte as original `patches/0020`. `0141` already supplies all slices in a packet, so no duplicate packet-support import is made; no acceptance claim.
+  notes: Gen5 NT36523 DSC and Lenovo TB323FU CSOT panel support, imported byte-for-byte as original `patches/0020`. `0141` already supplies all slices in a packet, so no duplicate packet-support import is made.
 - `patches/0171-backlight-aw99706-replay-board-registers-after-the-H.patch`
   source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
   upstream: unknown
@@ -905,19 +905,19 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
 - `patches/0172-iommu-arm-smmu-qcom-kaanapali-MDSS-identity-domain.patch`
   source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
   upstream: unknown
-  notes: Kaanapali MDSS SMMU identity domain, imported byte-for-byte as original `patches/0029`; no acceptance claim.
+  notes: Kaanapali MDSS SMMU identity domain, imported byte-for-byte as original `patches/0029`.
 - `patches/0173-drm-panel-nt36523-baldur-CSOT-60-and-30-Hz-modes.patch`
   source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
   upstream: unknown
-  notes: Baldur CSOT 60 Hz and 30 Hz modes, imported byte-for-byte as original `patches/0066`; no acceptance claim.
+  notes: Baldur CSOT 60 Hz and 30 Hz modes, imported byte-for-byte as original `patches/0066`.
 - `patches/0174-drm-panel-nt36523-baldur-add-90-Hz-and-165-Hz-modes.patch`
   source: runtime-fixes/0109-drm-panel-nt36523-baldur-add-90-Hz-and-165-Hz-modes.patch
   upstream: local
-  notes: Our runtime-fixes 165 Hz replacement, imported byte-for-byte; this is the 90 Hz/165 Hz addition, distinct from the pinned tb323fu-linux imports above. The unified 7.2.6 checkpoint runs the internal display at 165 Hz; all-mode and long-term stability remain under validation.
+  notes: runtime-fixes 165 Hz replacement, imported byte-for-byte; this is the 90 Hz/165 Hz addition, distinct from the pinned tb323fu-linux imports above.
 - `patches/0175-drm-msm-baldur-dsc12-video.patch`
   source: armada
   upstream: local
-  notes: Baldur-only DSC 1.2 video-mode delta layered on 0142. Selects the 4:4:4 RC table and the existing first-line bpg offset for video-mode 10-bpc, adds the downstream DCE initial-line helper (active soft-slice count and bits_per_pixel >> 4), rounds the INTF compressed width up to match DSI (952 * 8 / 30 -> 254), enables FULL_ICH_PREC for Baldur, and advertises it on every Kaanapali DSC block. Derived from the GPL-2.0-only joonhoekim/tb323fu-linux tree at 11a25bf89b65fff48112a91a0b25bc247e7736d8 (legacy 0007/0008/0023); Elden paths remain byte-identical. Generated by `generate-K502B1.py`; no apply/build/acceptance claim.
+  notes: Baldur-only DSC 1.2 video-mode delta layered on 0142. Selects the 4:4:4 RC table and the existing first-line bpg offset for video-mode 10-bpc, adds the downstream DCE initial-line helper (active soft-slice count and bits_per_pixel >> 4), rounds the INTF compressed width up to match DSI (952 * 8 / 30 -> 254), enables FULL_ICH_PREC for Baldur, and advertises it on every Kaanapali DSC block. Derived from the GPL-2.0-only joonhoekim/tb323fu-linux tree at 11a25bf89b65fff48112a91a0b25bc247e7736d8 (legacy 0007/0008/0023); Elden paths remain byte-identical.
 - `patches/0176-arm64-baldur-cpu-idle-topology.patch`
   source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
   upstream: unknown
@@ -993,16 +993,16 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
 - `patches/0194-wifi-ath12k-baldur-rx-panic.patch`
   source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
   upstream: unknown
-  notes: Merges the pinned tree's legacy 0058 and 0113 onto the unified ath12k datapath with the generator's real hunk import (7 files, 16 original hunks, diffed at U3), not a strategy rewrite. The wifi7 PCI bus wake-up callback returns `-EBUSY` before `mhi_device_get_sync()` while `panic_in_progress()`, only for `lenovo,baldur`; other machines keep the unconditional wake. From 0113, the top-up of a deficit larger than one eighth of the ring and posting reaped buffers back without a complete MSDU are common correctness fixes and are deliberately not gated. The new deferrable one-second watchdog is set up on every board because `ath12k_dp_rx_free()` stops it unconditionally, but only `lenovo,baldur` arms it; `ath12k_dp_rx_refill_wd_stop()` uses `timer_shutdown_sync()` and is also called from `ath12k_dp_cleanup()` before the descriptors are freed. Included in the completed unified 7.2.6 ARM64 build and TB323FU boot/display checkpoint; the individual recovery paths have not been independently hardware-tested.
+  notes: Merges the pinned tree's legacy 0058 and 0113 onto the unified ath12k datapath. The wifi7 PCI bus wake-up callback returns `-EBUSY` before `mhi_device_get_sync()` while `panic_in_progress()`, only for `lenovo,baldur`; other machines keep the unconditional wake. From 0113, the top-up of a deficit larger than one eighth of the ring and posting reaped buffers back without a complete MSDU are common correctness fixes and are deliberately not gated. The new deferrable one-second watchdog is set up on every board because `ath12k_dp_rx_free()` stops it unconditionally, but only `lenovo,baldur` arms it; `ath12k_dp_rx_refill_wd_stop()` uses `timer_shutdown_sync()` and is also called from `ath12k_dp_cleanup()` before the descriptors are freed.
 - `patches/0195-remoteproc-kaanapali-soccp.patch`
   source: https://github.com/torvalds/linux/blob/v7.3-rc4/drivers/remoteproc/qcom_q6v5_pas.c
   upstream: unknown
-  notes: Adds the SoCCP remoteproc that 7.2.6 lacks even though it already reserves `soccp@a03d0000` and `soccp-dtb@a08d0000`: the `kaanapali_soccp_resource` and its `qcom,kaanapali-soccp-pas` match entry are copied from v7.3-rc4 (crash SMEM 656, `soccp.mbn`/`soccp_dtb.mbn`, PAS 51/0x41, cx/mx, soccp ssr/sysmon, auto_boot, early_boot), the DT side takes the upstream `smp2p-soccp` block (IPCC client 13, remote pid 19) and `remoteproc@d00000` node (six IRQs, cx/mx, the two existing reserved regions, stop/ping, glink edge) verbatim from https://github.com/torvalds/linux/blob/v7.3-rc4/arch/arm64/boot/dts/qcom/kaanapali.dtsi, and `IPCC_MPROC_SOCCP` is the only constant added to `qcom-ipcc.h`. The driver delta preserves the pinned tree's 0067 (handover IRQ enable/disable kept for `lenovo,baldur` only, `handover_issued` always set) and 0068 (the `dtb_pas_id` shutdown no longer masks a `pas_id` failure) semantics on this tree's `qcom_scm_pas_shutdown()`. The 7.3 driver refactor, the `firmware/qcom/qcom_pas` API and the glymur/nord resources are not imported; existing reserved-memory nodes, other Kaanapali boards and Gen4 are unchanged. Generated by `generate-K503SOC.py` and included in the completed unified 7.2.6 ARM64 build and TB323FU boot/display checkpoint; individual SoCCP functionality is not separately accepted.
+  notes: Adds the SoCCP remoteproc that 7.2.6 lacks even though it already reserves `soccp@a03d0000` and `soccp-dtb@a08d0000`: the `kaanapali_soccp_resource` and its `qcom,kaanapali-soccp-pas` match entry are copied from v7.3-rc4 (crash SMEM 656, `soccp.mbn`/`soccp_dtb.mbn`, PAS 51/0x41, cx/mx, soccp ssr/sysmon, auto_boot, early_boot), the DT side takes the upstream `smp2p-soccp` block (IPCC client 13, remote pid 19) and `remoteproc@d00000` node (six IRQs, cx/mx, the two existing reserved regions, stop/ping, glink edge) verbatim from https://github.com/torvalds/linux/blob/v7.3-rc4/arch/arm64/boot/dts/qcom/kaanapali.dtsi, and `IPCC_MPROC_SOCCP` is the only constant added to `qcom-ipcc.h`. The driver delta preserves the pinned tree's 0067 (handover IRQ enable/disable kept for `lenovo,baldur` only, `handover_issued` always set) and 0068 (the `dtb_pas_id` shutdown no longer masks a `pas_id` failure) semantics on this tree's `qcom_scm_pas_shutdown()`. The 7.3 driver refactor, the `firmware/qcom/qcom_pas` API and the glymur/nord resources are not imported; existing reserved-memory nodes, other Kaanapali boards and Gen4 are unchanged.
 - `patches/0196-firmware-devfreq-kaanapali-memlat.patch`
   source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
   upstream: unknown
-  notes: Rebases that eight-patch series onto 7.2.6 without redesign: SCMI QCOM generic extension documentation, binding, vendor implementation and client header; the devfreq `target_freq` attribute flag, `track_remote` flag, remote observer governor and SCMI QCOM memlat driver; and the Kaanapali CPUCP mailbox, SRAM window and `scmi-1` vendor `protocol@80`. Original authorship is Pragnesh Papaniya, Sibi Sankar, Amir Vajid, Ramakrishna Gottimukkula and Jia Yang per those files; their tags are preserved and no sign-off is added. The live Gen5 kernel already runs LLCC, DDR and DDR_QOS DVFS through this governor and its config plus DT already carry the nodes, so this restores existing function rather than introducing a new policy. The driver binds only vendor protocol 0x80 and the Kaanapali compatible; PDP0 SCMI and the CPU cpufreq path are untouched. Included in the completed unified 7.2.6 ARM64 build and TB323FU boot/display checkpoint; individual memory-latency features are not separately accepted.
+  notes: Rebases that eight-patch series onto 7.2.6 without redesign: SCMI QCOM generic extension documentation, binding, vendor implementation and client header; the devfreq `target_freq` attribute flag, `track_remote` flag, remote observer governor and SCMI QCOM memlat driver; and the Kaanapali CPUCP mailbox, SRAM window and `scmi-1` vendor `protocol@80`. Original authorship is Pragnesh Papaniya, Sibi Sankar, Amir Vajid, Ramakrishna Gottimukkula and Jia Yang per those files; their tags are preserved and no sign-off is added. The live Gen5 kernel already runs LLCC, DDR and DDR_QOS DVFS through this governor and its config plus DT already carry the nodes, so this restores existing function rather than introducing a new policy. The driver binds only vendor protocol 0x80 and the Kaanapali compatible; PDP0 SCMI and the CPU cpufreq path are untouched.
 - `patches/0197-drm-msm-dp-restore-kaanapali-DP0-and-idle-guard.patch`
   source: devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8 (legacy 0051)
   upstream: unknown
-  notes: Restores the accepted Kaanapali DP0 descriptor at 0x09ad2000 and its exact compatible match on 7.2.6, completing the DPU component aggregate. Retains Joonhoe Kim attribution. The 7.2.6 atomic-disable callback still calls PUSH_IDLE unconditionally, so also restores the dp->power_on guard to avoid accessing an unclocked link after failed training. No display timing, performance policy, or Gen4 DT changes.
+  notes: Restores the Kaanapali DP0 descriptor at 0x09ad2000 and its exact compatible match on 7.2.6, completing the DPU component aggregate. Retains Joonhoe Kim attribution. The 7.2.6 atomic-disable callback still calls PUSH_IDLE unconditionally, so also restores the dp->power_on guard to avoid accessing an unclocked link after failed training. No display timing, performance policy, or Gen4 DT changes.

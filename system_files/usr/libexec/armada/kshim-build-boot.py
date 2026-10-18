@@ -13,19 +13,8 @@ initramfs Blob, attached Shim).
 Offline verification only: no device access, no flashing, no reboot, no
 partition or UFS access, no network and no dependency installation.
 
-This is a STANDALONE script. It does not import, mutate or depend on the
-existing Gen4 stock Android driver (lenovo-tb322fc/boot/build_android_boot.py)
-or the Gen5 offline driver (star-chart-build/build_offline_boot.py); it reuses
-only their proven *patterns* -- stock v4 header validation, the MBKP manifest
-ABI reader, the ARM64 Image reader and the BL patch verifier. All Gen5
-addresses, defaults, entry counts and tool defaults are deliberately NOT
-copied: every tool path and the bootargs string are supplied explicitly and
-resolved to absolute paths before any cwd change.
-
-Every input is treated as opaque data supplied by the operator: the .259
-stock v4 image and the current accepted 4 MiB runtime are trusted as given, and
-input hashes attest identity only -- they do not attest real-device behaviour.
-Nothing here proves a physical tablet boots this image.
+All tool paths and the bootargs string are supplied explicitly and resolved to
+absolute paths before any cwd change.
 
 Manifest ABI source of truth (external MultiBootKernelPatcher inc/manifest.h):
 ManifestHeader 60B, ManifestEntry 56B, entry name padded to 4B. The five u64

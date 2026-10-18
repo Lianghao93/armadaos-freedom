@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """Persistent kShimC provisioning and update state around armada-kshim-sync.
 
-This is a small stateful caller, not a new deployment engine:
-
   provision    validate a first-device installed image against the booted
                native deployment, copy the two private inputs and record the
                baseline. No block write, no install, no reboot.
   sync         compare the current native default with the recorded payload,
-               and only then call the tested armada-kshim-sync child once.
+               and only then call armada-kshim-sync once.
   record-boot  reconcile an interrupted transaction and record an actual boot
-               observation. A physical write is never boot acceptance.
+               observation.
 
 State is an immutable config.json plus state.json under --state-dir, with the
 stock/runtime inputs held in a private inputs/ directory. All JSON updates are
@@ -71,7 +69,7 @@ def checksum_text(value, label):
 
 
 def load_sync(libexec):
-    """Load the extensionless T024 sync tool explicitly."""
+    """Load the extensionless armada-kshim-sync tool explicitly."""
     path = os.path.join(libexec, "armada-kshim-sync")
     need(os.path.isfile(path), "sync tool not found: %s" % path)
     loader = importlib.machinery.SourceFileLoader("armada_kshim_state_sync", path)
