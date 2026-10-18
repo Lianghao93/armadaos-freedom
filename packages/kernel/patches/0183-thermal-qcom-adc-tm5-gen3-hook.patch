@@ -1,0 +1,71 @@
+From 948ee3a74f35644c16b6c100f19ff0799cebe0b5 Mon Sep 17 00:00:00 2001
+From: Jishnu Prakash <jishnu.prakash@oss.qualcomm.com>
+Date: Wed, 22 Jul 2026 16:56:39 +0530
+Subject: [PATCH] thermal/drivers/qcom: add support for PMIC5 Gen3 ADC thermal
+ monitoring
+
+Add support for ADC_TM part of PMIC5 Gen3 in an auxiliary driver
+under the Gen3 ADC driver. Its functionality is similar to that of
+PMIC5 Gen2 ADC_TM, which implements the threshold setting and
+interrupt generating functions, used to support thermal trip points.
+
+In Gen3 ADC, the register interface is implemented on one or more SDAM
+(Shared Direct Access Memory) peripherals instead of dedicated ADC
+peripherals. Each ADC SDAM has eight channels which can be configured
+for either immediate reads (main ADC driver's functionality) or ADC_TM
+reads. By convention, the first channel of the first ADC SDAM is reserved
+for all immediate reads and remaining channels across all SDAMs are used
+for ADC_TM functionality.
+
+On the first SDAM, the interrupt line and configuration registers are
+shared between the main ADC and auxiliary ADC_TM drivers. Access to the
+registers is protected through a mutex shared between the drivers. The
+ADC_TM driver accesses this mutex and some other functions shared from
+the main driver (like adc5_gen3_get_scaled_reading() for immediate channel
+reads in the .get_temp() callback) through APIs exported into a shared
+namespace.
+
+Signed-off-by: Jishnu Prakash <jishnu.prakash@oss.qualcomm.com>
+Signed-off-by: Daniel Lezcano <daniel.lezcano@kernel.org>
+Acked-by: Andy Shevchenko <andriy.shevchenko@intel.com>
+Link: https://patch.msgid.link/20260722-gen3_adc_tm-v4-3-011981f756c8@oss.qualcomm.com
+
+[7.2.6 backport: upstream context is the QCOM_SPMI_MBG_TM stanza, which this
+ tree does not have; the Gen3 stanza and object follow the Gen2 ADC_TM5
+ entries instead. No MBG entry or driver is imported.]
+---
+ drivers/thermal/qcom/Kconfig  | 9 +++++++++
+ drivers/thermal/qcom/Makefile | 1 +
+ 2 files changed, 10 insertions(+)
+
+diff --git a/drivers/thermal/qcom/Kconfig b/drivers/thermal/qcom/Kconfig
+index a6bb01082ec6..1acb11e4ac80 100644
+--- a/drivers/thermal/qcom/Kconfig
++++ b/drivers/thermal/qcom/Kconfig
+@@ -18,6 +18,15 @@
+ 	help
+ 	  This enables the thermal driver for the ADC thermal monitoring
+ 	  device. It shows up as a thermal zone with multiple trip points.
++	  Thermal client sets threshold temperature for both warm and cool and
++	  gets updated when a threshold is reached.
++
++config QCOM_SPMI_ADC_TM5_GEN3
++	tristate "Qualcomm SPMI PMIC Thermal Monitor ADC5 Gen3"
++	depends on QCOM_SPMI_ADC5_GEN3
++	help
++	  This enables the auxiliary thermal driver for the ADC5 Gen3 thermal
++	  monitoring device. It shows up as a thermal zone with multiple trip points.
+ 	  Thermal client sets threshold temperature for both warm and cool and
+ 	  gets updated when a threshold is reached.
+ 
+diff --git a/drivers/thermal/qcom/Makefile b/drivers/thermal/qcom/Makefile
+index 0fa2512042e7..828d9e7bc797 100644
+--- a/drivers/thermal/qcom/Makefile
++++ b/drivers/thermal/qcom/Makefile
+@@ -4,5 +4,6 @@
+ qcom_tsens-y			+= tsens.o tsens-v2.o tsens-v1.o tsens-v0_1.o \
+ 				   tsens-8960.o
+ obj-$(CONFIG_QCOM_SPMI_ADC_TM5)	+= qcom-spmi-adc-tm5.o
++obj-$(CONFIG_QCOM_SPMI_ADC_TM5_GEN3)	+= qcom-spmi-adc-tm5-gen3.o
+ obj-$(CONFIG_QCOM_SPMI_TEMP_ALARM)	+= qcom-spmi-temp-alarm.o
+ obj-$(CONFIG_QCOM_LMH)		+= lmh.o

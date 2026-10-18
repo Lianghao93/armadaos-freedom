@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * TB323FU ("baldur"): Adreno 840.
+ *
+ * The SoC nodes are in kaanapali.dtsi, disabled. The zap shader is our own
+ * device's blob (from /vendor, not redistributable), loaded through PAS.
+ */
+
+&gpu {
+	status = "okay";
+};
+
+&gmu {
+	status = "okay";
+};
+
+&gpu_zap_shader {
+	firmware-name = "qcom/kaanapali/Lenovo/baldur/gen80200_zap.mbn";
+};

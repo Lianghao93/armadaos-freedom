@@ -243,3 +243,47 @@ v2_20260420_neil_armstrong_arm64_qcom_sm8650_misc_enhancements.patch
 0153-drm-msm-elden-video-teardown.patch
 0154-clk-qcom-elden-reset-live-display.patch
 0155-drm-msm-elden-pll-digital-power.patch
+
+# ============== SM8850 Kaanapali GPU ==============
+0160-arm64-dts-qcom-kaanapali-add-the-GPU-SMMU-node.patch
+0161-arm64-dts-qcom-kaanapali-Add-QFPROM-node.patch
+0162-arm64-dts-qcom-Add-GPU-support-for-Kaanapali.patch
+0163-arm64-dts-qcom-kaanapali-Add-GPU-cooling.patch
+0164-Input-touchscreen-import-NT36536-host-download-SPI-d.patch
+0165-input-touchscreen-NT36536-host-download-SPI-driver-N.patch
+0166-input-nt36536-fixes-for-tb323fu.patch
+0167-input-nt36536-make-the-pen-a-tablet-libinput-accepts.patch
+
+# ============== SM8850 Kaanapali Baldur panels (Lenovo Y700 Gen5 / TB323FU) ==============
+0168-clk-qcom-dispcc-kaanapali-solve-display-artifacts-at.patch
+0169-arm64-dts-qcom-kaanapali-add-the-second-DSI-controll.patch
+0170-drm-panel-nt36523-add-DSC-and-the-Lenovo-TB323FU-CSO.patch
+0171-backlight-aw99706-replay-board-registers-after-the-H.patch
+0172-iommu-arm-smmu-qcom-kaanapali-MDSS-identity-domain.patch
+0173-drm-panel-nt36523-baldur-CSOT-60-and-30-Hz-modes.patch
+0174-drm-panel-nt36523-baldur-add-90-Hz-and-165-Hz-modes.patch
+0175-drm-msm-baldur-dsc12-video.patch
+0176-arm64-baldur-cpu-idle-topology.patch
+0177-power-supply-battmgr-baldur-usb-current.patch
+0178-drm-msm-baldur-dsi-phy-runtime-pm.patch
+0179-clk-qcom-baldur-gdsc-runtime-reference.patch
+0180-drm-msm-baldur-fifo-pll-teardown.patch
+0181-drm-msm-kaanapali-dpu-int2-domain.patch
+0182-iio-adc-qcom-gen3-shared-sdam-irq.patch
+0183-thermal-qcom-adc-tm5-gen3-hook.patch
+0184-thermal-qcom-adc-tm5-gen3-driver.patch
+0185-iio-thermal-qcom-pmic5-gen4-adc.patch
+
+# ============== SM8850 Kaanapali Baldur (Lenovo Y700 Gen5 / TB323FU) ==============
+0186-soc-qcom-baldur-gpr-apm.patch
+0187-ASoC-baldur-audio-paths.patch
+0188-wifi-ath12k-baldur-range-scans.patch
+0189-Bluetooth-qca-baldur-brahma.patch
+0190-drm-msm-baldur-vfp-switch.patch
+0191-drm-msm-baldur-idle-refresh.patch
+0192-usb-baldur-runtime-pm.patch
+0193-drm-msm-baldur-new-state-bandwidth.patch
+0194-wifi-ath12k-baldur-rx-panic.patch
+0195-remoteproc-kaanapali-soccp.patch
+0196-firmware-devfreq-kaanapali-memlat.patch
+0197-drm-msm-dp-restore-kaanapali-DP0-and-idle-guard.patch

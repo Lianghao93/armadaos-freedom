@@ -1,0 +1,363 @@
+From: Joonhoe Kim <26rote@gmail.com>
+Subject: [PATCH] usb: preserve Baldur Gen5 suspend, wakeup and NCM behaviour
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Keep the pinned TB323FU runtime USB fixes on the unified tree for the
+Lenovo Y700 Gen5 (baldur).
+
+The Kaanapali USB GDSCs stay in retention across system suspend instead
+of powering off, as the other SoCs using these domains already do.  This
+is naturally SoC scoped: only gcc-kaanapali changes.
+
+When dwc3 powers the core off in host mode for system suspend, xHCI is
+told that its state is gone, so it resets the controller instead of
+restoring stale registers.  The flag and its resume quirk only act on
+lenovo,baldur; every other machine keeps its existing power_lost state.
+
+Alt-mode and UCSI notifications run on the freezable workqueue on
+baldur, so an unplug during s2idle is handled after the I2C bus and PHYs
+are resumed.  Other machines keep the exact existing system workqueue.
+
+Baldur's eUSB2 PHY arms the eD-/eD+ line and rising edge for remote
+wakeup, drops any edge latched while the line was off, and disables the
+line non-lazily.  The QUSB2 line selection and the old module-knob
+setting are preserved; other machines take none of these branches.
+
+f_ncm restarts its TX timer when eth_start_xmit() reports NETDEV_TX_BUSY,
+so a half-filled NTB is not stranded until more traffic arrives.  skb
+ownership is unchanged.
+
+Merged from pinned tb323fu-linux patches 0036, 0059, 0060, 0061, 0062 and
+0104.  The code is the original author's work, rebased onto these
+preimages; the rebase adds no Signed-off-by.
+
+---
+ 8 files changed, 103 insertions(+), 27 deletions(-)
+---
+
+diff --git a/drivers/usb/dwc3/core.c b/drivers/usb/dwc3/core.c
+--- a/drivers/usb/dwc3/core.c
++++ b/drivers/usb/dwc3/core.c
+@@ -2616,8 +2616,13 @@
+ 		if (!PMSG_IS_AUTO(msg) &&
+ 		    (!device_may_wakeup(dwc->dev) || dwc->needs_full_reinit)) {
+ 			dwc3_core_exit(dwc);
++			if (of_machine_is_compatible("lenovo,baldur"))
++				dwc->xhci_power_lost = 1;
+ 			break;
+ 		}
++
++		if (of_machine_is_compatible("lenovo,baldur"))
++			dwc->xhci_power_lost = 0;
+ 
+ 		/* Let controller to suspend HSPHY before PHY driver suspends */
+ 		if (dwc->dis_u2_susphy_quirk ||
+diff --git a/drivers/usb/dwc3/core.h b/drivers/usb/dwc3/core.h
+--- a/drivers/usb/dwc3/core.h
++++ b/drivers/usb/dwc3/core.h
+@@ -1141,6 +1141,8 @@
+  * @usb3_lpm_capable: set if hadrware supports Link Power Management
+  * @usb2_lpm_disable: set to disable usb2 lpm for host
+  * @usb2_gadget_lpm_disable: set to disable usb2 lpm for gadget
++ * @xhci_power_lost: the core was powered off for system suspend in host
++ *	mode; xHCI must not try to restore its state on resume
+  * @needs_full_reinit: set to indicate the core may lose power and need full
+  *			initialization during system pm
+  * @disable_scramble_quirk: set if we enable the disable scramble quirk
+@@ -1400,6 +1402,7 @@
+ 	unsigned		usb3_lpm_capable:1;
+ 	unsigned		usb2_lpm_disable:1;
+ 	unsigned		usb2_gadget_lpm_disable:1;
++	unsigned		xhci_power_lost:1;
+ 	unsigned		needs_full_reinit:1;
+ 
+ 	unsigned		disable_scramble_quirk:1;
+diff --git a/drivers/usb/dwc3/host.c b/drivers/usb/dwc3/host.c
+--- a/drivers/usb/dwc3/host.c
++++ b/drivers/usb/dwc3/host.c
+@@ -13,9 +13,7 @@
+ #include <linux/usb.h>
+ #include <linux/usb/hcd.h>
+ 
+-#include "../host/xhci-port.h"
+-#include "../host/xhci-ext-caps.h"
+-#include "../host/xhci-caps.h"
++#include "../host/xhci.h"
+ #include "../host/xhci-plat.h"
+ #include "core.h"
+ 
+@@ -77,7 +75,21 @@
+ 	dwc3_enable_susphy(dwc, true);
+ }
+ 
++/*
++ * dwc3_suspend_common() powers the core off in host mode when it may not wake
++ * the system: xHCI then has to reset instead of restoring its state.
++ */
++static int dwc3_xhci_resume_quirk(struct usb_hcd *hcd)
++{
++	struct dwc3 *dwc = dev_get_drvdata(hcd->self.controller->parent);
++
++	if (of_machine_is_compatible("lenovo,baldur"))
++		hcd_to_xhci_priv(hcd)->power_lost = dwc->xhci_power_lost;
++	return 0;
++}
++
+ static const struct xhci_plat_priv dwc3_xhci_plat_quirk = {
++	.resume_quirk = dwc3_xhci_resume_quirk,
+ 	.plat_start = dwc3_xhci_plat_start,
+ };
+ 
+diff --git a/drivers/usb/dwc3/dwc3-qcom.c b/drivers/usb/dwc3/dwc3-qcom.c
+--- a/drivers/usb/dwc3/dwc3-qcom.c
++++ b/drivers/usb/dwc3/dwc3-qcom.c
+@@ -83,6 +83,7 @@
+ 	bool			pm_suspended;
+ 	struct icc_path		*icc_path_ddr;
+ 	struct icc_path		*icc_path_apps;
++	bool			has_eusb2_phy;
+ };
+ 
+ #define to_dwc3_qcom(d) container_of((d), struct dwc3_qcom, dwc)
+@@ -249,7 +250,12 @@
+ 	return udev->speed;
+ }
+ 
+-static void dwc3_qcom_enable_wakeup_irq(int irq, unsigned int polarity)
++/* 0: the QUSB2 line/edge selection, also on eUSB2 */
++static bool eusb2_wakeup = true;
++module_param(eusb2_wakeup, bool, 0644);
++
++static void dwc3_qcom_enable_wakeup_irq(struct dwc3_qcom *qcom, int irq,
++					unsigned int polarity)
+ {
+ 	if (!irq)
+ 		return;
+@@ -257,6 +263,10 @@
+ 	if (polarity)
+ 		irq_set_irq_type(irq, polarity);
+ 
++	/* drop an edge latched while the line was disabled */
++	if (qcom->has_eusb2_phy)
++		irq_set_irqchip_state(irq, IRQCHIP_STATE_PENDING, false);
++
+ 	enable_irq(irq);
+ 	enable_irq_wake(irq);
+ }
+@@ -270,15 +280,20 @@
+ 	disable_irq_nosync(irq);
+ }
+ 
+-static void dwc3_qcom_disable_port_interrupts(struct dwc3_qcom_port *port)
+-{
++static void dwc3_qcom_disable_port_interrupts(struct dwc3_qcom *qcom, int port_index)
++{
++	struct dwc3_qcom_port *port = &qcom->ports[port_index];
++	bool eusb2 = qcom->has_eusb2_phy && eusb2_wakeup;
++
+ 	dwc3_qcom_disable_wakeup_irq(port->qusb2_phy_irq);
+ 
+ 	if (port->usb2_speed == USB_SPEED_LOW) {
+-		dwc3_qcom_disable_wakeup_irq(port->dm_hs_phy_irq);
++		dwc3_qcom_disable_wakeup_irq(eusb2 ? port->dp_hs_phy_irq :
++						    port->dm_hs_phy_irq);
+ 	} else if ((port->usb2_speed == USB_SPEED_HIGH) ||
+ 			(port->usb2_speed == USB_SPEED_FULL)) {
+-		dwc3_qcom_disable_wakeup_irq(port->dp_hs_phy_irq);
++		dwc3_qcom_disable_wakeup_irq(eusb2 ? port->dm_hs_phy_irq :
++						    port->dp_hs_phy_irq);
+ 	} else {
+ 		dwc3_qcom_disable_wakeup_irq(port->dp_hs_phy_irq);
+ 		dwc3_qcom_disable_wakeup_irq(port->dm_hs_phy_irq);
+@@ -287,9 +302,12 @@
+ 	dwc3_qcom_disable_wakeup_irq(port->ss_phy_irq);
+ }
+ 
+-static void dwc3_qcom_enable_port_interrupts(struct dwc3_qcom_port *port)
+-{
+-	dwc3_qcom_enable_wakeup_irq(port->qusb2_phy_irq, 0);
++static void dwc3_qcom_enable_port_interrupts(struct dwc3_qcom *qcom, int port_index)
++{
++	struct dwc3_qcom_port *port = &qcom->ports[port_index];
++	bool eusb2 = qcom->has_eusb2_phy && eusb2_wakeup;
++
++	dwc3_qcom_enable_wakeup_irq(qcom, port->qusb2_phy_irq, 0);
+ 
+ 	/*
+ 	 * Configure DP/DM line interrupts based on the USB2 device attached to
+@@ -300,21 +318,34 @@
+ 	 * DP and DM lines as rising edge to detect HS/HS/LS device connect scenario.
+ 	 */
+ 
++	/*
++	 * eUSB2 signals differently: a HS/FS device's remote wakeup (and a
++	 * disconnect in bus suspend) drives eD- high, a LS device's drives
++	 * eD+ high (eUSB2 spec 5.5.14/15/18).
++	 */
+ 	if (port->usb2_speed == USB_SPEED_LOW) {
+-		dwc3_qcom_enable_wakeup_irq(port->dm_hs_phy_irq,
+-					    IRQ_TYPE_EDGE_FALLING);
++		if (eusb2)
++			dwc3_qcom_enable_wakeup_irq(qcom, port->dp_hs_phy_irq,
++						    IRQ_TYPE_EDGE_RISING);
++		else
++			dwc3_qcom_enable_wakeup_irq(qcom, port->dm_hs_phy_irq,
++						    IRQ_TYPE_EDGE_FALLING);
+ 	} else if ((port->usb2_speed == USB_SPEED_HIGH) ||
+ 			(port->usb2_speed == USB_SPEED_FULL)) {
+-		dwc3_qcom_enable_wakeup_irq(port->dp_hs_phy_irq,
+-					    IRQ_TYPE_EDGE_FALLING);
++		if (eusb2)
++			dwc3_qcom_enable_wakeup_irq(qcom, port->dm_hs_phy_irq,
++						    IRQ_TYPE_EDGE_RISING);
++		else
++			dwc3_qcom_enable_wakeup_irq(qcom, port->dp_hs_phy_irq,
++						    IRQ_TYPE_EDGE_FALLING);
+ 	} else {
+-		dwc3_qcom_enable_wakeup_irq(port->dp_hs_phy_irq,
++		dwc3_qcom_enable_wakeup_irq(qcom, port->dp_hs_phy_irq,
+ 					    IRQ_TYPE_EDGE_RISING);
+-		dwc3_qcom_enable_wakeup_irq(port->dm_hs_phy_irq,
++		dwc3_qcom_enable_wakeup_irq(qcom, port->dm_hs_phy_irq,
+ 					    IRQ_TYPE_EDGE_RISING);
+ 	}
+ 
+-	dwc3_qcom_enable_wakeup_irq(port->ss_phy_irq, 0);
++	dwc3_qcom_enable_wakeup_irq(qcom, port->ss_phy_irq, 0);
+ }
+ 
+ static void dwc3_qcom_disable_interrupts(struct dwc3_qcom *qcom)
+@@ -322,7 +353,7 @@
+ 	int i;
+ 
+ 	for (i = 0; i < qcom->num_ports; i++)
+-		dwc3_qcom_disable_port_interrupts(&qcom->ports[i]);
++		dwc3_qcom_disable_port_interrupts(qcom, i);
+ }
+ 
+ static void dwc3_qcom_enable_interrupts(struct dwc3_qcom *qcom)
+@@ -330,7 +361,7 @@
+ 	int i;
+ 
+ 	for (i = 0; i < qcom->num_ports; i++)
+-		dwc3_qcom_enable_port_interrupts(&qcom->ports[i]);
++		dwc3_qcom_enable_port_interrupts(qcom, i);
+ }
+ 
+ static int dwc3_qcom_suspend(struct dwc3_qcom *qcom, bool wakeup)
+@@ -439,6 +470,10 @@
+ {
+ 	int ret;
+ 
++	/* a lazily disabled line would replay edges seen while "off" */
++	if (qcom->has_eusb2_phy)
++		irq_set_status_flags(irq, IRQ_DISABLE_UNLAZY);
++
+ 	/* Keep wakeup interrupts disabled until suspend */
+ 	ret = devm_request_threaded_irq(qcom->dev, irq, NULL,
+ 					qcom_dwc3_resume_irq,
+@@ -611,6 +646,7 @@
+ 		return -ENOMEM;
+ 
+ 	qcom->dev = &pdev->dev;
++	qcom->has_eusb2_phy = of_machine_is_compatible("lenovo,baldur");
+ 
+ 	qcom->resets = devm_reset_control_array_get_optional_exclusive(dev);
+ 	if (IS_ERR(qcom->resets)) {
+diff --git a/drivers/usb/gadget/function/f_ncm.c b/drivers/usb/gadget/function/f_ncm.c
+--- a/drivers/usb/gadget/function/f_ncm.c
++++ b/drivers/usb/gadget/function/f_ncm.c
+@@ -1158,7 +1158,16 @@
+ 		 *
+ 		 * This will call directly into u_ether's eth_start_xmit()
+ 		 */
+-		netdev->netdev_ops->ndo_start_xmit(NULL, netdev);
++		if (netdev->netdev_ops->ndo_start_xmit(NULL, netdev) ==
++		    NETDEV_TX_BUSY) {
++			/*
++			 * No free request to send the pending NTB: try again
++			 * later, or it waits for the next datagram, which may
++			 * never come (the link stalls).
++			 */
++			hrtimer_forward_now(data, TX_TIMEOUT_NSECS);
++			return HRTIMER_RESTART;
++		}
+ 	}
+ 	return HRTIMER_NORESTART;
+ }
+diff --git a/drivers/clk/qcom/gcc-kaanapali.c b/drivers/clk/qcom/gcc-kaanapali.c
+--- a/drivers/clk/qcom/gcc-kaanapali.c
++++ b/drivers/clk/qcom/gcc-kaanapali.c
+@@ -3189,7 +3189,7 @@
+ 	.pd = {
+ 		.name = "gcc_usb30_prim_gdsc",
+ 	},
+-	.pwrsts = PWRSTS_OFF_ON,
++	.pwrsts = PWRSTS_RET_ON,
+ 	.flags = POLL_CFG_GDSCR | RETAIN_FF_ENABLE,
+ };
+ 
+@@ -3201,7 +3201,7 @@
+ 	.pd = {
+ 		.name = "gcc_usb3_phy_gdsc",
+ 	},
+-	.pwrsts = PWRSTS_OFF_ON,
++	.pwrsts = PWRSTS_RET_ON,
+ 	.flags = POLL_CFG_GDSCR | RETAIN_FF_ENABLE,
+ };
+ 
+diff --git a/drivers/soc/qcom/pmic_glink_altmode.c b/drivers/soc/qcom/pmic_glink_altmode.c
+--- a/drivers/soc/qcom/pmic_glink_altmode.c
++++ b/drivers/soc/qcom/pmic_glink_altmode.c
+@@ -451,7 +451,10 @@
+ 	alt_port->mode = mode;
+ 	alt_port->hpd_state = hpd_state;
+ 	alt_port->hpd_irq = hpd_irq;
+-	schedule_work(&alt_port->work);
++	if (of_machine_is_compatible("lenovo,baldur"))
++		queue_work(system_freezable_wq, &alt_port->work);
++	else
++		schedule_work(&alt_port->work);
+ }
+ 
+ #define SC8280XP_DPAM_MASK	0x3f
+@@ -502,7 +505,10 @@
+ 		alt_port->tbt_data = *tbt;
+ 	}
+ 
+-	schedule_work(&alt_port->work);
++	if (of_machine_is_compatible("lenovo,baldur"))
++		queue_work(system_freezable_wq, &alt_port->work);
++	else
++		schedule_work(&alt_port->work);
+ }
+ 
+ static void pmic_glink_altmode_callback(const void *data, size_t len, void *priv)
+diff --git a/drivers/usb/typec/ucsi/ucsi.c b/drivers/usb/typec/ucsi/ucsi.c
+--- a/drivers/usb/typec/ucsi/ucsi.c
++++ b/drivers/usb/typec/ucsi/ucsi.c
+@@ -10,6 +10,7 @@
+ #include <linux/property.h>
+ #include <linux/device.h>
+ #include <linux/module.h>
++#include <linux/of.h>
+ #include <linux/delay.h>
+ #include <linux/slab.h>
+ #include <linux/usb/typec_dp.h>
+@@ -1572,8 +1573,12 @@
+ 
+ 	con = &ucsi->connector[num - 1];
+ 
+-	if (!test_and_set_bit(EVENT_PENDING, &ucsi->flags))
+-		schedule_work(&con->work);
++	if (!test_and_set_bit(EVENT_PENDING, &ucsi->flags)) {
++		if (of_machine_is_compatible("lenovo,baldur"))
++			queue_work(system_freezable_wq, &con->work);
++		else
++			schedule_work(&con->work);
++	}
+ }
+ EXPORT_SYMBOL_GPL(ucsi_connector_change);
+ 

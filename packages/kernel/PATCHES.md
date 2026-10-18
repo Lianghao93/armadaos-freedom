@@ -854,3 +854,155 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   source: https://github.com/retro98boy/armada/blob/c3e466807d545991d94c0c4548e58489d656b709/packages/kernel/patches/1403-drm-msm-dsi-phy-power-up-the-digital-top-before-star.patch
   upstream: unknown
   notes: Baryshkov's "power up the digital top before starting the 7nm PLL", narrowed to `lenovo,elden`: `PLL_SHUTDOWNB` handling is unchanged for every machine, and the additional `DIGTOP_PWRDN_B` set in `dsi_pll_enable_pll_bias()` and clear in `dsi_pll_disable_pll_bias()` runs only on that board. Refcounts, spinlocks and delays are preserved. Full ARM64 build passed. Combined candidate209 (0153-0155) passed one device boot and one graceful Gamescope session restart, with user-confirmed visible Steam and accurate touch. Per-patch effects were not isolated; remaining GPU translation faults and vblank timeouts are tracked separately, so broad display stability is not claimed.
+- `patches/0160-arm64-dts-qcom-kaanapali-add-the-GPU-SMMU-node.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Imported unchanged from the pinned tb323fu-linux tree, with author headers and SPDX terms preserved. Part of the original Qualcomm Kaanapali GPU devicetree series queued upstream for v7.4; devicetree enablement only, not a new GPU driver.
+- `patches/0161-arm64-dts-qcom-kaanapali-Add-QFPROM-node.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Imported unchanged from the same pinned tree and series as `0160`, with author headers and SPDX terms preserved.
+- `patches/0162-arm64-dts-qcom-Add-GPU-support-for-Kaanapali.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Imported unchanged from the same pinned tree and series as `0160`, with author headers and SPDX terms preserved.
+- `patches/0163-arm64-dts-qcom-kaanapali-Add-GPU-cooling.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Imported unchanged from the same pinned tree and series as `0160`, with author headers and SPDX terms preserved.
+- `patches/0164-Input-touchscreen-import-NT36536-host-download-SPI-d.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Gen5 (Lenovo Y700 / TB323FU) touchscreen bring-up, imported byte-for-byte from the pinned tree as original `patches/0025`; author headers and SPDX terms preserved. This is a different driver from the Gen4 Novatek NT36XXX SPI driver (`0140`, `CONFIG_TOUCHSCREEN_NOVATEK_NVT36XXX_SPI`), with different compatibles; the two coexist. Included in the unified 7.2.6 ARM64 build and TB323FU boot/display checkpoint; touchscreen operation has not been separately accepted on this checkpoint.
+- `patches/0165-input-touchscreen-NT36536-host-download-SPI-driver-N.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Carries only the driver hookup: the Kconfig `source` line is re-anchored mid-file immediately before `TOUCHSCREEN_ST7123`, and the Makefile object line is appended after the last existing entry; the driver source itself is taken separately from the pinned Novatek tree. Author headers are preserved, and this is a rebased hookup rather than a byte-for-byte import. Distinct from the Gen4 Novatek driver `0140`.
+- `patches/0166-input-nt36536-fixes-for-tb323fu.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Gen5 TB323FU NT36536 fixes, imported byte-for-byte as original `patches/0027`. Included in the unified 7.2.6 ARM64 build and TB323FU boot/display checkpoint; individual touch/pen behaviour is not independently accepted.
+- `patches/0167-input-nt36536-make-the-pen-a-tablet-libinput-accepts.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Gen5 TB323FU NT36536 pen-as-tablet change, imported byte-for-byte as original `patches/0053`. Included in the unified 7.2.6 ARM64 build and TB323FU boot/display checkpoint; individual touch/pen behaviour is not independently accepted.
+- `patches/0168-clk-qcom-dispcc-kaanapali-solve-display-artifacts-at.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Gen5 Kaanapali dispcc display-artifact fix, imported byte-for-byte as original `patches/0009`; no acceptance claim.
+- `patches/0169-arm64-dts-qcom-kaanapali-add-the-second-DSI-controll.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Gen5 Kaanapali second DSI controller devicetree node, imported byte-for-byte as original `patches/0019`; no acceptance claim.
+- `patches/0170-drm-panel-nt36523-add-DSC-and-the-Lenovo-TB323FU-CSO.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Gen5 NT36523 DSC and Lenovo TB323FU CSOT panel support, imported byte-for-byte as original `patches/0020`. `0141` already supplies all slices in a packet, so no duplicate packet-support import is made; no acceptance claim.
+- `patches/0171-backlight-aw99706-replay-board-registers-after-the-H.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: AW99706 board-register replay after hardware enable, rebased onto the current driver whose init path ends with the `0057` KONKR Pocket Fit Elite CFG7 override. That board block is kept intact and the optional `awinic,init-regs` replay is appended after it, so this is a rebased delta rather than a byte-for-byte import; author headers and SPDX terms preserved.
+- `patches/0172-iommu-arm-smmu-qcom-kaanapali-MDSS-identity-domain.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Kaanapali MDSS SMMU identity domain, imported byte-for-byte as original `patches/0029`; no acceptance claim.
+- `patches/0173-drm-panel-nt36523-baldur-CSOT-60-and-30-Hz-modes.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Baldur CSOT 60 Hz and 30 Hz modes, imported byte-for-byte as original `patches/0066`; no acceptance claim.
+- `patches/0174-drm-panel-nt36523-baldur-add-90-Hz-and-165-Hz-modes.patch`
+  source: runtime-fixes/0109-drm-panel-nt36523-baldur-add-90-Hz-and-165-Hz-modes.patch
+  upstream: local
+  notes: Our runtime-fixes 165 Hz replacement, imported byte-for-byte; this is the 90 Hz/165 Hz addition, distinct from the pinned tb323fu-linux imports above. The unified 7.2.6 checkpoint runs the internal display at 165 Hz; all-mode and long-term stability remain under validation.
+- `patches/0175-drm-msm-baldur-dsc12-video.patch`
+  source: armada
+  upstream: local
+  notes: Baldur-only DSC 1.2 video-mode delta layered on 0142. Selects the 4:4:4 RC table and the existing first-line bpg offset for video-mode 10-bpc, adds the downstream DCE initial-line helper (active soft-slice count and bits_per_pixel >> 4), rounds the INTF compressed width up to match DSI (952 * 8 / 30 -> 254), enables FULL_ICH_PREC for Baldur, and advertises it on every Kaanapali DSC block. Derived from the GPL-2.0-only joonhoekim/tb323fu-linux tree at 11a25bf89b65fff48112a91a0b25bc247e7736d8 (legacy 0007/0008/0023); Elden paths remain byte-identical. Generated by `generate-K502B1.py`; no apply/build/acceptance claim.
+- `patches/0176-arm64-baldur-cpu-idle-topology.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Baldur CPU idle and topology rebase of the pinned tree's legacy 0031, 0106, 0117 and 0118 onto the 7.2.6 preimages; every other machine is unchanged.
+- `patches/0177-power-supply-battmgr-baldur-usb-current.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/8bf7d9240bb97353f4c6dca53e4a65c18ade7bcf
+  upstream: unknown
+  notes: Combines the unified SM8750 INPUT_CURRENT_LIMIT setter with the TB323FU 0033 direct USB-property protocol, gated to lenovo,baldur.
+- `patches/0178-drm-msm-baldur-dsi-phy-runtime-pm.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Merges the pinned tree's 0032 and 0050 PHY runtime-PM work for Baldur; other machines keep the pm_clk list.
+- `patches/0179-clk-qcom-baldur-gdsc-runtime-reference.patch`
+  source: armada
+  upstream: local
+  notes: GDSC controller runtime hold derived from the pinned tree's 0046 and 0103, registered only for lenovo,baldur; the registration-time hold is dropped through a devm action, so a failed probe or the device's removal unwinds it while a normal disable releases only its own reference.
+- `patches/0180-drm-msm-baldur-fifo-pll-teardown.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: PPB FIFO sizing, VCO state guards and bonded slave-first teardown from the pinned tree's 0007, 0008 and 0097, gated to Baldur.
+- `patches/0181-drm-msm-kaanapali-dpu-int2-domain.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Bindings and DT from the Kaanapali DPU INT2 GDSC v2 series (0081 and 0083); the driver hunk is the series' 0082 rebased with Baldur gating.
+- `patches/0182-iio-adc-qcom-gen3-shared-sdam-irq.patch`
+  source: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=b39f9b4b21df871005a59e2aea814644896d0dd3
+  upstream: https://patch.msgid.link/20260722-gen3_adc_tm-v4-2-011981f756c8@oss.qualcomm.com
+  notes: 7.2 SDAM request error context refreshed; verbose error retained.
+- `patches/0183-thermal-qcom-adc-tm5-gen3-hook.patch`
+  source: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=948ee3a74f35644c16b6c100f19ff0799cebe0b5
+  upstream: https://patch.msgid.link/20260722-gen3_adc_tm-v4-3-011981f756c8@oss.qualcomm.com
+  notes: 7.2.6 backport places the Gen3 stanza after the Gen2 ADC_TM5 entries; the MBG entry and driver are not imported.
+- `patches/0184-thermal-qcom-adc-tm5-gen3-driver.patch`
+  source: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=cebe359188013aa54e3afd06cc6461c6ebbfb6d3
+  upstream: https://patch.msgid.link/20260811145427.3089426-1-daniel.lezcano@kernel.org
+  notes: The follow-up that adds the missing Gen3 ADC_TM driver file, imported whole.
+- `patches/0185-iio-thermal-qcom-pmic5-gen4-adc.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/0a115277960eb7bbc533fbd2362e3cf83e1ee21f
+  upstream: unknown
+  notes: Squashed PMIC5 Gen4 ADC series backported to 7.2.6 on top of the shared-IRQ and Gen3 ADC_TM work; MTP, QRD and glymur board hunks omitted.
+- `patches/0186-soc-qcom-baldur-gpr-apm.patch`
+  source: armada
+  upstream: local
+  notes: Merges the pinned TB323FU tree's 0075, 0076 and 0077 onto the unified APR, Q6APM and Kaanapali ADSP code: the GPR callback is installed before probe and cleared on failure, packet sends carry the service source port, and Baldur's ADSP gprint entry joins the existing one. Other machines keep the current AudioReach flow.
+- `patches/0187-ASoC-baldur-audio-paths.patch`
+  source: armada
+  upstream: local
+  notes: Merges the pinned tree's 0034, 0035 and 0037 onto the unified machine driver and codecs: MI2S back ends use S32_LE when the board opts in, LPASS TX replays board tuning values, and WCD939x channel access follows the resolved channel id so HiFi PCM is kept. The Kaanapali sound card and existing headphone paths are unchanged.
+- `patches/0188-wifi-ath12k-baldur-range-scans.patch`
+  source: armada
+  upstream: local
+  notes: Merges runtime fixes 1022 and 1023 and the three band-index corrections of reg-three-fix.diff.txt onto the unified ath12k scan lifecycle. WCN7860 on Baldur splits range scans at the firmware boundary and runs associated scans as drained TX batches, and firmware recovery takes over an interrupted TX pause. Other hardware keeps the existing scan path.
+- `patches/0189-Bluetooth-qca-baldur-brahma.patch`
+  source: armada
+  upstream: local
+  notes: Merges the pinned tree's 0030 BRAHMA flow onto the unified Bluetooth path for Baldur only: patch configuration before UART setup, DT.mbn segment drain with the board's delays, and the existing baudrate helper for the 3.2 Mbaud switch. Other boards, including the native WCN7860 flow, are unchanged.
+- `patches/0190-drm-msm-baldur-vfp-switch.patch`
+  source: armada
+  upstream: local
+  notes: Rebuilds the pinned tree's 0065 and 0079 on the unified DPU, DSI and interface code, gating porch-only mode switching to lenovo,baldur through dpu_crtc_can_update_vfp. Colour management, active and connector checks and the existing flush semantics are unchanged, and other machines never take the path.
+- `patches/0191-drm-msm-baldur-idle-refresh.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Kernel-side idle refresh from the pinned tree's legacy 0110, layered on the 0190 vertical-front-porch switch: the committed mode and its vtotal are untouched while the running DSI video interface's VFP is stretched from the mode's own refresh rate, and the INTFs are flushed outside a commit; the vtotal is restored and latched before system suspend and on encoder disable. `idle_refresh_enable()` returns before arming the base mode, encoder pointer, notifiers or work unless `lenovo,baldur`, and every other machine stays on the existing path. Author and licence terms are kept; this is a rebase, not a byte-for-byte import.
+- `patches/0192-usb-baldur-runtime-pm.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Merges the pinned tree's legacy 0036, 0059, 0060, 0061, 0062 and 0104 onto the unified USB, Type-C, UCSI, dwc3-qcom and f_ncm code, keeping the original author header and GPL-2.0-only terms: Kaanapali USB GDSCs retain across system suspend, dwc3 records that xHCI lost its state and the platform resume quirk consumes it, the alt-mode and UCSI notifications move to the freezable workqueue on Baldur, and Baldur's eUSB2 line selection arms eD-/eD+ remote wakeup non-lazily. The dwc3 lost-state flag and the xHCI resume quirk read it only on `lenovo,baldur`, the eUSB2 branches follow a `has_eusb2_phy` flag that only Baldur sets, and QUSB2 plus the `eusb2_wakeup` knob are unchanged. The NCM TX-timer restart on `NETDEV_TX_BUSY` is generic, with skb ownership unchanged.
+- `patches/0193-drm-msm-baldur-new-state-bandwidth.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Rebuilds the pinned tree's legacy 0105 on the unified DPU core-perf code: `_dpu_core_perf_calc_bw()` takes the crtc state being checked alongside the crtc, and `lenovo,baldur` aggregates that state's planes with `drm_atomic_crtc_state_for_each_plane_state()` so the vote covers the first frame after DPMS off/on or resume instead of the empty committed state. Every other machine keeps the committed-plane loop unchanged, and the bandwidth factors, `max_bw_high` limit, clock vote and perf tuning are not altered; this is a correctness fix, not a limit increase.
+- `patches/0194-wifi-ath12k-baldur-rx-panic.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Merges the pinned tree's legacy 0058 and 0113 onto the unified ath12k datapath with the generator's real hunk import (7 files, 16 original hunks, diffed at U3), not a strategy rewrite. The wifi7 PCI bus wake-up callback returns `-EBUSY` before `mhi_device_get_sync()` while `panic_in_progress()`, only for `lenovo,baldur`; other machines keep the unconditional wake. From 0113, the top-up of a deficit larger than one eighth of the ring and posting reaped buffers back without a complete MSDU are common correctness fixes and are deliberately not gated. The new deferrable one-second watchdog is set up on every board because `ath12k_dp_rx_free()` stops it unconditionally, but only `lenovo,baldur` arms it; `ath12k_dp_rx_refill_wd_stop()` uses `timer_shutdown_sync()` and is also called from `ath12k_dp_cleanup()` before the descriptors are freed. Included in the completed unified 7.2.6 ARM64 build and TB323FU boot/display checkpoint; the individual recovery paths have not been independently hardware-tested.
+- `patches/0195-remoteproc-kaanapali-soccp.patch`
+  source: https://github.com/torvalds/linux/blob/v7.3-rc4/drivers/remoteproc/qcom_q6v5_pas.c
+  upstream: unknown
+  notes: Adds the SoCCP remoteproc that 7.2.6 lacks even though it already reserves `soccp@a03d0000` and `soccp-dtb@a08d0000`: the `kaanapali_soccp_resource` and its `qcom,kaanapali-soccp-pas` match entry are copied from v7.3-rc4 (crash SMEM 656, `soccp.mbn`/`soccp_dtb.mbn`, PAS 51/0x41, cx/mx, soccp ssr/sysmon, auto_boot, early_boot), the DT side takes the upstream `smp2p-soccp` block (IPCC client 13, remote pid 19) and `remoteproc@d00000` node (six IRQs, cx/mx, the two existing reserved regions, stop/ping, glink edge) verbatim from https://github.com/torvalds/linux/blob/v7.3-rc4/arch/arm64/boot/dts/qcom/kaanapali.dtsi, and `IPCC_MPROC_SOCCP` is the only constant added to `qcom-ipcc.h`. The driver delta preserves the pinned tree's 0067 (handover IRQ enable/disable kept for `lenovo,baldur` only, `handover_issued` always set) and 0068 (the `dtb_pas_id` shutdown no longer masks a `pas_id` failure) semantics on this tree's `qcom_scm_pas_shutdown()`. The 7.3 driver refactor, the `firmware/qcom/qcom_pas` API and the glymur/nord resources are not imported; existing reserved-memory nodes, other Kaanapali boards and Gen4 are unchanged. Generated by `generate-K503SOC.py` and included in the completed unified 7.2.6 ARM64 build and TB323FU boot/display checkpoint; individual SoCCP functionality is not separately accepted.
+- `patches/0196-firmware-devfreq-kaanapali-memlat.patch`
+  source: https://github.com/joonhoekim/tb323fu-linux/commit/11a25bf89b65fff48112a91a0b25bc247e7736d8
+  upstream: unknown
+  notes: Rebases that eight-patch series onto 7.2.6 without redesign: SCMI QCOM generic extension documentation, binding, vendor implementation and client header; the devfreq `target_freq` attribute flag, `track_remote` flag, remote observer governor and SCMI QCOM memlat driver; and the Kaanapali CPUCP mailbox, SRAM window and `scmi-1` vendor `protocol@80`. Original authorship is Pragnesh Papaniya, Sibi Sankar, Amir Vajid, Ramakrishna Gottimukkula and Jia Yang per those files; their tags are preserved and no sign-off is added. The live Gen5 kernel already runs LLCC, DDR and DDR_QOS DVFS through this governor and its config plus DT already carry the nodes, so this restores existing function rather than introducing a new policy. The driver binds only vendor protocol 0x80 and the Kaanapali compatible; PDP0 SCMI and the CPU cpufreq path are untouched. Included in the completed unified 7.2.6 ARM64 build and TB323FU boot/display checkpoint; individual memory-latency features are not separately accepted.
+- `patches/0197-drm-msm-dp-restore-kaanapali-DP0-and-idle-guard.patch`
+  source: devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8 (legacy 0051)
+  upstream: unknown
+  notes: Restores the accepted Kaanapali DP0 descriptor at 0x09ad2000 and its exact compatible match on 7.2.6, completing the DPU component aggregate. Retains Joonhoe Kim attribution. The 7.2.6 atomic-disable callback still calls PUSH_IDLE unconditionally, so also restores the dp->power_on guard to avoid accessing an unclocked link after failed training. No display timing, performance policy, or Gen4 DT changes.

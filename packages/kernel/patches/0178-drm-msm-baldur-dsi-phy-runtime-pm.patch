@@ -1,0 +1,153 @@
+From: Armada <noreply@armada.local>
+Date: Sun, 18 Oct 2026 00:00:00 +0800
+Subject: [PATCH] drm/msm/dsi: phy: add Baldur runtime and system PM
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Baldur (Lenovo Y700 Gen5 / TB323FU) keeps its "iface" clock
+(disp_cc_mdss_ahb_clk) under pm_clk.  pm_clk_add() prepares the clock
+once and leaves it prepared, which keeps dispcc runtime active and its
+MMCX vote up while the screen is off.  The DSI host, DPU and MDSS also
+force runtime suspend over system sleep; the PHY does not, so a PHY that
+was active when s2idle started held XO on through the sleep.
+
+Gate a runtime-PM variant on the Baldur machine, merging the semantics of
+tb323fu-linux patches 0032 and 0050 without changing any other machine:
+
+- cache of_machine_is_compatible("lenovo,baldur") in the PHY;
+- Baldur fetches "iface" with devm_clk_get() and keeps no pm_clk list,
+  while every other machine keeps devm_pm_clk_create()/pm_clk_add()
+  exactly as before;
+- runtime suspend disables and unprepares the clock, resume prepares and
+  enables it and propagates the error;
+- system sleep forces runtime suspend/resume for Baldur only; every other
+  machine returns 0, matching the current absence of system callbacks.
+
+The iface clock is therefore prepared only while the PHY is runtime
+active, and the paired system-sleep path avoids leaking it over s2idle.
+
+The iface-clock and system-sleep semantics are derived from the
+GPL-2.0-only tb323fu-linux tree at commit
+11a25bf89b65fff48112a91a0b25bc247e7736d8 (patches 0032 and 0050).  The
+Baldur gating is original Armada work; no third-party sign-off is
+implied.
+
+---
+ drivers/gpu/drm/msm/dsi/phy/dsi_phy.c |  72 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++--------
+ drivers/gpu/drm/msm/dsi/phy/dsi_phy.h |   2 ++
+ 2 files changed, 66 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/gpu/drm/msm/dsi/phy/dsi_phy.c b/drivers/gpu/drm/msm/dsi/phy/dsi_phy.c
+--- a/drivers/gpu/drm/msm/dsi/phy/dsi_phy.c
++++ b/drivers/gpu/drm/msm/dsi/phy/dsi_phy.c
+@@ -701,17 +701,30 @@
+ 
+ 	platform_set_drvdata(pdev, phy);
+ 
++	phy->baldur_runtime_pm = of_machine_is_compatible("lenovo,baldur");
++
+ 	ret = devm_pm_runtime_enable(dev);
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = devm_pm_clk_create(dev);
+-	if (ret)
+-		return ret;
+-
+-	ret = pm_clk_add(dev, "iface");
+-	if (ret < 0)
+-		return dev_err_probe(dev, ret, "Unable to get iface clk\n");
++	if (phy->baldur_runtime_pm) {
++		/*
++		 * A prepared iface clock keeps dispcc runtime active and its
++		 * MMCX vote up, so prepare it only while runtime active.
++		 */
++		phy->ahb_clk = devm_clk_get(dev, "iface");
++		if (IS_ERR(phy->ahb_clk))
++			return dev_err_probe(dev, PTR_ERR(phy->ahb_clk),
++					     "Unable to get iface clk\n");
++	} else {
++		ret = devm_pm_clk_create(dev);
++		if (ret)
++			return ret;
++
++		ret = pm_clk_add(dev, "iface");
++		if (ret < 0)
++			return dev_err_probe(dev, ret, "Unable to get iface clk\n");
++	}
+ 
+ 	if (phy->cfg->ops.pll_init) {
+ 		ret = phy->cfg->ops.pll_init(phy);
+@@ -729,8 +742,51 @@
+ 	return 0;
+ }
+ 
++static int dsi_phy_runtime_suspend(struct device *dev)
++{
++	struct msm_dsi_phy *phy = dev_get_drvdata(dev);
++
++	if (!phy->baldur_runtime_pm)
++		return pm_clk_suspend(dev);
++
++	clk_disable_unprepare(phy->ahb_clk);
++	return 0;
++}
++
++static int dsi_phy_runtime_resume(struct device *dev)
++{
++	struct msm_dsi_phy *phy = dev_get_drvdata(dev);
++
++	if (!phy->baldur_runtime_pm)
++		return pm_clk_resume(dev);
++
++	return clk_prepare_enable(phy->ahb_clk);
++}
++
++static int dsi_phy_suspend(struct device *dev)
++{
++	struct msm_dsi_phy *phy = dev_get_drvdata(dev);
++
++	if (!phy->baldur_runtime_pm)
++		return 0;
++
++	return pm_runtime_force_suspend(dev);
++}
++
++static int dsi_phy_resume(struct device *dev)
++{
++	struct msm_dsi_phy *phy = dev_get_drvdata(dev);
++
++	if (!phy->baldur_runtime_pm)
++		return 0;
++
++	return pm_runtime_force_resume(dev);
++}
++
+ static const struct dev_pm_ops dsi_phy_pm_ops = {
+-	SET_RUNTIME_PM_OPS(pm_clk_suspend, pm_clk_resume, NULL)
++	SET_RUNTIME_PM_OPS(dsi_phy_runtime_suspend, dsi_phy_runtime_resume,
++			   NULL)
++	SET_SYSTEM_SLEEP_PM_OPS(dsi_phy_suspend, dsi_phy_resume)
+ };
+ 
+ static struct platform_driver dsi_phy_platform_driver = {
+diff --git a/drivers/gpu/drm/msm/dsi/phy/dsi_phy.h b/drivers/gpu/drm/msm/dsi/phy/dsi_phy.h
+--- a/drivers/gpu/drm/msm/dsi/phy/dsi_phy.h
++++ b/drivers/gpu/drm/msm/dsi/phy/dsi_phy.h
+@@ -107,6 +107,7 @@
+ 	int id;
+ 
+ 	struct regulator_bulk_data *supplies;
++	struct clk *ahb_clk;
+ 
+ 	struct msm_dsi_dphy_timing timing;
+ 	const struct msm_dsi_phy_cfg *cfg;
+@@ -117,6 +118,7 @@
+ 	bool regulator_ldo_mode;
+ 	bool cphy_mode;
+ 	bool has_cphy_timing_ctrl;
++	bool baldur_runtime_pm;
+ 	u8 cphy_timing_ctrl[14];
+ 
+ 	struct clk_hw *vco_hw;

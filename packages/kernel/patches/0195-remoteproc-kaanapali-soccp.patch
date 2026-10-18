@@ -1,0 +1,234 @@
+From: Victor Fuentes <victor@vlinkz.dev>
+Date: Sun, 18 Oct 2026 00:00:00 +0800
+Subject: [PATCH] remoteproc: qcom: kaanapali: add the SoCCP remoteproc and DT nodes
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The unified 7.2.6 Kaanapali DTSI already reserves the SoCCP image
+and its devicetree, but carries neither the smp2p-soccp block nor
+the remoteproc@d00000 node, and qcom_q6v5_pas has neither a
+Kaanapali SoCCP resource nor its compatible.  Without that
+interface the charge and Type-C logic that the SoCCP firmware owns
+never comes up.  Add exactly the missing pieces.
+
+- qcom_q6v5_pas: add kaanapali_soccp_resource (crash reason SMEM
+  656, soccp.mbn and soccp_dtb.mbn, PAS ids 51 and 0x41, the cx and
+  mx proxy power domains, soccp ssr/sysmon names, auto_boot and
+  early_boot) and its qcom,kaanapali-soccp-pas match entry.  The
+  resource, the match table and the rest of the driver are taken
+  from v7.3-rc4; this tree already supports early_boot and attach,
+  so neither the 7.3 refactor nor the qcom_pas firmware API is
+  imported.
+- attach(): the handover IRQ is a SMP2P soft IRQ, not a latched
+  edge, so unmasking it in attach() is wrong for the early-boot
+  firmware that is attached rather than loaded.  The enable/disable
+  pair is dropped for every machine except TB323FU, which has
+  always attached with the IRQ unmasked; handover_issued stays set
+  in both cases.
+- stop(): keep the pas_id shutdown error instead of letting the
+  dtb_pas_id result overwrite it, and fail on the dtb error only
+  when the main image shut down cleanly.  The existing
+  qcom_scm_pas_shutdown() and the decrypt-shutdown retry are used
+  unchanged.
+- kaanapali.dtsi: add the upstream smp2p-soccp block (IPCC client
+  13, remote pid 19, SMEM 617/616) ahead of the root soc@0 node and
+  the upstream remoteproc@d00000 node (six IRQs, cx/mx, the two
+  reserved regions already present, stop/ping, glink edge) inside
+  it.  Both blocks are copied verbatim.
+- qcom-ipcc.h: add the single IPCC_MPROC_SOCCP (13) constant the
+  new blocks reference; the rest of the header is unchanged.
+
+The existing SoCCP reserved-memory nodes, every other Kaanapali
+board and the Gen4 devices are untouched.
+
+Source: 7.3-rc4 soccp resource from
+https://github.com/torvalds/linux/blob/v7.3-rc4/drivers/remoteproc/qcom_q6v5_pas.c
+and the DT blocks from
+https://github.com/torvalds/linux/blob/v7.3-rc4/arch/arm64/boot/dts/qcom/kaanapali.dtsi
+
+The 0067 handover-IRQ and 0068 stop-error semantics come from the
+pinned tb323fu-linux tree at
+11a25bf89b65fff48112a91a0b25bc247e7736d8 (legacy 0067 and 0068);
+this rebase adds no Signed-off-by.
+
+---
+ 3 files changed, 103 insertions(+), 5 deletions(-)
+---
+
+diff --git a/arch/arm64/boot/dts/qcom/kaanapali.dtsi b/arch/arm64/boot/dts/qcom/kaanapali.dtsi
+index a13e1afbc400..5e8268b0d52f 100644
+--- a/arch/arm64/boot/dts/qcom/kaanapali.dtsi
++++ b/arch/arm64/boot/dts/qcom/kaanapali.dtsi
+@@ -520,6 +520,32 @@
+ 		};
+ 	};
+ 
++	smp2p-soccp {
++		compatible = "qcom,smp2p";
++
++		interrupts-extended = <&ipcc IPCC_MPROC_SOCCP
++					     IPCC_MPROC_SIGNAL_SMP2P
++					     IRQ_TYPE_EDGE_RISING>;
++
++		mboxes = <&ipcc IPCC_MPROC_SOCCP
++				IPCC_MPROC_SIGNAL_SMP2P>;
++
++		qcom,smem = <617>, <616>;
++		qcom,local-pid = <0>;
++		qcom,remote-pid = <19>;
++
++		soccp_smp2p_out: master-kernel {
++			qcom,entry-name = "master-kernel";
++			#qcom,smem-state-cells = <1>;
++		};
++
++		soccp_smp2p_in: slave-kernel {
++			qcom,entry-name = "slave-kernel";
++			interrupt-controller;
++			#interrupt-cells = <2>;
++		};
++	};
++
+ 	soc: soc@0 {
+ 		compatible = "simple-bus";
+ 
+@@ -1526,6 +1552,50 @@
+ 				pinctrl-names = "default";
+ 
+ 				status = "disabled";
++			};
++		};
++
++		remoteproc_soccp: remoteproc@d00000 {
++			compatible = "qcom,kaanapali-soccp-pas";
++			reg = <0x0 0x00d00000 0x0 0x200000>;
++
++			interrupts-extended = <&intc GIC_SPI 167 IRQ_TYPE_EDGE_RISING>,
++					      <&soccp_smp2p_in 0 IRQ_TYPE_EDGE_RISING>,
++					      <&soccp_smp2p_in 1 IRQ_TYPE_EDGE_RISING>,
++					      <&soccp_smp2p_in 2 IRQ_TYPE_EDGE_RISING>,
++					      <&soccp_smp2p_in 3 IRQ_TYPE_EDGE_RISING>,
++					      <&soccp_smp2p_in 9 IRQ_TYPE_EDGE_RISING>;
++			interrupt-names = "wdog",
++					  "fatal",
++					  "ready",
++					  "handover",
++					  "stop-ack",
++					  "pong";
++
++			clocks = <&rpmhcc RPMH_CXO_CLK>;
++			clock-names = "xo";
++
++			power-domains = <&rpmhpd RPMHPD_CX>,
++					<&rpmhpd RPMHPD_MX>;
++			power-domain-names = "cx",
++					     "mx";
++
++			memory-region = <&soccp_mem>,
++					<&soccp_dtb_mem>;
++
++			qcom,smem-states = <&soccp_smp2p_out 0>,
++					   <&soccp_smp2p_out 8>;
++			qcom,smem-state-names = "stop",
++						"ping";
++
++			glink-edge {
++				interrupts-extended = <&ipcc IPCC_MPROC_SOCCP
++							     IPCC_MPROC_SIGNAL_GLINK_QMP
++							     IRQ_TYPE_EDGE_RISING>;
++				mboxes = <&ipcc IPCC_MPROC_SOCCP
++						IPCC_MPROC_SIGNAL_GLINK_QMP>;
++				qcom,remote-pid = <19>;
++				label = "soccp";
+ 			};
+ 		};
+ 
+diff --git a/drivers/remoteproc/qcom_q6v5_pas.c b/drivers/remoteproc/qcom_q6v5_pas.c
+index cb3e51d6f7ce..ae5e9d34671b 100644
+--- a/drivers/remoteproc/qcom_q6v5_pas.c
++++ b/drivers/remoteproc/qcom_q6v5_pas.c
+@@ -395,6 +395,7 @@
+ {
+ 	struct qcom_pas *pas = rproc->priv;
+ 	int handover;
++	int dtb_ret;
+ 	int ret;
+ 
+ 	ret = qcom_q6v5_request_stop(&pas->q6v5, pas->sysmon);
+@@ -409,9 +410,12 @@
+ 		dev_err(pas->dev, "failed to shutdown: %d\n", ret);
+ 
+ 	if (pas->dtb_pas_id) {
+-		ret = qcom_scm_pas_shutdown(pas->dtb_pas_id);
+-		if (ret)
+-			dev_err(pas->dev, "failed to shutdown dtb: %d\n", ret);
++		dtb_ret = qcom_scm_pas_shutdown(pas->dtb_pas_id);
++		if (dtb_ret)
++			dev_err(pas->dev, "failed to shutdown dtb: %d\n", dtb_ret);
++
++		if (!ret && dtb_ret)
++			ret = dtb_ret;
+ 
+ 		qcom_pas_unmap_carveout(rproc, pas->dtb_mem_phys, pas->dtb_mem_size);
+ 	}
+@@ -514,7 +518,9 @@
+ 	int ret;
+ 
+ 	pas->q6v5.handover_issued = true;
+-	enable_irq(pas->q6v5.handover_irq);
++	/* TB323FU attaches with the handover IRQ unmasked. */
++	if (of_machine_is_compatible("lenovo,baldur"))
++		enable_irq(pas->q6v5.handover_irq);
+ 
+ 	pas->q6v5.running = true;
+ 	ret = irq_get_irqchip_state(pas->q6v5.fatal_irq,
+@@ -560,7 +566,8 @@
+ 	pas->rproc->state = RPROC_OFFLINE;
+ 	ret = -EINVAL;
+ disable_running:
+-	disable_irq(pas->q6v5.handover_irq);
++	if (of_machine_is_compatible("lenovo,baldur"))
++		disable_irq(pas->q6v5.handover_irq);
+ 	pas->q6v5.running = false;
+ 
+ 	return ret;
+@@ -1637,8 +1644,26 @@
+ 	.region_assign_vmid = QCOM_SCM_VMID_MSS_MSA,
+ };
+ 
++static const struct qcom_pas_data kaanapali_soccp_resource = {
++	.crash_reason_smem = 656,
++	.firmware_name = "soccp.mbn",
++	.dtb_firmware_name = "soccp_dtb.mbn",
++	.pas_id = 51,
++	.dtb_pas_id = 0x41,
++	.proxy_pd_names = (char*[]){
++		"cx",
++		"mx",
++		NULL
++	},
++	.ssr_name = "soccp",
++	.sysmon_name = "soccp",
++	.auto_boot = true,
++	.early_boot = true,
++};
++
+ static const struct of_device_id qcom_pas_of_match[] = {
+ 	{ .compatible = "qcom,eliza-adsp-pas", .data = &sm8550_adsp_resource },
++	{ .compatible = "qcom,kaanapali-soccp-pas", .data = &kaanapali_soccp_resource },
+ 	{ .compatible = "qcom,milos-adsp-pas", .data = &sm8550_adsp_resource },
+ 	{ .compatible = "qcom,milos-cdsp-pas", .data = &milos_cdsp_resource },
+ 	{ .compatible = "qcom,milos-mpss-pas", .data = &sm8450_mpss_resource },
+diff --git a/include/dt-bindings/mailbox/qcom-ipcc.h b/include/dt-bindings/mailbox/qcom-ipcc.h
+index fd85a79381b3..f0daca44ed9e 100644
+--- a/include/dt-bindings/mailbox/qcom-ipcc.h
++++ b/include/dt-bindings/mailbox/qcom-ipcc.h
+@@ -36,4 +36,7 @@
+ #define IPCC_CLIENT_GPDSP0		31
+ #define IPCC_CLIENT_GPDSP1		32
+ 
++/* SoCCP MPROC client, as defined by v7.3-rc4 kaanapali-ipcc.h */
++#define IPCC_MPROC_SOCCP		13
++
+ #endif

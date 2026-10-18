@@ -1,0 +1,85 @@
+Subject: [PATCH] power: supply: qcom_battmgr: expose Baldur USB current limit
+
+Kaanapali/Baldur (Lenovo) uses the SM8350-class battery-manager protocol, but
+the unified driver only exposes INPUT_CURRENT_LIMIT writes on SM8750, behind
+an adapter-type GET gate. Cache of_machine_is_compatible("lenovo,baldur") in
+probe and reuse the existing setter, writable USB descriptor and callback
+response handling. For Baldur only, send BATTMGR_USB_PROPERTY_SET with
+USB_INPUT_CURR_LIMIT directly, as the TB323FU 0033 protocol does; SM8750 keeps
+its adapter-type check and policy unchanged. No other variant becomes
+writable, and no current increase, fast-charge or PD policy is added.
+
+Combines the unified SM8750 setter and response handling (0150, adapted from
+h0cheung/tb322fc-linux-kernel 6f97250ead155fc3b980856323e99a4623dae73d,
+qcom_battmgr.c blob d7fff0936693830c938d5c5bc1b46adfe442cf9e) with the
+TB323FU direct-set protocol from 8bf7d9240bb97353f4c6dca53e4a65c18ade7bcf
+(0033).
+---
+ drivers/power/supply/qcom_battmgr.c | 20 +++++++++++++++++---
+ 1 file changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/power/supply/qcom_battmgr.c b/drivers/power/supply/qcom_battmgr.c
+--- a/drivers/power/supply/qcom_battmgr.c
++++ b/drivers/power/supply/qcom_battmgr.c
+@@ -9,6 +9,7 @@
+ #include <linux/module.h>
+ #include <linux/mutex.h>
+ #include <linux/nvmem-consumer.h>
++#include <linux/of.h>
+ #include <linux/of_device.h>
+ #include <linux/power_supply.h>
+ #include <linux/property.h>
+@@ -330,6 +331,7 @@
+ 
+ 	bool service_up;
+ 	bool current_inverted;
++	bool baldur_usb_current_limit;
+ 
+ 	struct qcom_battmgr_info info;
+ 	struct qcom_battmgr_status status;
+@@ -1103,6 +1105,15 @@
+ {
+ 	int ret;
+ 
++	/*
++	 * Baldur's firmware accepts the limit directly, like the TB323FU
++	 * protocol. Keep the SM8750 adapter-type gate for SM8750 only.
++	 */
++	if (battmgr->baldur_usb_current_limit)
++		return qcom_battmgr_request_property(battmgr,
++						    BATTMGR_USB_PROPERTY_SET,
++						    USB_INPUT_CURR_LIMIT, ua);
++
+ 	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+ 					    USB_ADAP_TYPE, 0);
+ 	if (ret)
+@@ -1202,8 +1213,8 @@
+ 
+ /*
+  * Same descriptor as sm8350_usb_psy_desc, but with the INPUT_CURRENT_LIMIT
+- * setter exposed. Only SM8750 selects this one, so the write path stays
+- * unavailable on every other variant.
++ * setter exposed. Only SM8750 and Baldur select this one, so the write path
++ * stays unavailable on every other variant.
+  */
+ static const struct power_supply_desc sm8750_usb_psy_desc = {
+ 	.name = "qcom-battmgr-usb",
+@@ -1810,6 +1821,8 @@
+ 	battmgr->dev = dev;
+ 	battmgr->current_inverted = device_property_read_bool(dev->parent,
+ 							      "qcom,battery-current-inverted");
++	battmgr->baldur_usb_current_limit =
++		of_machine_is_compatible("lenovo,baldur");
+ 
+ 	psy_cfg.drv_data = battmgr;
+ 	psy_cfg.fwnode = dev_fwnode(&adev->dev);
+@@ -1880,7 +1893,8 @@
+ 			return dev_err_probe(dev, PTR_ERR(battmgr->bat_psy),
+ 					     "failed to register battery power supply\n");
+ 
+-		if (battmgr->variant == QCOM_BATTMGR_SM8750)
++		if (battmgr->variant == QCOM_BATTMGR_SM8750 ||
++		    battmgr->baldur_usb_current_limit)
+ 			usb_psy_desc = &sm8750_usb_psy_desc;
+ 		else
+ 			usb_psy_desc = &sm8350_usb_psy_desc;
