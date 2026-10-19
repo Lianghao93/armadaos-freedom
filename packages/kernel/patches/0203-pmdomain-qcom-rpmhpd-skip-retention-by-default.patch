@@ -1,0 +1,102 @@
+From 7178817f190496f2bfdec181fb4aa72832448468 Mon Sep 17 00:00:00 2001
+From: Mike Tipton <mike.tipton@oss.qualcomm.com>
+Date: Mon, 29 Jun 2026 13:33:36 -0700
+Subject: [PATCH] pmdomain: qcom: rpmhpd: Skip retention by default
+
+Retention is very rarely an operational corner. In the majority of
+cases, HW cannot operate properly at Retention levels and so the minimum
+operational level when enabling a rail is the first corner above
+Retention. A small subset of always-on use cases can operate at
+Retention, but those aren't controlled from HLOS.
+
+Currently, we allow Retention by default and only disallow it special
+cases. But this leaves us open to various failures when the PD is
+enabled without first being voted to an OPP above Retention. Such as
+when a child GDSC PD requests to enable its parent RPMh PD. In this
+case, the GDSC would get stuck powering on.
+
+Newer chips have started supporting Retention on rails that didn't
+previously (such as for MMCX). Instead of adding more special cases to
+skip Retention on MMCX, start skipping Retention by default since it's
+almost never desired from an HLOS perspective.
+
+Signed-off-by: Mike Tipton <mike.tipton@oss.qualcomm.com>
+Reviewed-by: Konrad Dybcio <konrad.dybcio@oss.qualcomm.com>
+Signed-off-by: Ulf Hansson <ulfh@kernel.org>
+[Modified: Armada keeps the presync_floor field and its SM8550/SM8750
+descriptors; the now-removed skip_retention_level initializer is dropped
+from those descriptors as well as from the upstream mxc ones.]
+---
+ drivers/pmdomain/qcom/rpmhpd.c | 16 +++++++++-------
+ 1 file changed, 9 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/pmdomain/qcom/rpmhpd.c b/drivers/pmdomain/qcom/rpmhpd.c
+index c12127d8e8aed4..90743275942db2 100644
+--- a/drivers/pmdomain/qcom/rpmhpd.c
++++ b/drivers/pmdomain/qcom/rpmhpd.c
+@@ -41,7 +41,6 @@
+  * @addr:		Resource address as looped up using resource name from
+  *			cmd-db
+  * @state_synced:	Indicator that sync_state has been invoked for the rpmhpd resource
+- * @skip_retention_level: Indicate that retention level should not be used for the power domain
+  * @presync_floor:	Clamp to the lowest functional corner instead of the highest before sync_state
+  */
+ struct rpmhpd {
+@@ -59,8 +58,7 @@ struct rpmhpd {
+ 	const char	*res_name;
+ 	u32		addr;
+ 	bool		state_synced;
+-	bool            skip_retention_level;
+ 	bool		presync_floor;
+ };
+ 
+ struct rpmhpd_desc {
+@@ -128,7 +126,6 @@ static struct rpmhpd gfx_gmu = {
+ 	.pd = { .name = "gfx", },
+ 	.res_name = "gfx.lvl",
+ 	.presync_floor = true,
+-	.skip_retention_level = true,
+ };
+ 
+ static struct rpmhpd gfx1 = {
+@@ -200,15 +197,13 @@ static struct rpmhpd mxc = {
+ 	.pd = { .name = "mxc", },
+ 	.peer = &mxc_ao,
+ 	.res_name = "mxc.lvl",
+-	.skip_retention_level = true,
+ };
+ 
+ static struct rpmhpd mxc_ao = {
+ 	.pd = { .name = "mxc_ao", },
+ 	.active_only = true,
+ 	.peer = &mxc,
+ 	.res_name = "mxc.lvl",
+-	.skip_retention_level = true,
+ };
+ 
+ static struct rpmhpd nsp = {
+@@ -250,7 +245,6 @@ static struct rpmhpd gmxc_sm8750 = {
+ 	.pd = { .name = "gmxc", },
+ 	.res_name = "gmxc.lvl",
+ 	.presync_floor = true,
+-	.skip_retention_level = true,
+ };
+ 
+ /* Eliza RPMH powerdomains */
+@@ -1113,7 +1107,15 @@ static int rpmhpd_update_level_mapping(struct rpmhpd *rpmhpd)
+ 		return -EINVAL;
+ 
+ 	for (i = 0; i < rpmhpd->level_count; i++) {
+-		if (rpmhpd->skip_retention_level && buf[i] == RPMH_REGULATOR_LEVEL_RETENTION)
++		/*
++		 * Most HW won't function properly at Retention. The minimum
++		 * operational level is the first level above Retention. The
++		 * small subset of HW that can operate at Retention isn't
++		 * controlled by HLOS. Skip the Retention level to avoid HW
++		 * failures when the PD is enabled without first having an
++		 * explicit OPP level set.
++		 */
++		if (buf[i] == RPMH_REGULATOR_LEVEL_RETENTION)
+ 			continue;
+ 
+ 		rpmhpd->level[i] = buf[i];

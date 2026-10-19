@@ -1006,3 +1006,31 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   source: devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8 (legacy 0051)
   upstream: unknown
   notes: Restores the Kaanapali DP0 descriptor at 0x09ad2000 and its exact compatible match on 7.2.6, completing the DPU component aggregate. Retains Joonhoe Kim attribution. The 7.2.6 atomic-disable callback still calls PUSH_IDLE unconditionally, so also restores the dp->power_on guard to avoid accessing an unclocked link after failed training. No display timing, performance policy, or Gen4 DT changes.
+- `patches/0198-clk-qcom-gpucc-kaanapali-mark-cx-gdsc-votable.patch`
+  source: https://github.com/torvalds/linux/commit/55981579b27b6541aeeab81c768f248dba0491ac
+  upstream: https://github.com/torvalds/linux/commit/55981579b27b6541aeeab81c768f248dba0491ac
+  notes: Restores the legacy TB323FU 0071 backport omitted from the 7.2.6 tree. The Kaanapali `gpu_cc_cx_gdsc` descriptor drops `POLL_CFG_GDSCR` and gains `VOTABLE` while keeping `RETAIN_FF_ENABLE`. The patch is byte-for-byte legacy 0071 and changes only the Kaanapali GPU clock controller, not SM8750. It is a descriptor correction and makes no claim to have reproduced or fixed the observed GPU/GMU freeze.
+- `patches/0199-clk-qcom-common-complete-runtime-suspend-on-probe.patch`
+  source: https://git.kernel.org/torvalds/c/a5da6c5697a50a5956ae7645e52d0007ac8b3395
+  upstream: https://lore.kernel.org/r/20260427-gfx-clk-fixes-v2-3-797e54b3d464@oss.qualcomm.com
+  notes: Byte-for-byte import of the upstream fix for `qcom_cc_really_probe`: with `use_rpm`, the probe reference is released with `pm_runtime_put_sync()` so runtime suspend completes synchronously before probe returns. This is the prerequisite for 0200, which calls `pm_runtime_disable()` after registration; with the previous `pm_runtime_put()` the disable could prevent suspend from completing and leave the controller and its rails on. The change applies to every qcom clock controller that sets `use_rpm`; 0200 is the Kaanapali GXCLK-specific follow-up.
+- `patches/0200-clk-qcom-gxclkctl-remove-ifpc-rail-votes.patch`
+  source: https://git.kernel.org/torvalds/c/1c99638642c2137d7e699e7b2ab400df7ef15774
+  upstream: https://lore.kernel.org/r/20260427-gfx-clk-fixes-v2-4-797e54b3d464@oss.qualcomm.com
+  notes: Upstream GXCLK probe change rebased onto 7.2.6. Only the include hunk is refreshed: this tree's `gxclkctl-kaanapali.c` has no `linux/mod_devicetable.h`, so that context line is dropped and `linux/pm_runtime.h` is added after `linux/platform_device.h`. `qcom_cc_probe()`'s return value is kept in `ret`, failure returns early, and `pm_runtime_disable()` runs after successful registration. Author, message and sign-offs are unchanged; the existing `gdsc_gx_disable` power-off callback is not touched. Applies only to GXCLK (Kaanapali and its compatibles), while 0199 is generic to all `use_rpm` users. Depends on 0199 so the runtime suspend has already completed.
+- `patches/0201-drm-msm-dpu-clear-pending-peripheral-flush-state.patch`
+  source: https://github.com/torvalds/linux/commit/a5b5cc909931572aec446e129c035b76b3f0c1fa
+  upstream: https://lore.kernel.org/r/20260828065440.140410-1-saimzst@gmail.com
+  notes: Verbatim upstream one-line backport. `dpu_hw_ctl_clear_pending_flush()` now resets the existing stale cached peripheral flush mask together with the other child masks. This relates to the PERIPH flush bit 30, not the current DSC bit 22, and makes no claim to fix the current DSC timeout.
+- `patches/0202-drm-msm-adreno-increase-gmu-firmware-init-timeout.patch`
+  source: https://github.com/torvalds/linux/commit/ba970587a0e1203b6a0934b5b9174886b4c4d24c
+  upstream: https://lore.kernel.org/r/20260912150915.28700-1-robin.clark@oss.qualcomm.com
+  notes: Verbatim upstream one-line backport raising the GMU firmware init poll timeout from 10 ms to 100 ms to match kgsl's margin. The previously recorded GX_BW vote failure occurred after firmware init, so no causal claim is made.
+- `patches/0203-pmdomain-qcom-rpmhpd-skip-retention-by-default.patch`
+  source: https://github.com/torvalds/linux/commit/7178817f190496f2bfdec181fb4aa72832448468
+  upstream: https://github.com/torvalds/linux/commit/7178817f190496f2bfdec181fb4aa72832448468
+  notes: Upstream retention fix rebased onto the post-0121 tree. It removes the `skip_retention_level` documentation, field and all four initializers (`mxc`, `mxc_ao`, and 0121's `gfx_gmu`/`gmxc_sm8750`) because the field no longer exists, and makes `rpmhpd_update_level_mapping()` skip `RPMH_REGULATOR_LEVEL_RETENTION` unconditionally for every rpmhpd mapping. 0121's `presync_floor` field and its SM8550/SM8750 selectors are retained; SM8850 is not given presync_floor. Existing Kaanapali GFX/GMXC/MMCX can be enabled through a child GDSC before an explicit OPP is set. This is the generic upstream fix, not an older-SoC presync workaround. Author, message and sign-offs are unchanged apart from a bracketed modification note.
+- `patches/0204-drm-msm-baldur-flush-shared-ctl-once.patch`
+  source: armada
+  upstream: local
+  notes: Baldur-specific shared-CTL flush handling based on the vendor SDE `needs_single_flush` helper at https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8850/tree/5ab2a689ff87d7d28c511f1762cf41c1b90d965a (revision `5ab2a689ff87d7d28c511f1762cf41c1b90d965a`; `sde_encoder_phys.h`, `sde_encoder.c`, `sde_encoder_phys_vid.c`). Where two enabled video-mode DSI physical encoders with DSC share one CTL, the kickoff aggregates their pending flush bits and triggers the existing master path once instead of flushing the same CTL for each physical encoder. Command mode, writeback, single-encoder, split-CTL and incomplete sets keep the existing decision, and no DSC parameters, timeout, locking or wait logic changes.

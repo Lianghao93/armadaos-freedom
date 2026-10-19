@@ -1,0 +1,59 @@
+From 1c99638642c2137d7e699e7b2ab400df7ef15774 Mon Sep 17 00:00:00 2001
+From: Taniya Das <taniya.das@oss.qualcomm.com>
+Date: Mon, 27 Apr 2026 12:08:58 +0530
+Subject: [PATCH] clk: qcom: gxclkctl: Remove GX/GMxC rail votes to align with
+ IFPC
+
+The GX GDSC control is handled through a dedicated clock controller,
+and the enable/disable sequencing depends on correct rail voting.
+The driver votes for the GX/GMxC rails and CX GDSC before toggling
+the GX GDSC. Currently, during GMU runtime PM resume, rails remain
+enabled due to upstream votes propagated via RPM-enabled devlinks
+and explicit pm_runtime votes on GX GDSC.
+
+This is not an expected behaviour of IFPC(Inter Frame Power Collapse)
+requirements of GPU as GMU firmware is expected to control these rails,
+except during the GPU/GMU recovery via the OS and that is where the GX
+GDSC should be voting for the rails (GX/GMxC and CX GDSC) before
+toggling the GX GDSC.
+
+Thus, disable runtime PM after successfully registering the clock
+controller.
+
+Signed-off-by: Taniya Das <taniya.das@oss.qualcomm.com>
+Reviewed-by: Konrad Dybcio <konrad.dybcio@oss.qualcomm.com>
+Link: https://lore.kernel.org/r/20260427-gfx-clk-fixes-v2-4-797e54b3d464@oss.qualcomm.com
+Signed-off-by: Bjorn Andersson <andersson@kernel.org>
+---
+ drivers/clk/qcom/gxclkctl-kaanapali.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/clk/qcom/gxclkctl-kaanapali.c b/drivers/clk/qcom/gxclkctl-kaanapali.c
+index a39813e4e2a895..1991cb6516529e 100644
+--- a/drivers/clk/qcom/gxclkctl-kaanapali.c
++++ b/drivers/clk/qcom/gxclkctl-kaanapali.c
+@@ -6,6 +6,7 @@
+ #include <linux/clk-provider.h>
+ #include <linux/module.h>
+ #include <linux/platform_device.h>
++#include <linux/pm_runtime.h>
+ #include <linux/regmap.h>
+ 
+ #include <dt-bindings/clock/qcom,kaanapali-gxclkctl.h>
+@@ -61,7 +62,15 @@ MODULE_DEVICE_TABLE(of, gx_clkctl_kaanapali_match_table);
+ 
+ static int gx_clkctl_kaanapali_probe(struct platform_device *pdev)
+ {
+-	return qcom_cc_probe(pdev, &gx_clkctl_kaanapali_desc);
++	int ret;
++
++	ret = qcom_cc_probe(pdev, &gx_clkctl_kaanapali_desc);
++	if (ret)
++		return ret;
++
++	pm_runtime_disable(&pdev->dev);
++
++	return ret;
+ }
+ 
+ static struct platform_driver gx_clkctl_kaanapali_driver = {

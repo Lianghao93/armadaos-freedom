@@ -289,6 +289,14 @@ env ARMADA_DEVICE_DIR="$ROOT/system_files/usr/lib/armada/devices" \
     "$ROOT/system_files/usr/libexec/armada/device-env" |
     grep -Fx 'ARMADA_SECONDARY_BACKLIGHT=sy7758-backlight' >/dev/null
 
+# The real profile resolves the TB323FU model to the ID the dispatcher gates on.
+env ARMADA_DEVICE_DIR="$ROOT/system_files/usr/lib/armada/devices" \
+    ARMADA_MODEL="Lenovo Legion Tab Y700 (TB323FU)" \
+    ARMADA_SLEEP_CONFIG="$WORK/sleep.conf" \
+    ARMADA_MEM_SLEEP_PATH="$WORK/mem_sleep" \
+    "$ROOT/system_files/usr/libexec/armada/device-env" |
+    grep -Fx 'ARMADA_DEVICE_ID=lenovo-tb323fu' >/dev/null
+
 printf '[s2idle] deep\n' >"$WORK/mem_sleep"
 printf 'suspend_mode=s2idle\n' >"$WORK/sleep.conf"
 device_env "AYN Odin 2" s2idle
@@ -347,21 +355,28 @@ grep -Fx '[s2idle] deep' "$WORK/mem_sleep" >/dev/null
 printf '%s\n' \
     '#!/usr/bin/env bash' \
     'printf "ARMADA_SUSPEND_MODE=%s\\n" "$TEST_SLEEP_MODE"' \
+    '[[ -z "${TEST_DEVICE_ID:-}" ]] || printf "ARMADA_DEVICE_ID=%s\\n" "$TEST_DEVICE_ID"' \
     >"$WORK/device-env"
 printf '%s\n' \
     '#!/usr/bin/env bash' \
     'printf "%s\\n" "$*" >"$TEST_SLEEP_CALL"' \
+    'printf "%s\\n" "${SYSTEMD_SLEEP_FREEZE_USER_SESSIONS-<unset>}" >"$TEST_SLEEP_FREEZE_ENV"' \
     >"$WORK/systemd-sleep"
 printf '%s\n' \
     '#!/usr/bin/env bash' \
     'printf "%s\\n" "$*" >"$TEST_FAKE_SLEEP_CALL"' \
+    'printf "%s\\n" "${SYSTEMD_SLEEP_FREEZE_USER_SESSIONS-<unset>}" >"$TEST_FAKE_SLEEP_FREEZE_ENV"' \
     >"$WORK/fake-suspend"
 chmod +x "$WORK/device-env" "$WORK/systemd-sleep" "$WORK/fake-suspend"
 
 dispatch() {
-    rm -f "$WORK/sleep-call" "$WORK/fake-sleep-call"
-    env TEST_SLEEP_MODE="$1" TEST_SLEEP_CALL="$WORK/sleep-call" \
+    rm -f "$WORK/sleep-call" "$WORK/fake-sleep-call" \
+        "$WORK/sleep-freeze-env" "$WORK/fake-sleep-freeze-env"
+    env TEST_SLEEP_MODE="$1" TEST_DEVICE_ID="${2:-}" \
+        TEST_SLEEP_CALL="$WORK/sleep-call" \
         TEST_FAKE_SLEEP_CALL="$WORK/fake-sleep-call" \
+        TEST_SLEEP_FREEZE_ENV="$WORK/sleep-freeze-env" \
+        TEST_FAKE_SLEEP_FREEZE_ENV="$WORK/fake-sleep-freeze-env" \
         ARMADA_DEVICE_ENV="$WORK/device-env" \
         ARMADA_FAKE_SUSPEND="$WORK/fake-suspend" \
         ARMADA_MEM_SLEEP_PATH="$WORK/mem_sleep" \
@@ -382,6 +397,39 @@ grep -x 'sleep' "$WORK/fake-sleep-call" >/dev/null
 printf '[deep]\n' >"$WORK/mem_sleep"
 dispatch s2idle
 grep -x 'sleep' "$WORK/fake-sleep-call" >/dev/null
+[[ ! -e "$WORK/sleep-call" ]]
+
+# Only a real TB323FU suspend turns off the user-session freeze, and it does so
+# even when the caller explicitly asked for freezing.
+printf '[s2idle] deep\n' >"$WORK/mem_sleep"
+export SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=1
+dispatch s2idle lenovo-tb323fu
+grep -x 'suspend' "$WORK/sleep-call" >/dev/null
+grep -Fx '0' "$WORK/sleep-freeze-env" >/dev/null
+
+# Other or unknown devices keep the caller's explicit value as-is.
+dispatch s2idle ayn-odin-2
+grep -x 'suspend' "$WORK/sleep-call" >/dev/null
+grep -Fx '1' "$WORK/sleep-freeze-env" >/dev/null
+
+dispatch s2idle unknown-device
+grep -x 'suspend' "$WORK/sleep-call" >/dev/null
+grep -Fx '1' "$WORK/sleep-freeze-env" >/dev/null
+
+# A non-TB323FU device acquires nothing when the caller sets nothing.
+unset SYSTEMD_SLEEP_FREEZE_USER_SESSIONS
+dispatch s2idle ayn-odin-2
+grep -Fx '<unset>' "$WORK/sleep-freeze-env" >/dev/null
+
+# Fake mode and the unsupported-mode fallback never acquire the override.
+dispatch fake lenovo-tb323fu
+grep -x 'sleep' "$WORK/fake-sleep-call" >/dev/null
+grep -Fx '<unset>' "$WORK/fake-sleep-freeze-env" >/dev/null
+
+printf '[deep]\n' >"$WORK/mem_sleep"
+dispatch s2idle lenovo-tb323fu
+grep -x 'sleep' "$WORK/fake-sleep-call" >/dev/null
+grep -Fx '<unset>' "$WORK/fake-sleep-freeze-env" >/dev/null
 [[ ! -e "$WORK/sleep-call" ]]
 
 # A device-env that resolves nothing must not reach real suspend.

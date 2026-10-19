@@ -287,3 +287,10 @@ v2_20260420_neil_armstrong_arm64_qcom_sm8650_misc_enhancements.patch
 0195-remoteproc-kaanapali-soccp.patch
 0196-firmware-devfreq-kaanapali-memlat.patch
 0197-drm-msm-dp-restore-kaanapali-DP0-and-idle-guard.patch
+0198-clk-qcom-gpucc-kaanapali-mark-cx-gdsc-votable.patch
+0199-clk-qcom-common-complete-runtime-suspend-on-probe.patch
+0200-clk-qcom-gxclkctl-remove-ifpc-rail-votes.patch
+0201-drm-msm-dpu-clear-pending-peripheral-flush-state.patch
+0202-drm-msm-adreno-increase-gmu-firmware-init-timeout.patch
+0203-pmdomain-qcom-rpmhpd-skip-retention-by-default.patch
+0204-drm-msm-baldur-flush-shared-ctl-once.patch

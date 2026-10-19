@@ -1,0 +1,118 @@
+From: Armada <noreply@armada.local>
+Date: Mon, 19 Oct 2026 00:00:00 +0000
+Subject: [PATCH] drm/msm/dpu: flush shared CTL once for Baldur bonded video
+
+Baldur's bonded video encoder drives two physical encoders through one
+shared CTL. Downstream SDE marks such an encoder needs_single_flush and
+aggregates the pending bits before triggering the master once. The DPU13
+path in this tree has no equivalent decision and returns false, so the
+same shared CTL is flushed once per physical encoder on every
+submission.
+
+Add a Baldur-scoped helper that recognises two enabled video-mode DSI
+physical encoders with DSC sharing one CTL. When it matches, take the
+existing aggregate path and trigger a single flush on the current master.
+All other machines, command mode, writeback, split CTLs and incomplete
+encoder sets keep the existing per-physical decision.
+
+This is a single-variable candidate derived from the vendor SDE
+needs_single_flush helper; it does not alter DSC parameters, timeouts,
+locking or the wait path.
+
+Reference: https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8850/tree/5ab2a689ff87d7d28c511f1762cf41c1b90d965a
+revision 5ab2a689ff87d7d28c511f1762cf41c1b90d965a, sde_encoder_phys.h,
+sde_encoder.c and sde_encoder_phys_vid.c.
+
+Signed-off-by: Armada <noreply@armada.local>
+---
+ drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c | 39 +++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 39 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
+@@ -1893,45 +1893,82 @@ static void dpu_encoder_helper_hw_reset(struct dpu_encoder_phys *phys_enc)
+ 	phys_enc->enable_state = DPU_ENC_ENABLED;
+ }
+ 
++static bool _dpu_encoder_baldur_shared_ctl_flush(struct dpu_encoder_virt *dpu_enc)
++{
++	struct dpu_encoder_phys *phys0, *phys1;
++	struct dpu_hw_ctl *ctl;
++
++	if (!of_machine_is_compatible("lenovo,baldur"))
++		return false;
++
++	if (dpu_enc->disp_info.intf_type != INTF_DSI ||
++	    dpu_enc->disp_info.is_cmd_mode || !dpu_enc->dsc)
++		return false;
++
++	if (dpu_enc->num_phys_encs != 2)
++		return false;
++
++	phys0 = dpu_enc->phys_encs[0];
++	phys1 = dpu_enc->phys_encs[1];
++	if (!phys0 || !phys1 ||
++	    phys0->enable_state == DPU_ENC_DISABLED ||
++	    phys1->enable_state == DPU_ENC_DISABLED)
++		return false;
++
++	if (!dpu_enc->cur_master ||
++	    (dpu_enc->cur_master != phys0 && dpu_enc->cur_master != phys1) ||
++	    dpu_enc->cur_master->enable_state == DPU_ENC_DISABLED)
++		return false;
++
++	ctl = phys0->hw_ctl;
++	if (!ctl || ctl != phys1->hw_ctl || !ctl->ops.get_pending_flush)
++		return false;
++
++	return true;
++}
++
+ /**
+  * _dpu_encoder_kickoff_phys - handle physical encoder kickoff
+  *	Iterate through the physical encoders and perform consolidated flush
+  *	and/or control start triggering as needed. This is done in the virtual
+  *	encoder rather than the individual physical ones in order to handle
+  *	use cases that require visibility into multiple physical encoders at
+  *	a time.
+  * @dpu_enc: Pointer to virtual encoder structure
+  */
+ static void _dpu_encoder_kickoff_phys(struct dpu_encoder_virt *dpu_enc)
+ {
+ 	struct dpu_hw_ctl *ctl;
+ 	uint32_t i, pending_flush;
+ 	unsigned long lock_flags;
++	bool shared_ctl_flush;
+ 
+ 	pending_flush = 0x0;
++	shared_ctl_flush = _dpu_encoder_baldur_shared_ctl_flush(dpu_enc);
+ 
+ 	/* update pending counts and trigger kickoff ctl flush atomically */
+ 	spin_lock_irqsave(&dpu_enc->enc_spinlock, lock_flags);
+ 
+ 	/* don't perform flush/start operations for slave encoders */
+ 	for (i = 0; i < dpu_enc->num_phys_encs; i++) {
+ 		struct dpu_encoder_phys *phys = dpu_enc->phys_encs[i];
+ 
+ 		if (phys->enable_state == DPU_ENC_DISABLED)
+ 			continue;
+ 
+ 		ctl = phys->hw_ctl;
+ 
+ 		/*
+ 		 * This is cleared in frame_done worker, which isn't invoked
+ 		 * for async commits. So don't set this for async, since it'll
+ 		 * roll over to the next commit.
+ 		 */
+ 		if (phys->split_role != ENC_ROLE_SLAVE)
+ 			set_bit(i, dpu_enc->frame_busy_mask);
+ 
+-		if (!phys->ops.needs_single_flush ||
+-				!phys->ops.needs_single_flush(phys))
++		if (!shared_ctl_flush &&
++				(!phys->ops.needs_single_flush ||
++				!phys->ops.needs_single_flush(phys)))
+ 			_dpu_encoder_trigger_flush(&dpu_enc->base, phys, 0x0);
+ 		else if (ctl->ops.get_pending_flush)
+ 			pending_flush |= ctl->ops.get_pending_flush(ctl);

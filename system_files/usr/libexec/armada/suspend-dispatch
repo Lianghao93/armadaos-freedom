@@ -26,6 +26,12 @@ if ! echo "$mode" >"$mem_sleep"; then
     exec "$fake_suspend" sleep
 fi
 
+# TB323FU: the VT owner must process the console release before the kernel
+# freezer stops it, so keep user sessions out of the systemd sleep freeze.
+if [[ "${ARMADA_DEVICE_ID:-}" == "lenovo-tb323fu" ]]; then
+    export SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=0
+fi
+
 # Real suspend: prefer systemd-sleep so its sleep hooks and process freeze run.
 if [[ -n "${ARMADA_SYSTEMD_SLEEP:-}" ]]; then
     exec "$ARMADA_SYSTEMD_SLEEP" suspend "$@"
