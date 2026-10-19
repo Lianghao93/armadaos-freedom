@@ -20,7 +20,10 @@ dnf5 -y install --setopt=install_weak_deps=False \
     gamemode \
     gtk2 \
     openal-soft \
-    xorg-x11-server-Xwayland
+    xorg-x11-server-Xwayland \
+    ibus \
+    ibus-pinyin \
+    pyzy-db-android
 
 # Patched InputPlumber: dpad signed-axis fix
 dnf5 -y install --setopt=install_weak_deps=False /packages/inputplumber/inputplumber-*.rpm
@@ -129,7 +132,7 @@ rm -rf "${STEAM_BOOTSTRAP_HOME}"
 mkdir -p "${STEAM_BOOTSTRAP_HOME}"
 tar --zstd -xf /packages/steam-bootstrap/steam-bootstrap.tar.zst -C "${STEAM_BOOTSTRAP_HOME}"
 python3 /ctx/build_files/verify-steam-bootstrap.py \
-    "${STEAM_HOME}/package/steam_client_steamdeck_publicbeta_linuxarm64.installed" "${STEAM_HOME}"
+    "${STEAM_HOME}/package/steam_client_steamdeck_stable_linuxarm64.installed" "${STEAM_HOME}"
 rm -f /etc/steamos-oobe-image
 
 PROTON_VER="11.0-20261005-slr"

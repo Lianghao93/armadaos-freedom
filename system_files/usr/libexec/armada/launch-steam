@@ -43,6 +43,23 @@ if grep -q '"proton11_arm64"' "${proton11_reg}/compatibilitytool.vdf" 2>/dev/nul
 fi
 
 touch "${steam_root}/.cef-enable-remote-debugging"
+
+# One-time migration: earlier images pinned the public beta channel in
+# package/beta. Replace only that exact marker once with the verified
+# explicit stable channel, then remember the migration so a later channel
+# choice by the user is never overridden. An absent marker is left absent.
+stable_default_stamp="${steam_root}/.armada-steam-stable-default-v1"
+if [[ ! -e "${stable_default_stamp}" ]]; then
+    beta_marker="${steam_root}/package/beta"
+    if [[ -f "${beta_marker}" ]] && {
+        cmp -s -- "${beta_marker}" <(printf '%s' steamdeck_publicbeta) ||
+        cmp -s -- "${beta_marker}" <(printf '%s\n' steamdeck_publicbeta)
+    }; then
+        printf '%s\n' steamdeck_stable >"${beta_marker}"
+    fi
+    touch -- "${stable_default_stamp}"
+fi
+
 cd "${steam_arm_dir}"
 exec "${steam_arm}" \
     "${steam_args[@]}" \

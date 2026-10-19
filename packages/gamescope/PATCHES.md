@@ -74,3 +74,11 @@ to a commit, or `armada` if it's original; a URL source with no `notes` is verba
 - `patches/0035-wlserver-associate-spi-touchscreens-with-internal-display.patch`
   source: armada
   The connector heuristic only mapped i2c to the internal connector and usb to the external one. An SPI digitizer (TB322FC: input -> spi -> spi_master -> platform) matched neither, so touch stayed unassociated and skipped the connector's orientation transform. spi is now handled like i2c. No angle is hardcoded; calibration, DPI, kernel, UI, Steam arguments and the USB path are unchanged. Not built or device-tested here.
+
+- `patches/0036-improve-frame-pacing.patch`
+  source: https://github.com/mydanyi/armada-danyi-build/blob/ec6055d92099c616ff76cad8d34cd60514d9b036/packages/gamescope/patches/0028-improve-frame-pacing.patch
+  notes: Valve PR #2417 frame pacing: wake steamcompmgr after host event reads, avoid scheduling the same refresh twice, and keep nested refresh overrides on their own schedule. Includes the VBlankSchedule tests.
+
+- `patches/0037-fifo-display-identity-hud.patch`
+  source: https://github.com/mydanyi/armada-danyi-build/blob/ec6055d92099c616ff76cad8d34cd60514d9b036/packages/gamescope/patches/0029-personal-fifo-display-identity-hud.patch
+  notes: FIFO head-of-line blocking fix; binds displayed DRM frames to the base/app identity and publishes the HUD wire layout, matched by the receiver.

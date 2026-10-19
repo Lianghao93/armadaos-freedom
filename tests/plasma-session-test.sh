@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SESSION="$ROOT/system_files/usr/libexec/armada/armada-plasma-session"
 LIB="$ROOT/system_files/usr/lib/armada/plasma-session-lib"
+LOCALE_HELPER="$ROOT/system_files/usr/lib/armada/plasma-locale.py"
 SESSION_SELECT="$ROOT/system_files/usr/libexec/os-session-select"
 SESSIONS="$ROOT/system_files/usr/share/wayland-sessions"
 tmp="$(mktemp -d)"
@@ -95,8 +96,7 @@ session() {
     local home=$1
     shift
     env -i \
-        HOME=/test/home USER=armada LANG=C.UTF-8 LANGUAGE=de LC_TIME=de_DE.UTF-8 \
-        LC_NUMERIC=de_DE.UTF-8 "${display[@]}" \
+        HOME=/test/home USER=armada LANG=C.UTF-8 LANGUAGE=de LC_TIME=de_DE.UTF-8 LC_NUMERIC=de_DE.UTF-8 "${display[@]}" \
         XDG_RUNTIME_DIR="$tmp/run" XDG_CONFIG_HOME="$home" XDG_DATA_DIRS=/test/share XDG_SESSION_ID=9 \
         PATH="/steam/runtime/bin:$PATH" LD_PRELOAD= LC_ALL=C QT_QPA_PLATFORM=xcb QT_IM_MODULE=steam \
         GTK_IM_MODULE=Steam SteamAppId=1 STEAM_COMPAT_APP_ID=1 XCURSOR_THEME=steam VK_INSTANCE_LAYERS=x \
@@ -111,6 +111,7 @@ session() {
         ARMADA_TEST_STARTPLASMA_ENV="$tmp/startplasma-env" \
         ARMADA_TEST_ENVMANAGER="$tmp/envmanager" ARMADA_DEVICE_ID=test-device \
         ARMADA_KREADCONFIG="$tmp/bin/kreadconfig6" ARMADA_TEST_KREADCONFIG_LOG="$tmp/kreadconfig" \
+        ARMADA_PLASMA_LOCALE_HELPER="$LOCALE_HELPER" \
         "${extra[@]}" \
         "$SESSION" "$@"
 }
@@ -179,7 +180,8 @@ expect_args \
 [[ "$(envval PLASMA_PLATFORM)" == phone:handset && "$(envval DISABLE_GAMESCOPE_WSI)" == 1 ]]
 [[ "$(envval DISPLAY)" == :7 && "$(envval XDG_DATA_DIRS)" == /usr/share/armada/plasma/bus:/test/share && "$(envval XDG_SESSION_ID)" == 9 ]]
 [[ "$(envval ARMADA_DEVICE_ID)" == test-device && "$(envval LANG)" == C.UTF-8 ]]
-[[ "$(envval LANGUAGE)" == de && "$(envval LC_TIME)" == de_DE.UTF-8 ]]
+# No preference means English; Game Mode's inherited LANGUAGE is not reused.
+[[ "$(envval LANGUAGE)" == en && "$(envval LC_TIME)" == de_DE.UTF-8 ]]
 for leaked in LD_PRELOAD LC_ALL QT_QPA_PLATFORM QT_IM_MODULE GTK_IM_MODULE SteamAppId STEAM_COMPAT_APP_ID \
         XCURSOR_THEME VK_INSTANCE_LAYERS GAMESCOPE_WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS TEST_UNTOUCHED \
         ARMADA_PLASMA_NESTED; do
@@ -322,11 +324,12 @@ expect_env LC_NUMERIC zh_CN.UTF-8
 expect_env LC_TIME zh_CN.UTF-8
 
 # Formats and translations are independent, like startplasma's startup config.
+# Without a translation preference the approved policy selects English.
 locale_formats="$tmp/locale-formats"
 mkdir -p "$locale_formats"
 printf '%s\n' '[Formats]' 'LANG=fr_FR.UTF-8' 'LC_TIME=fr_FR.UTF-8' >"$locale_formats/plasma-localerc"
 session "$locale_formats" bottom
-expect_env LANGUAGE de
+expect_env LANGUAGE en
 expect_env LANG fr_FR.UTF-8
 expect_env LC_TIME fr_FR.UTF-8
 
@@ -429,24 +432,22 @@ for language in C:zh_CN POSIX:de; do
     ! grep -q '^LC_MESSAGES=' "$tmp/env" || fail "LANGUAGE=$language gained a message carrier"
 done
 
-# Empty or missing keys keep the inherited Game Mode locale.
+# Empty or missing keys now mean "unset": English wins when Steam has no choice.
 locale_empty="$tmp/locale-empty"
 mkdir -p "$locale_empty"
 printf '%s\n' '[Formats]' 'LANG=' '' '[Translations]' 'LANGUAGE=' >"$locale_empty/plasma-localerc"
 session "$locale_empty" bottom
-expect_env LANGUAGE de
+expect_env LANGUAGE en
 expect_env LANG C.UTF-8
 expect_env LC_TIME de_DE.UTF-8
-! grep -q '^LC_MESSAGES=' "$tmp/env" || fail 'empty preferences gained a message carrier'
 
-# No Translations group keeps the inherited selection, even under C formats.
+# No Translations group no longer keeps the inherited selection.
 locale_no_translations="$tmp/locale-no-translations"
 mkdir -p "$locale_no_translations"
 printf '%s\n' '[Formats]' 'LANG=C.UTF-8' >"$locale_no_translations/plasma-localerc"
 session "$locale_no_translations" bottom
-expect_env LANGUAGE de
+expect_env LANGUAGE en
 expect_env LANG C.UTF-8
-! grep -q '^LC_MESSAGES=' "$tmp/env" || fail 'a missing translation preference gained a message carrier'
 
 # Standalone still hands off to upstream startplasma, but imports the shared
 # locale first so a saved translation has a carrier when startplasma applies
@@ -465,6 +466,98 @@ grep -qx "$locale_standalone/plasma-localerc Translations LANGUAGE" "$tmp/kreadc
     fail 'standalone did not import the saved translation'
 expect_startplasma_env LANGUAGE zh_CN
 expect_startplasma_env LANG zh_CN.UTF-8
+
+# Approved priority: explicit Plasma LANGUAGE, then the Steam UI language, then
+# English. Steam is only read here; the fallback lands in the locale helper.
+steam_registry() {
+    local home=$1 language=${2-}
+    mkdir -p "$home/.steam"
+    {
+        printf '"Registry"\n{\n\t"HKCU"\n\t{\n\t\t"Software"\n\t\t{\n\t\t\t"Valve"\n\t\t\t{\n\t\t\t\t"Steam"\n\t\t\t\t{\n'
+        [[ -z "$language" ]] || printf '\t\t\t\t\t"language"\t\t"%s"\n' "$language"
+        printf '\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n'
+    } >"$home/.steam/registry.vdf"
+}
+
+mkdir -p "$tmp/home-none" "$tmp/locale-policy"
+printf '%s\n' '[Formats]' 'LANG=fr_FR.UTF-8' 'LC_TIME=fr_FR.UTF-8' 'LC_NUMERIC=fr_FR.UTF-8' >"$tmp/locale-policy/plasma-localerc"
+# No Plasma preference and no Steam registry: inherited LANGUAGE=de must not leak.
+extra=(HOME="$tmp/home-none")
+session "$tmp/locale-policy" bottom
+expect_env LANGUAGE en
+expect_env LANG fr_FR.UTF-8
+expect_env LC_TIME fr_FR.UTF-8
+expect_env LC_NUMERIC fr_FR.UTF-8
+
+# Steam's own UI language is the second choice, with formats untouched.
+steam_registry "$tmp/home-zh" schinese
+extra=(HOME="$tmp/home-zh")
+cp "$tmp/home-zh/.steam/registry.vdf" "$tmp/registry.before"
+cp "$tmp/locale-policy/plasma-localerc" "$tmp/localerc.before"
+session "$tmp/locale-policy" bottom
+expect_env LANGUAGE zh_CN
+expect_env LANG fr_FR.UTF-8
+expect_env LC_TIME fr_FR.UTF-8
+cmp -s "$tmp/registry.before" "$tmp/home-zh/.steam/registry.vdf" ||
+    fail 'the Steam registry was modified'
+cmp -s "$tmp/localerc.before" "$tmp/locale-policy/plasma-localerc" ||
+    fail 'plasma-localerc was modified'
+
+# Every surface imports the same selection.
+mkdir -p "$tmp/locale-policy/steamos-manager"
+printf 'desktop_session = "armada-plasma.desktop"\n' >"$tmp/locale-policy/steamos-manager/state.toml"
+session "$tmp/locale-policy" nested
+expect_env LANGUAGE zh_CN
+session "$tmp/locale-policy" standalone
+expect_startplasma_env LANGUAGE zh_CN
+
+steam_registry "$tmp/home-en" english
+extra=(HOME="$tmp/home-en")
+session "$tmp/locale-policy" bottom
+expect_env LANGUAGE en
+
+# An explicit Plasma choice outranks Steam in both directions.
+locale_policy_en="$tmp/locale-policy-en"
+mkdir -p "$locale_policy_en"
+printf '%s\n' '[Translations]' 'LANGUAGE=en' >"$locale_policy_en/plasma-localerc"
+extra=(HOME="$tmp/home-zh")
+session "$locale_policy_en" bottom
+expect_env LANGUAGE en
+
+locale_policy_zh="$tmp/locale-policy-zh"
+mkdir -p "$locale_policy_zh"
+printf '%s\n' '[Translations]' 'LANGUAGE=zh_CN' >"$locale_policy_zh/plasma-localerc"
+extra=(HOME="$tmp/home-en")
+session "$locale_policy_zh" bottom
+expect_env LANGUAGE zh_CN
+
+# An empty LANGUAGE means unset, so Steam is consulted.
+locale_policy_empty="$tmp/locale-policy-empty"
+mkdir -p "$locale_policy_empty"
+printf '%s\n' '[Translations]' 'LANGUAGE=' >"$locale_policy_empty/plasma-localerc"
+extra=(HOME="$tmp/home-zh")
+session "$locale_policy_empty" bottom
+expect_env LANGUAGE zh_CN
+
+# A game's language is not the Steam UI language.
+mkdir -p "$tmp/home-game/.steam"
+printf '"Registry"\n{\n\t"HKCU"\n\t{\n\t\t"Software"\n\t\t{\n\t\t\t"Valve"\n\t\t\t{\n\t\t\t\t"Steam"\n\t\t\t\t{\n\t\t\t\t\t"apps"\n\t\t\t\t\t{\n\t\t\t\t\t\t"570"\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t"language"\t\t"schinese"\n\t\t\t\t\t\t}\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n' \
+    >"$tmp/home-game/.steam/registry.vdf"
+extra=(HOME="$tmp/home-game")
+session "$tmp/locale-policy" bottom
+expect_env LANGUAGE en
+
+# Malformed or unrecognized registry languages fall back to English.
+mkdir -p "$tmp/home-malformed/.steam"
+printf 'not a registry\n' >"$tmp/home-malformed/.steam/registry.vdf"
+extra=(HOME="$tmp/home-malformed")
+session "$tmp/locale-policy" bottom
+expect_env LANGUAGE en
+steam_registry "$tmp/home-unknown" klingon
+extra=(HOME="$tmp/home-unknown")
+session "$tmp/locale-policy" bottom
+expect_env LANGUAGE en
+extra=()
 
 home="$tmp/legacy"
 mkdir -p "$home"

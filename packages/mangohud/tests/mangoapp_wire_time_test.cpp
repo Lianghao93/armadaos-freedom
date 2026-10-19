@@ -80,8 +80,8 @@ int main() {
     std::printf("== SampleA ==\n");
     std::array<unsigned char, 95> a{};
     fill_common(a);
-    put(a, 16, (uint64_t)25419186);     // offset16 = APP ready ns
-    put(a, 26, (uint64_t)UINT64_MAX);   // offset26 = VISIBLE sentinel
+    put(a, 16, (uint64_t)UINT64_MAX);   // offset16 = VISIBLE sentinel
+    put(a, 26, (uint64_t)25419186);     // offset26 = APP ready ns
     mangoapp_msg_v1 ma = decode(a);
     check_common(ma);
     expect_u64("A.app_frametime_ns", ma.app_frametime_ns, 25419186);
@@ -90,8 +90,8 @@ int main() {
     std::printf("== SampleB ==\n");
     std::array<unsigned char, 95> b{};
     fill_common(b);
-    put(b, 16, (uint64_t)UINT64_MAX);   // offset16 = APP sentinel
-    put(b, 26, (uint64_t)11111000);     // offset26 = VISIBLE actual
+    put(b, 16, (uint64_t)11111000);     // offset16 = VISIBLE actual
+    put(b, 26, (uint64_t)UINT64_MAX);   // offset26 = APP sentinel
     mangoapp_msg_v1 mb = decode(b);
     check_common(mb);
     expect_u64("B.app_frametime_ns", mb.app_frametime_ns, UINT64_MAX);

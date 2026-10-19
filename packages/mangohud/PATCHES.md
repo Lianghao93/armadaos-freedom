@@ -23,6 +23,3 @@ to a commit, or `armada` if it's original; a URL source with no `notes` is verba
 - `patches/0009-sm8850-battery-and-thermal-sensors.patch`
   source: armada
   Original SM8850 battery/thermal adaptation, introduced in this maintenance repo by commit 9a2e8a346f5dd8e11f093fcf95b841f1eb1a8614.
-- `patches/0010-mangoapp-align-frametime-fields-with-gamescope.patch`
-  source: armada
-  Local original MangoHud 0.8.4 / Gamescope v1 wire ABI alignment; not an upstream accepted patch and no fabricated external source. Sender offset 16 = application/app-ready ns, offset 26 = visible ns; this fixes the receiver field order. The packed 95-byte total / 87-byte payload and all tail offsets, other fields and consumers are unchanged; no fake or smoothed chart, no GPU/input latency claim.

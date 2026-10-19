@@ -26,6 +26,7 @@ dnf5 -y install --setopt=install_weak_deps=False \
     gtk4 \
     libadwaita \
     python3-websocket-client \
+    python3-vdf \
     polkit \
     upower \
     sudo \
