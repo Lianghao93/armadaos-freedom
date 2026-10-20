@@ -6,7 +6,7 @@ on:
       stage:
         description: "which stage to run"
         type: choice
-        options: [tools, kernel, boot, all]
+        options: [tools, kernel, boot, linux, all]
         default: tools
       stock_boot:
         description: "path to the 96MiB stock boot.img inside the repo"
@@ -15,7 +15,7 @@ on:
 
 jobs:
   tools:
-    if: ${{ inputs.stage == 'tools' || inputs.stage == 'boot' || inputs.stage == 'all' }}
+    if: ${{ inputs.stage == 'tools' || inputs.stage == 'boot' || inputs.stage == 'linux' || inputs.stage == 'all' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -183,4 +183,78 @@ jobs:
         with:
           name: boot-image
           path: out-boot/**
+          if-no-files-found: error
+
+  linux:
+    if: ${{ inputs.stage == 'linux' || inputs.stage == 'all' }}
+    runs-on: ubuntu-24.04
+    needs: [tools]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: kshim-tools
+          path: in
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3 zstd device-tree-compiler cpio busybox-static
+      - name: Fetch kernel + stock boot
+        run: |
+          set -eux
+          mkdir -p kern stock
+          curl -fL --retry 5 -o kern/kernel.tar.zst \
+            "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/armada-kernel-7.2.6.tar.zst"
+          curl -fL --retry 5 -o stock/boot.img \
+            "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/boot.img"
+          mkdir -p kroot
+          tar --use-compress-program=unzstd -xf kern/kernel.tar.zst -C kroot
+          cp kroot/lib/modules/7.2.6/vmlinuz vmlinuz
+          cp kroot/lib/modules/7.2.6/dtb/qcom/sm8750-lenovo-elden.dtb elden.dtb
+          ls -la vmlinuz elden.dtb stock/boot.img
+      - name: Build minimal initramfs
+        run: |
+          set -eux
+          rm -rf irdir && mkdir -p irdir/bin irdir/dev irdir/proc irdir/sys irdir/tmp
+          cp /bin/busybox irdir/bin/busybox
+          ln -sf busybox irdir/bin/sh
+          cat > irdir/init <<'EOS'
+          #!/bin/sh
+          /bin/busybox --install -s /bin
+          mount -t proc none /proc
+          mount -t sysfs none /sys
+          echo "=== KSHIM LINUX ALIVE ==="
+          uname -a
+          cat /proc/device-tree/compatible 2>/dev/null; echo
+          echo "=== block devices ==="
+          cat /proc/partitions
+          echo "=== dropping to shell ==="
+          exec /bin/sh
+          EOS
+          chmod +x irdir/init
+          (cd irdir && find . | cpio -o -H newc --quiet | gzip -9) > initrd.gz
+          ls -la initrd.gz
+      - name: Pack maintenance-layout boot (Android + Linux)
+        run: |
+          set -eux
+          chmod +x in/out-tools/MultiBootKernelPatcher in/out-tools/UnpackTool
+          python3 system_files/usr/libexec/armada/kshim-build-boot.py \
+            --layout maintenance \
+            --stock-boot stock/boot.img \
+            --linux-image vmlinuz \
+            --dtb elden.dtb \
+            --initrd initrd.gz \
+            --runtime in/out-runtime/kShimC.bin \
+            --packer in/out-tools/MultiBootKernelPatcher \
+            --unpacker in/out-tools/UnpackTool \
+            --repacker in/out-tools/repack_boot_v4.py \
+            --avbtool in/out-tools/avbtool.py \
+            --bootargs "console=tty0 loglevel=8 ignore_loglevel" \
+            --out out-linux 2>&1 | tail -40
+          ls -la out-linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: boot-image-linux
+          path: out-linux/**
           if-no-files-found: error
