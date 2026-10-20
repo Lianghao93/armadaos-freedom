@@ -27,7 +27,33 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build git \
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-none-eabi \
-            device-tree-compiler python3 zstd xz-utils pkg-config
+            device-tree-compiler python3 python3-pip zstd xz-utils pkg-config
+      - name: Prepare pinned runtime dependencies
+        run: |
+          set -eux
+          K="$GITHUB_WORKSPACE/devices/lenovo-tb323fu/boot/kshim-success-source"
+          cd "$K"
+          pip3 install --break-system-packages kconfiglib==14.1.0
+          # picolibc 1.8.11
+          git clone --depth 1 --branch 1.8.11 https://github.com/picolibc/picolibc lib/picolibc
+          # LVGL 9.2.2
+          git clone --depth 1 --branch v9.2.2 https://github.com/lvgl/lvgl third_party/lvgl
+          # CrDK pinned commit
+          git init -q lib/CrDK
+          git -C lib/CrDK remote add origin https://github.com/Project-Aloha/CrDK
+          git -C lib/CrDK fetch --depth 1 origin b6c3335136b7f6b28271917de11e8f11982975fc
+          git -C lib/CrDK checkout -q FETCH_HEAD
+          # libfdt from dtc
+          git clone --depth 1 https://git.kernel.org/pub/scm/utils/dtc/dtc.git /tmp/dtc
+          mkdir -p lib/libfdt/include
+          cp /tmp/dtc/libfdt/*.c lib/libfdt/ 2>/dev/null || true
+          cp /tmp/dtc/libfdt/*.h lib/libfdt/include/
+          ls lib/libfdt | head
+          ls lib/libfdt/include | head
+          echo "--- versions ---"
+          git -C lib/CrDK rev-parse HEAD
+          git -C third_party/lvgl describe --tags --always
+          git -C lib/picolibc describe --tags --always
       - name: Build MultiBootKernelPatcher + UnpackTool
         run: |
           set -eux
