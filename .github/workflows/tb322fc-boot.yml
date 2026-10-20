@@ -108,6 +108,16 @@ jobs:
         with:
           name: kernel
           path: kern
+      - name: Fetch stock boot.img
+        run: |
+          set -eux
+          mkdir -p stock
+          if [ ! -f "${{ inputs.stock_boot }}" ]; then
+            curl -fL --retry 5 -o "${{ inputs.stock_boot }}" \
+              "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/boot.img"
+          fi
+          ls -la stock/
+          stat -c%s "${{ inputs.stock_boot }}"
       - name: Inspect inputs
         run: |
           set -eux
