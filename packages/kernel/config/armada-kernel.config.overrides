@@ -149,6 +149,8 @@ CONFIG_TOUCHSCREEN_NOVATEK_NVT36XXX_SPI=m # Lenovo Y700 Gen4 (TB322FC)
 # ============== LEDs / RGB ==============
 CONFIG_LEDS_HTR3212=y
 CONFIG_LEDS_AW200XX=m                    # MANGMI Pocket Max + Air Y Pro
+CONFIG_LEDS_AW22127=m                    # SM8850 Kaanapali RGB LED
+CONFIG_LEDS_TRIGGER_PATTERN=y
 
 # ============== Haptics ==============
 CONFIG_INPUT_QCOM_HV_HAPTICS=m              # required by SM8550/SM8750 AYN common DTSI

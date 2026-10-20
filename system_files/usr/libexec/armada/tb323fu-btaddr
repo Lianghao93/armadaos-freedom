@@ -1,0 +1,128 @@
+#!/bin/sh
+# Copyright (c) 2026 Armada
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+#
+# Apply the provisioned public Bluetooth address on TB323FU (lenovo,baldur).
+# The address file and pairing state are read-only inputs here.
+
+ADDR_FILE=/etc/tb323fu/bt-address
+COMPAT=/sys/firmware/devicetree/base/compatible
+DEADLINE_SECONDS=55
+
+export LC_ALL=C
+
+warn() {
+    printf '%s\n' "tb323fu-btaddr: $*" >&2
+}
+
+is_target() {
+    [ -r "$COMPAT" ] || return 1
+    tr '\000' '\n' < "$COMPAT" | grep -Fxq 'lenovo,baldur'
+}
+
+info_addr() {
+    printf '\n' | timeout 2 btmgmt --index 0 info 2>/dev/null |
+        awk 'tolower($1) == "addr" { print tolower($2); exit }'
+}
+
+if ! is_target; then
+    exit 0
+fi
+
+if [ ! -f "$ADDR_FILE" ] || [ ! -r "$ADDR_FILE" ]; then
+    warn "$ADDR_FILE is missing or unreadable"
+    exit 1
+fi
+
+desired=$(sed -n '1p' "$ADDR_FILE")
+desired=$(printf '%s' "$desired" | tr -d ' \t\r')
+desired=$(printf '%s' "$desired" | tr 'A-F' 'a-f')
+
+case "$desired" in
+    [0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f])
+        ;;
+    *)
+        warn "invalid address in $ADDR_FILE: '$desired'"
+        exit 1
+        ;;
+esac
+
+command -v btmgmt >/dev/null 2>&1 || {
+    warn "btmgmt is not available"
+    exit 1
+}
+
+deadline=$(( $(date +%s) + DEADLINE_SECONDS ))
+
+# The controller has no management address until initial setup has finished.
+while :; do
+    current=$(info_addr)
+    [ -n "$current" ] && break
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        warn "timed out waiting for controller 0 management information"
+        exit 1
+    fi
+    sleep 1
+done
+
+if [ "$current" = "$desired" ]; then
+    exit 0
+fi
+
+# Power the controller off before changing the public address.
+while :; do
+    power_output=$(printf '\n' | timeout 2 btmgmt --index 0 power off 2>/dev/null)
+    if printf '%s\n' "$power_output" | grep -qi 'set powered complete'; then
+        break
+    fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        warn "controller did not confirm power off"
+        exit 1
+    fi
+    sleep 1
+done
+
+# HCI_AUTO_OFF may report off while the transport is still up for 2 seconds.
+sleep 3
+if [ "$(date +%s)" -ge "$deadline" ]; then
+    warn "timed out before setting public address $desired"
+    exit 1
+fi
+
+set_output=$(printf '\n' | timeout 2 btmgmt --index 0 public-addr "$desired" 2>/dev/null)
+set_status=$?
+if [ "$set_status" -ne 0 ] || ! printf '%s\n' "$set_output" | grep -qi 'set public address complete'; then
+    warn "controller rejected public address change to $desired"
+    [ -n "$set_output" ] && printf '%s\n' "$set_output" >&2
+    exit 1
+fi
+
+# Acknowledgement is not proof; the address must read back exactly.
+while :; do
+    current=$(info_addr)
+    if [ "$current" = "$desired" ]; then
+        exit 0
+    fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        warn "controller did not adopt public address $desired (read back: ${current:-unavailable})"
+        exit 1
+    fi
+    sleep 1
+done

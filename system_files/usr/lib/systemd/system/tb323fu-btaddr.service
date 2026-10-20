@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT
+[Unit]
+Description=Apply the provisioned Bluetooth address on TB323FU
+Before=bluetooth.service
+ConditionPathExists=/etc/tb323fu/bt-address
+
+[Service]
+Type=oneshot
+TimeoutStartSec=70
+ExecStart=/usr/libexec/armada/tb323fu-btaddr
+
+[Install]
+WantedBy=bluetooth.target

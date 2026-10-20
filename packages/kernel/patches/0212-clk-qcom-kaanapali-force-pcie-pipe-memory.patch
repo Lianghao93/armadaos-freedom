@@ -1,0 +1,40 @@
+From 9375c96e54989512cb02d9b6b3b67d6f23b9383c Mon Sep 17 00:00:00 2001
+From: Qiang Yu <qiang.yu@oss.qualcomm.com>
+Date: Tue, 14 Jul 2026 23:23:13 -0700
+Subject: [PATCH] clk: qcom: gcc: Set FORCE_MEM_CORE_ON/FORCE_PERIPH_CORE_ON for PCIe pipe clocks
+
+Setting FORCE_MEM_CORE_ON and FORCE_PERIPH_CORE_ON for the PCIe PIPE
+clocks so that the inbound data path works correctly.
+
+Without this, the PCIe link can come up but the endpoint can not access
+host memory, with the host sometimes seeing a completion timeout
+reported by the EP, even though the host can still read the EP's config
+space.
+
+This issue is seen on QDU1000, Kaanapali, Glymur and Nord. Hence, apply
+FORCE_MEM_CORE_ON/FORCE_PERIPH_CORE_ON to all PCIe pipe clocks on these
+platforms.
+
+Signed-off-by: Qiang Yu <qiang.yu@oss.qualcomm.com>
+Link: https://lore.kernel.org/r/20260714-mem_on-v1-1-f5bfb6def0a1@oss.qualcomm.com
+[Rebased onto 7.2.6 for Armada: only the Kaanapali hunk is carried, so
+the other SoCs keep their existing register programming. The two
+qcom_branch_set_force_* calls follow the existing UFS ICE force in
+clk_kaanapali_regs_configure().]
+---
+ drivers/clk/qcom/gcc-kaanapali.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/drivers/clk/qcom/gcc-kaanapali.c b/drivers/clk/qcom/gcc-kaanapali.c
+--- a/drivers/clk/qcom/gcc-kaanapali.c
++++ b/drivers/clk/qcom/gcc-kaanapali.c
+@@ -3484,6 +3484,9 @@ static void clk_kaanapali_regs_configure(struct device *dev, struct regmap *regmap)
+ 
+ 	/* FORCE_MEM_CORE_ON for ufs phy ice core clocks */
+ 	qcom_branch_set_force_mem_core(regmap, gcc_ufs_phy_ice_core_clk, true);
++
++	qcom_branch_set_force_mem_core(regmap, gcc_pcie_0_pipe_clk, true);
++	qcom_branch_set_force_periph_on(regmap, gcc_pcie_0_pipe_clk, true);
+ }
+ 
+ static const struct qcom_cc_driver_data gcc_kaanapali_driver_data = {

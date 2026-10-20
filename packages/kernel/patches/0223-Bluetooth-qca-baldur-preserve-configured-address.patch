@@ -1,0 +1,45 @@
+From: danyi
+Subject: [PATCH] Bluetooth: qca: preserve configured address on Baldur
+
+Local patch 0501 ("Bluetooth: qca: set BD_ADDR from serial number during
+setup") makes btqca overwrite hdev->public_addr unconditionally from the
+QCA serial number. That discards a stable address which userspace has
+already configured through MGMT before setup runs, so the controller comes
+back up with a generated address instead of the configured one.
+
+On Baldur machines the configured address is authoritative. Keep it when
+one is present and only fall back to generate_bdaddr_from_serial() while
+hdev->public_addr is still BDADDR_ANY. The following qca_set_bdaddr() call
+and the public_addr/bdaddr copies are unchanged, so every other machine
+retains the exact 0501 behaviour.
+---
+ drivers/bluetooth/btqca.c | 19 +++++++++++++------
+ 1 file changed, 13 insertions(+), 6 deletions(-)
+
+--- a/drivers/bluetooth/btqca.c
++++ b/drivers/bluetooth/btqca.c
+@@ -1115,11 +1115,18 @@
+ 	}
+ 
+-	/* Generate BD_ADDR from qcom_serial_number */
+-	err = generate_bdaddr_from_serial(hdev, &generated_bdaddr);
+-	if (err) {
+-		bt_dev_err(hdev, "Failed to generate BD_ADDR from serial number");
+-		return err;
+-	}
++	/* Preserve a stable address configured by userspace (MGMT) on Baldur
++	 * instead of unconditionally regenerating it from the serial number.
++	 */
++	if (of_machine_is_compatible("lenovo,baldur") &&
++	    bacmp(&hdev->public_addr, BDADDR_ANY)) {
++		bacpy(&generated_bdaddr, &hdev->public_addr);
++	} else {
++		err = generate_bdaddr_from_serial(hdev, &generated_bdaddr);
++		if (err) {
++			bt_dev_err(hdev, "Failed to generate BD_ADDR from serial number");
++			return err;
++		}
++	}
+ 
+ 	/* Set the generated BD_ADDR */
+ 	err = qca_set_bdaddr(hdev, &generated_bdaddr);

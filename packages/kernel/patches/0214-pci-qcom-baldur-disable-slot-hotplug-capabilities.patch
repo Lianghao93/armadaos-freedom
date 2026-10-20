@@ -1,0 +1,40 @@
+From 1d3454d6e097fa5f8f933243c09692e61438f62c Mon Sep 17 00:00:00 2001
+From: Joonhoe Kim <26rote@gmail.com>
+Date: Sat, 26 Sep 2026 01:31:31 +0000
+Subject: [PATCH 49/56] PCI: qcom: don't advertise a hot-plug slot on the Root
+ Port
+
+The Root Port comes out of reset with SLTCAP HPC/HPS set (0x0006007f).
+Without pciehp, pci_bridge_d3_possible() refuses D3 for such a bridge,
+so the port stays in D0 over s2idle, pci_host_common_d3cold_possible()
+fails and dw_pcie_suspend_noirq() keeps the link up with the WCN7860 in
+D3hot. The link is then intermittently gone at resume: "Unable to change
+power state from D3hot to D0, device inaccessible", then a synchronous
+external abort in pci_generic_config_read() -> panic -> 900E dump mode.
+With the bits cleared the port reaches
+D3hot, the host takes the D3cold path (PME_Turn_Off, pwrctrl power off,
+retrain on resume) and 5/5 s2idle cycles resume with Wi-Fi back.
+
+[rebase: qcom_pcie_set_slot_nccs() only sets NCCS on this tree and has no
+ ABP write; the HPC|HPS clear is restricted to Baldur through
+ of_machine_is_compatible() so every other board keeps the hot-plug slot
+ advertisement. linux/of.h is already included, so no include change.]
+---
+ drivers/pci/controller/dwc/pcie-qcom.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/drivers/pci/controller/dwc/pcie-qcom.c b/drivers/pci/controller/dwc/pcie-qcom.c
+index b58a607b7..f1ab817e6 100644
+--- a/drivers/pci/controller/dwc/pcie-qcom.c
++++ b/drivers/pci/controller/dwc/pcie-qcom.c
+@@ -371,6 +371,8 @@ static void qcom_pcie_set_slot_nccs(struct dw_pcie *pci)
+ 	 */
+ 	val = readl(pci->dbi_base + offset + PCI_EXP_SLTCAP);
+ 	val |= PCI_EXP_SLTCAP_NCCS;
++	if (of_machine_is_compatible("lenovo,baldur"))
++		val &= ~(PCI_EXP_SLTCAP_HPC | PCI_EXP_SLTCAP_HPS);
+ 	writel(val, pci->dbi_base + offset + PCI_EXP_SLTCAP);
+ 
+ 	dw_pcie_dbi_ro_wr_dis(pci);
+-- 
+2.43.0

@@ -1034,3 +1034,79 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   source: armada
   upstream: local
   notes: Baldur-specific shared-CTL flush handling based on the vendor SDE `needs_single_flush` helper at https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8850/tree/5ab2a689ff87d7d28c511f1762cf41c1b90d965a (revision `5ab2a689ff87d7d28c511f1762cf41c1b90d965a`; `sde_encoder_phys.h`, `sde_encoder.c`, `sde_encoder_phys_vid.c`). Where two enabled video-mode DSI physical encoders with DSC share one CTL, the kickoff aggregates their pending flush bits and triggers the existing master path once instead of flushing the same CTL for each physical encoder. Command mode, writeback, single-encoder, split-CTL and incomplete sets keep the existing decision, and no DSC parameters, timeout, locking or wait logic changes.
+- `patches/0205-drm-msm-defer-ring-and-vm-free-with-rcu.patch`
+  source: https://github.com/torvalds/linux/commit/01c8d1f385f788f1bbbbb7687c4386d614281218
+  upstream: https://github.com/torvalds/linux/commit/01c8d1f385f788f1bbbbb7687c4386d614281218
+  notes: Verbatim upstream backport. Defers the ring and VM teardown through RCU so an in-flight submission cannot observe freed objects during cleanup. Generic DRM/MSM correctness fix, not a Kaanapali- or Baldur-specific change.
+- `patches/0206-drm-msm-adreno-release-autosuspend-on-cleanup.patch`
+  source: https://github.com/torvalds/linux/commit/6fbbf1e152f34ad3913e4a6476680aba672c5068
+  upstream: https://github.com/torvalds/linux/commit/6fbbf1e152f34ad3913e4a6476680aba672c5068
+  notes: Verbatim upstream backport. Releases the autosuspend reference in the adreno cleanup path so a partial or failed teardown does not leave the device's runtime-PM reference held. Generic correctness fix applied to all adreno devices.
+- `patches/0207-thermal-step-wise-release-cleared-trip-vote.patch`
+  source: https://github.com/torvalds/linux/commit/ec0d89150a9381d591344a9f6f5428655c227a7f
+  upstream: https://github.com/torvalds/linux/commit/ec0d89150a9381d591344a9f6f5428655c227a7f
+  notes: Verbatim upstream backport. Releases the step-wise governor's vote when a trip point is cleared, so the governor no longer holds a stale cooling state. Fixes a vote leak only; cooling maps and thermal policy are unchanged.
+- `patches/0208-input-aw86927-accept-aw86937.patch`
+  source: devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8 (legacy 0038)
+  upstream: unknown
+  notes: Extends the AW86927 haptic driver's chip-ID matching so the AW86937 variant also probes. Chip-ID handling only; no haptic waveform, gain or timing changes.
+- `patches/0209-leds-rgb-add-aw22127-driver.patch`
+  source: devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8 (legacy 0048)
+  upstream: unknown
+  notes: Adds the AW22127 RGB LED controller driver and its LED-class registration. New driver plus its config symbol only; no existing LED driver is modified.
+- `patches/0210-drm-msm-snapshot-sspp-rec-blocks.patch`
+  source: devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8 (legacy 0052)
+  upstream: unknown
+  notes: Includes the SSPP rectangle blocks in the DRM/MSM snapshot so a devcoredump carries each pipe's source-rect state. Debug capture only; no plane programming or flush behaviour changes.
+- `patches/0211-clk-qcom-kaanapali-fix-pcie-rscc-enable-bits.patch`
+  source: https://github.com/torvalds/linux/commit/0bfb542fc3368371cefb4cf45ef21c3ba2d37c3f
+  upstream: https://github.com/torvalds/linux/commit/0bfb542fc3368371cefb4cf45ef21c3ba2d37c3f
+  notes: Verbatim upstream backport correcting the PCIe RSCC enable bit positions in the Kaanapali clock controller. Upstream correctness fix for the clock descriptor; no rate or vote policy is added.
+- `patches/0212-clk-qcom-kaanapali-force-pcie-pipe-memory.patch`
+  source: devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8 (legacy 0072)
+  upstream: unknown
+  notes: Forces the PCIe pipe memory on for the Kaanapali clock controller so the pipe clock remains usable while the link is active. Kaanapali-gated; SM8750 and other SoCs are not touched.
+- `patches/0213-clk-qcom-branch-clear-enable-on-failure.patch`
+  source: devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8 (legacy 0073)
+  upstream: unknown
+  notes: Clears the branch enable bit when a clock enable fails, so a failed enable does not leave the branch half-enabled. Generic clock-framework path shared by all branches; no per-SoC policy.
+- `patches/0214-pci-qcom-baldur-disable-slot-hotplug-capabilities.patch`
+  source: devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8 (legacy 0049)
+  upstream: unknown
+  notes: Clears the slot hotplug capability bits the Baldur root complex does not implement, so the PCIe core does not advertise hotplug on that controller. Baldur only; no link-training or power sequencing changes.
+- `patches/0215-phy-qcom-qmp-combo-add-kaanapali-usb3-dp.patch`
+  source: devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8 (legacy 0096)
+  upstream: unknown
+  notes: Adds the Kaanapali USB3/DP combo PHY description and its compatible so the QMP combo driver binds on that SoC. Kaanapali-gated; the SM8750 and SM8650 tables are left as they are.
+- `patches/0216-phy-qcom-qmp-combo-balance-pipe-clock-on-error.patch`
+  source: devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8 (legacy 0099)
+  upstream: unknown
+  notes: Balances the pipe clock reference on the QMP combo PHY error path, so a failed setup does not leave the clock enabled. Generic error-path correctness fix.
+- `patches/0217-phy-qcom-qmp-combo-keep-kaanapali-dp-lanes.patch`
+  source: devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8 (legacy 0100)
+  upstream: unknown
+  notes: Keeps the DP lane configuration programmed on the Kaanapali combo PHY instead of dropping it during reconfiguration. Kaanapali-gated; no lane count or link-rate change.
+- `patches/0218-drm-msm-dp-handle-phy-and-link-status-errors.patch`
+  source: devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8 (legacy 0101)
+  upstream: unknown
+  notes: Propagates PHY and link-status failures out of the DP link-training path instead of continuing as if training succeeded. Generic DP correctness fix; display timing and power policy are untouched.
+- `patches/0219-drm-msm-dp-reset-sink-link-capabilities.patch`
+  source: devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8 (legacy 0102)
+  upstream: unknown
+  notes: Resets the cached sink link capabilities before re-reading them, so a stale capability set is not reused across a replug. Generic DP correctness fix.
+- `patches/0220-drm-msm-dp-baldur-balance-plugged-runtime-pm.patch`
+  source: devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8 (legacy 0098)
+  upstream: unknown
+  notes: Balances runtime PM around the plugged state on the Baldur DP controller. Baldur only; no runtime-PM behaviour is changed for other boards or for the DSI path.
+- `patches/0221-drm-msm-dp-baldur-retrain-after-quick-replug.patch`
+  source: devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8 (legacy 0057)
+  upstream: unknown
+  notes: Retrains the DP link after a quick replug on Baldur, where the previous link state can still look valid. Baldur only; no change to link-training parameters or timeouts for other boards.
+- `patches/0222-arm64-dts-qcom-kaanapali-describe-ufs-mcq.patch`
+  source: devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8 (legacy 0119)
+  upstream: unknown
+  notes: Describes the UFS multi-circular-queue interrupts and queue properties in the Kaanapali DTSI. Kaanapali devicetree only; no driver or queue-depth change is included.
+- `patches/0223-Bluetooth-qca-baldur-preserve-configured-address.patch`
+  source: armada
+  upstream: local
+  notes: On lenovo,baldur, preserve a public Bluetooth address already configured through MGMT instead of replacing it during the existing 0501 serial-address setup. Other machines retain the existing serial-derived address behavior. The paired startup helper waits for management readiness and confirms the address by reading it back; a request acknowledgement alone is not treated as success.
