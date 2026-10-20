@@ -133,7 +133,9 @@ mkdir -p "${STEAM_BOOTSTRAP_HOME}"
 tar --zstd -xf /packages/steam-bootstrap/steam-bootstrap.tar.zst -C "${STEAM_BOOTSTRAP_HOME}"
 python3 /ctx/build_files/verify-steam-bootstrap.py \
     "${STEAM_HOME}/package/steam_client_steamdeck_stable_linuxarm64.installed" "${STEAM_HOME}"
-rm -f /etc/steamos-oobe-image
+# A fresh install always starts at the Steam OOBE; existing users get the
+# marker removed at boot once their real registry/account shows completion.
+touch /etc/steamos-oobe-image
 
 PROTON_VER="11.0-20261005-slr"
 PROTON_ARCHIVE_NAME="proton-cachyos-${PROTON_VER}-arm64"
