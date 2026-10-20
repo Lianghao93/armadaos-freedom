@@ -163,6 +163,12 @@ jobs:
           t=$(ls kern/*.tar.zst)
           tar --use-compress-program=unzstd -xf "$t" -C kroot
           find kroot -name 'vmlinuz' -o -name '*.dtb' | head -20
+      - name: Patch menu timeout to 60s
+        run: |
+          set -eux
+          f=devices/lenovo-tb322fc/boot/build_android_boot.py
+          sed -i 's/^TIMEOUT_MS = 8000$/TIMEOUT_MS = 60000/' "$f"
+          grep -n '^TIMEOUT_MS' "$f"
       - name: Pack Android-only kShim boot
         run: |
           set -eux
