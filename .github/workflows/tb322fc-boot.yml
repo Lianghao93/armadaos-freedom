@@ -219,20 +219,24 @@ jobs:
           rm -rf irdir && mkdir -p irdir/bin irdir/dev irdir/proc irdir/sys irdir/tmp
           cp /bin/busybox irdir/bin/busybox
           ln -sf busybox irdir/bin/sh
-          cat > irdir/init <<'EOS'
-          #!/bin/sh
-          /bin/busybox --install -s /bin
-          mount -t proc none /proc
-          mount -t sysfs none /sys
-          echo "=== KSHIM LINUX ALIVE ==="
-          uname -a
-          cat /proc/device-tree/compatible 2>/dev/null; echo
-          echo "=== block devices ==="
-          cat /proc/partitions
-          echo "=== dropping to shell ==="
-          exec /bin/sh
-          EOS
-          chmod +x irdir/init
+          {
+            echo '#!/bin/sh'
+            echo '/bin/busybox --install -s /bin'
+            echo 'mount -t proc none /proc'
+            echo 'mount -t sysfs none /sys'
+            echo 'mount -t devtmpfs none /dev'
+            echo 'echo "=== KSHIM LINUX ALIVE ==="'
+            echo 'uname -a'
+            echo 'echo -n "compatible: "; cat /proc/device-tree/compatible; echo'
+            echo 'echo "=== /proc/partitions ==="'
+            echo 'cat /proc/partitions'
+            echo 'echo "=== by-name ==="'
+            echo 'ls -l /dev/block/by-name 2>/dev/null || echo "no by-name"'
+            echo 'echo "=== end ==="'
+            echo 'exec /bin/sh'
+          } > irdir/init
+          chmod 0755 irdir/init
+          head -3 irdir/init
           (cd irdir && find . | cpio -o -H newc --quiet | gzip -9) > initrd.gz
           ls -la initrd.gz
       - name: Pack maintenance-layout boot (Android + Linux)
