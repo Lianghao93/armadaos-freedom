@@ -1,0 +1,132 @@
+name: TB322FC boot (kShimC)
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "which stage to run"
+        type: choice
+        options: [tools, kernel, all]
+        default: tools
+      stock_boot:
+        description: "path to the 96MiB stock boot.img inside the repo"
+        type: string
+        default: "stock/boot.img"
+
+jobs:
+  tools:
+    if: ${{ inputs.stage == 'tools' || inputs.stage == 'all' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build git \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            device-tree-compiler python3 zstd xz-utils
+      - name: Build MultiBootKernelPatcher + UnpackTool
+        run: |
+          set -eux
+          cmake -S packages/kshim-tools/vendor/packer -B build-packer \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHIMS=OFF
+          cmake --build build-packer --parallel
+          mkdir -p out-tools
+          find build-packer -maxdepth 2 -type f -perm -u+x | sort
+          cp build-packer/MultiBootKernelPatcher out-tools/
+          cp build-packer/UnpackTool out-tools/
+          for f in packages/kshim-tools/vendor/repack_boot_v4.py packages/kshim-tools/vendor/avbtool.py; do
+            [ -f "$f" ] && cp "$f" out-tools/ || echo "MISSING $f"
+          done
+          ls -la out-tools
+      - name: Build kShimC runtime (4 MiB)
+        run: |
+          set -eux
+          cd devices/lenovo-tb323fu/boot/kshim-success-source
+          ls configs/ | head -20
+          python3 tools/build_runtime.py --config configs/tb322fc_android_defconfig \
+            --out "$GITHUB_WORKSPACE/out-runtime"
+          ls -la "$GITHUB_WORKSPACE/out-runtime"
+          test "$(stat -c%s "$GITHUB_WORKSPACE/out-runtime/kShimC.bin")" = "4194304"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kshim-tools
+          path: |
+            out-tools/**
+            out-runtime/**
+          if-no-files-found: error
+
+  kernel:
+    if: ${{ inputs.stage == 'kernel' || inputs.stage == 'all' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kernel build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            bc bison flex libssl-dev libelf-dev dwarves zstd xz-utils cpio kmod \
+            device-tree-compiler python3 git
+      - name: Build kernel 7.2.6 + elden DTS
+        run: |
+          set -eux
+          source packages/kernel/BASE.env
+          export KERNEL_VERSION="$VERSION"
+          export WORK_DIR="$RUNNER_TEMP/kbuild"
+          export OUT_DIR="$GITHUB_WORKSPACE/out-kernel"
+          bash packages/kernel/scripts/build-kernel.sh
+          ls -la "$OUT_DIR"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel
+          path: out-kernel/**
+          if-no-files-found: error
+
+  boot:
+    if: ${{ inputs.stage == 'all' }}
+    runs-on: ubuntu-24.04
+    needs: [tools, kernel]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: kshim-tools
+          path: in
+      - uses: actions/download-artifact@v4
+        with:
+          name: kernel
+          path: kern
+      - name: Inspect inputs
+        run: |
+          set -eux
+          find in kern -maxdepth 3 | head -50
+          ls -la "${{ inputs.stock_boot }}"
+      - name: Unpack kernel package
+        run: |
+          set -eux
+          mkdir -p kroot
+          t=$(ls kern/*.tar.zst)
+          tar --use-compress-program=unzstd -xf "$t" -C kroot
+          find kroot -name 'vmlinuz' -o -name '*.dtb' | head -20
+      - name: Pack Android-only kShim boot
+        run: |
+          set -eux
+          chmod +x in/out-tools/MultiBootKernelPatcher in/out-tools/UnpackTool
+          sudo apt-get install -y --no-install-recommends python3
+          python3 devices/lenovo-tb322fc/boot/build_android_boot.py \
+            --stock-boot "${{ inputs.stock_boot }}" \
+            --runtime in/out-runtime/kShimC.bin \
+            --packer in/out-tools/MultiBootKernelPatcher \
+            --unpacker in/out-tools/UnpackTool \
+            --avbtool in/out-tools/avbtool.py \
+            --out out-boot
+          ls -la out-boot
+      - uses: actions/upload-artifact@v4
+        with:
+          name: boot-image
+          path: out-boot/**
+          if-no-files-found: error
