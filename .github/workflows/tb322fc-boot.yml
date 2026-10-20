@@ -6,7 +6,7 @@ on:
       stage:
         description: "which stage to run"
         type: choice
-        options: [tools, kernel, all]
+        options: [tools, kernel, boot, all]
         default: tools
       stock_boot:
         description: "path to the 96MiB stock boot.img inside the repo"
@@ -121,19 +121,22 @@ jobs:
           if-no-files-found: error
 
   boot:
-    if: ${{ inputs.stage == 'all' }}
+    if: ${{ inputs.stage == 'boot' || inputs.stage == 'all' }}
     runs-on: ubuntu-24.04
-    needs: [tools, kernel]
+    needs: [tools]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: kshim-tools
           path: in
-      - uses: actions/download-artifact@v4
-        with:
-          name: kernel
-          path: kern
+      - name: Fetch kernel package
+        run: |
+          set -eux
+          mkdir -p kern
+          curl -fL --retry 5 -o kern/kernel.tar.zst \
+            "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/armada-kernel-7.2.6.tar.zst"
+          ls -la kern/
       - name: Fetch stock boot.img
         run: |
           set -eux
@@ -149,6 +152,10 @@ jobs:
           set -eux
           find in kern -maxdepth 3 | head -50
           ls -la "${{ inputs.stock_boot }}"
+      - name: Install packer deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3 zstd
       - name: Unpack kernel package
         run: |
           set -eux
