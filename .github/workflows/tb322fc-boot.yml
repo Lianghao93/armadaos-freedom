@@ -26,8 +26,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build git \
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            device-tree-compiler python3 zstd xz-utils
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-none-eabi \
+            device-tree-compiler python3 zstd xz-utils pkg-config
       - name: Build MultiBootKernelPatcher + UnpackTool
         run: |
           set -eux
@@ -46,9 +46,17 @@ jobs:
         run: |
           set -eux
           cd devices/lenovo-tb323fu/boot/kshim-success-source
+          echo "=== submodules ==="
+          ls lib/CrDK | head -5 || echo "CrDK MISSING"
+          ls lib/picolibc | head -5 || echo "picolibc MISSING"
+          ls third_party/lvgl | head -5 || echo "lvgl MISSING"
           ls configs/ | head -20
           python3 tools/build_runtime.py --config configs/tb322fc_android_defconfig \
-            --out "$GITHUB_WORKSPACE/out-runtime"
+            --out "$GITHUB_WORKSPACE/out-runtime" || {
+              echo "=== configure.log ==="; cat "$GITHUB_WORKSPACE/out-runtime/configure.log" 2>/dev/null | tail -60
+              echo "=== build.log ==="; cat "$GITHUB_WORKSPACE/out-runtime/build.log" 2>/dev/null | tail -60
+              exit 1
+            }
           ls -la "$GITHUB_WORKSPACE/out-runtime"
           test "$(stat -c%s "$GITHUB_WORKSPACE/out-runtime/kShimC.bin")" = "4194304"
       - uses: actions/upload-artifact@v4
