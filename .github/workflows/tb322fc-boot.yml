@@ -208,6 +208,9 @@ jobs:
             "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/armada-kernel-7.2.6.tar.zst"
           curl -fL --retry 5 -o stock/boot.img \
             "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/boot.img"
+          curl -fL --retry 5 -o kShimC-fast.bin \
+            "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/kShimC-fast.bin"
+          ls -la kShimC-fast.bin
           mkdir -p kroot
           tar --use-compress-program=unzstd -xf kern/kernel.tar.zst -C kroot
           cp kroot/lib/modules/7.2.6/vmlinuz vmlinuz
@@ -249,7 +252,7 @@ jobs:
             --linux-image vmlinuz \
             --dtb elden.dtb \
             --initrd initrd.gz \
-            --runtime in/out-runtime/kShimC.bin \
+            --runtime kShimC-fast.bin \
             --packer in/out-tools/MultiBootKernelPatcher \
             --unpacker in/out-tools/UnpackTool \
             --repacker in/out-tools/repack_boot_v4.py \
