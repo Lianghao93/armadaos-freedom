@@ -350,6 +350,7 @@ jobs:
           cp "${K}/initramfs-7.2.6.img" initrd.cpio
           cp "${K}/dtb/qcom/sm8750-lenovo-elden.dtb" elden.dtb
           ls -la vmlinuz initrd.cpio elden.dtb
+          set -o pipefail
           python3 system_files/usr/libexec/armada/kshim-build-boot.py \
             --layout maintenance \
             --stock-boot stock_boot.img \
