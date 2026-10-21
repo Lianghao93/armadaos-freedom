@@ -6,7 +6,7 @@ on:
       stage:
         description: "which stage to run"
         type: choice
-        options: [tools, kernel, boot, linux, all]
+        options: [tools, kernel, boot, linux, probe, all]
         default: tools
       stock_boot:
         description: "path to the 96MiB stock boot.img inside the repo"
@@ -252,4 +252,58 @@ jobs:
         with:
           name: boot-image-linux
           path: out-linux/**
+          if-no-files-found: error
+
+  probe:
+    if: ${{ inputs.stage == 'probe' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          sudo rm -rf /opt/hostedtoolcache/CodeQL /usr/share/dotnet /usr/local/lib/android \
+                      /opt/hostedtoolcache/Ruby /opt/hostedtoolcache/go || true
+          sudo apt-get clean
+          df -h /
+      - name: Download disk image artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          rid=39543239345
+          aid=$(curl -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${{ github.repository }}/actions/runs/${rid}/artifacts" \
+                | jq -r '.artifacts[] | select(.name=="armada-disk-image") | .id')
+          echo "artifact=${aid}"
+          curl -sSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+               "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/${aid}/zip" -o disk.zip
+          ls -la disk.zip
+      - name: Unpack image
+        run: |
+          set -eux
+          unzip -o disk.zip
+          gunzip -f armada-*.img.gz
+          ls -la *.img
+          sudo losetup -Pf --show armada-*.img
+          lsblk -o NAME,SIZE,FSTYPE,LABEL
+      - name: Extract /boot
+        run: |
+          set -eux
+          loop=$(losetup -j armada-*.img | cut -d: -f1 | head -1)
+          sudo mkdir -p /mnt/armada-boot
+          sudo mount "${loop}p2" /mnt/armada-boot
+          echo "=== tree ==="
+          sudo find /mnt/armada-boot -maxdepth 3 | head -60
+          echo "=== loader entries ==="
+          sudo sh -c 'for f in /mnt/armada-boot/loader/entries/*.conf; do echo "--- $f"; cat "$f"; done' || true
+          echo "=== modules dir ==="
+          sudo ls -la /mnt/armada-boot/ 2>/dev/null || true
+          mkdir -p bootfiles
+          sudo cp -a /mnt/armada-boot/. bootfiles/ || true
+          sudo chown -R "$(id -u):$(id -g)" bootfiles
+          du -sh bootfiles
+      - uses: actions/upload-artifact@v4
+        with:
+          name: armada-boot-files
+          path: bootfiles/**
           if-no-files-found: error
