@@ -5,6 +5,8 @@ set -euxo pipefail
 source /src/TERRA.env
 source ./BASE.env
 
+dnf -y install binutils gcc gcc-c++ make
+
 rm -rf out
 mkdir -p out
 
