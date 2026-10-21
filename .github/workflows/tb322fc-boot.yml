@@ -332,6 +332,10 @@ jobs:
                "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/${aid}/zip" -o boot.zip
           unzip -o boot.zip -d bootfiles
           find bootfiles -maxdepth 3 -name 'vmlinuz*' -o -maxdepth 3 -name 'initramfs*' | head
+      - name: Install dtc for packer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3 device-tree-compiler zstd
       - name: Fetch stock boot + runtime
         run: |
           set -eux
