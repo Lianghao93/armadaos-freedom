@@ -6,7 +6,7 @@ on:
       stage:
         description: "which stage to run"
         type: choice
-        options: [tools, kernel, boot, linux, probe, all]
+        options: [tools, kernel, boot, linux, probe, armadaboot, all]
         default: tools
       stock_boot:
         description: "path to the 96MiB stock boot.img inside the repo"
@@ -306,4 +306,66 @@ jobs:
         with:
           name: armada-boot-files
           path: bootfiles/**
+          if-no-files-found: error
+
+  armadaboot:
+    if: ${{ inputs.stage == 'armadaboot' }}
+    runs-on: ubuntu-24.04
+    needs: [tools]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: kshim-tools
+          path: in
+      - name: Download image /boot files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          rid=39550969566
+          aid=$(curl -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${{ github.repository }}/actions/runs/${rid}/artifacts" \
+                | jq -r '.artifacts[] | select(.name=="armada-boot-files") | .id')
+          echo "artifact=${aid}"
+          curl -sSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+               "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/${aid}/zip" -o boot.zip
+          unzip -o boot.zip -d bootfiles
+          find bootfiles -maxdepth 3 -name 'vmlinuz*' -o -maxdepth 3 -name 'initramfs*' | head
+      - name: Fetch stock boot + runtime
+        run: |
+          set -eux
+          curl -fL --retry 5 -o stock_boot.img \
+            "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/boot.img"
+          curl -fL --retry 5 -o kShimC-fast.bin \
+            "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/kShimC-fast.bin"
+          ls -la stock_boot.img kShimC-fast.bin
+      - name: Pack ArmadaOS boot entry
+        run: |
+          set -eux
+          chmod +x in/out-tools/MultiBootKernelPatcher in/out-tools/UnpackTool
+          K=$(dirname "$(find bootfiles -name 'vmlinuz-7.2.6' | head -1)")
+          echo "kernel dir: ${K}"
+          cp "${K}/vmlinuz-7.2.6" vmlinuz
+          cp "${K}/initramfs-7.2.6.img" initrd.cpio
+          cp "${K}/dtb/qcom/sm8750-lenovo-elden.dtb" elden.dtb
+          ls -la vmlinuz initrd.cpio elden.dtb
+          python3 system_files/usr/libexec/armada/kshim-build-boot.py \
+            --layout maintenance \
+            --stock-boot stock_boot.img \
+            --linux-image vmlinuz \
+            --dtb elden.dtb \
+            --initrd initrd.cpio \
+            --runtime kShimC-fast.bin \
+            --packer in/out-tools/MultiBootKernelPatcher \
+            --unpacker in/out-tools/UnpackTool \
+            --repacker in/out-tools/repack_boot_v4.py \
+            --avbtool in/out-tools/avbtool.py \
+            --bootargs "root=UUID=402b5e5a-d297-4f60-8557-8670259c662e rootflags=subvol=/root,noatime,compress=zstd:1 rw rootwait console=tty0 loglevel=7 ignore_loglevel" \
+            --out out-armada 2>&1 | tail -40
+          ls -la out-armada
+      - uses: actions/upload-artifact@v4
+        with:
+          name: boot-image-armada
+          path: out-armada/**
           if-no-files-found: error
