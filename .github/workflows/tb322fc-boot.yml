@@ -6,7 +6,7 @@ on:
       stage:
         description: "which stage to run"
         type: choice
-        options: [tools, kernel, boot, linux, probe, armadaboot, all]
+        options: [tools, kernel, boot, linux, probe, armadaboot, miniinitramfs, all]
         default: tools
       stock_boot:
         description: "path to the 96MiB stock boot.img inside the repo"
@@ -375,4 +375,40 @@ jobs:
         with:
           name: boot-image-armada
           path: out-armada/**
+          if-no-files-found: error
+
+  miniinitramfs:
+    if: ${{ inputs.stage == 'miniinitramfs' }}
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends podman
+      - name: Pull image and build minimal initramfs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          echo "$GH_TOKEN" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          IMG=ghcr.io/${{ github.repository_owner }}/armadaos-freedom:build-20261020.94a06b4-39538317230-1
+          sudo podman pull "$IMG"
+          mkdir -p out
+          sudo podman run --rm --privileged -v "$PWD/out:/out:z" "$IMG" \
+            dracut --force --no-hostonly --kver 7.2.6 --compress xz \
+            --omit "network nfs iscsi fcoe fcoe-uefi lvm dmraid multipath mdraid dash \
+                    biosdevname i18n connman network-manager rpm ostree bootchart \
+                    cifs nbd ssh-client plymouth usrmount base debug memstrack" \
+            /out/initramfs-min.img
+          ls -la out/
+          gzip -9 -c out/initramfs-min.img > out/initramfs-min.img.gz
+          ls -la out/ | tail -3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: initramfs-min
+          path: out/**
           if-no-files-found: error
