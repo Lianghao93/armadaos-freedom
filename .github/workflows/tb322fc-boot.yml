@@ -219,7 +219,7 @@ jobs:
       - name: Build minimal initramfs (static aarch64 init)
         run: |
           set -eux
-          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
           rm -rf irdir && mkdir -p irdir/dev irdir/proc irdir/sys
           aarch64-linux-gnu-gcc -static -O2 -o irdir/init .ci/tb322fc-init.c
           aarch64-linux-gnu-readelf -h irdir/init | grep -E 'Class|Machine|Type'
