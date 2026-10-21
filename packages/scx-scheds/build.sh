@@ -31,6 +31,13 @@ git checkout ${TERRA_COMMIT}
 PKG=anda/system/scx-scheds/stable
 SPEC="${PKG}/scx-scheds.spec"
 
+# fork: anda builds in its own root; the spec must pull binutils itself or ld is absent
+if ! grep -qE '^BuildRequires:[[:space:]]*binutils' "${SPEC}"; then
+  sed -i '0,/^BuildRequires:/{s/^BuildRequires:/BuildRequires: binutils\nBuildRequires:/}' "${SPEC}"
+fi
+grep -n '^BuildRequires:' "${SPEC}" | head -5
+
+
 VERSION="$(sed -n 's/^Version:[[:space:]]*//p' "${SPEC}")"
 [[ "${STEAMOS_TAG}" == "v${VERSION}.linux."* ]] || {
   echo "ERROR: ${STEAMOS_TAG} is not a SteamOS build of scx ${VERSION}"
