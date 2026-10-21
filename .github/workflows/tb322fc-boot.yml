@@ -216,30 +216,18 @@ jobs:
           cp kroot/lib/modules/7.2.6/vmlinuz vmlinuz
           cp kroot/lib/modules/7.2.6/dtb/qcom/sm8750-lenovo-elden.dtb elden.dtb
           ls -la vmlinuz elden.dtb stock/boot.img
-      - name: Build minimal initramfs
+      - name: Build minimal initramfs (static aarch64 init)
         run: |
           set -eux
-          rm -rf irdir && mkdir -p irdir/bin irdir/dev irdir/proc irdir/sys irdir/tmp
-          cp /bin/busybox irdir/bin/busybox
-          ln -sf busybox irdir/bin/sh
-          {
-            echo '#!/bin/sh'
-            echo '/bin/busybox --install -s /bin'
-            echo 'mount -t proc none /proc'
-            echo 'mount -t sysfs none /sys'
-            echo 'mount -t devtmpfs none /dev'
-            echo 'echo "=== KSHIM LINUX ALIVE ==="'
-            echo 'uname -a'
-            echo 'echo -n "compatible: "; cat /proc/device-tree/compatible; echo'
-            echo 'echo "=== /proc/partitions ==="'
-            echo 'cat /proc/partitions'
-            echo 'echo "=== by-name ==="'
-            echo 'ls -l /dev/block/by-name 2>/dev/null || echo "no by-name"'
-            echo 'echo "=== end ==="'
-            echo 'exec /bin/sh'
-          } > irdir/init
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+          rm -rf irdir && mkdir -p irdir/dev irdir/proc irdir/sys
+          aarch64-linux-gnu-gcc -static -O2 -o irdir/init .ci/tb322fc-init.c
+          aarch64-linux-gnu-readelf -h irdir/init | grep -E 'Class|Machine|Type'
+          sudo mknod irdir/dev/console c 5 1
+          sudo mknod irdir/dev/null c 1 3
+          sudo chmod 600 irdir/dev/console
+          sudo chmod 666 irdir/dev/null
           chmod 0755 irdir/init
-          head -3 irdir/init
           (cd irdir && find . | cpio -o -H newc --quiet | gzip -9) > initrd.gz
           ls -la initrd.gz
       - name: Pack maintenance-layout boot (Android + Linux)
