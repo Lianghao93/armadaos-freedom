@@ -395,7 +395,8 @@ jobs:
         run: |
           set -eux
           echo "$GH_TOKEN" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
-          IMG=ghcr.io/${{ github.repository_owner }}/armadaos-freedom:build-20261020.94a06b4-39538317230-1
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr A-Z a-z)
+          IMG=ghcr.io/${OWNER_LC}/armadaos-freedom:build-20261020.94a06b4-39538317230-1
           sudo podman pull "$IMG"
           mkdir -p out
           sudo podman run --rm --privileged -v "$PWD/out:/out:z" "$IMG" \
