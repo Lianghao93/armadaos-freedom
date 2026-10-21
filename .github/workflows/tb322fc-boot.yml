@@ -15,7 +15,7 @@ on:
 
 jobs:
   tools:
-    if: ${{ inputs.stage == 'tools' || inputs.stage == 'boot' || inputs.stage == 'linux' || inputs.stage == 'all' }}
+    if: ${{ inputs.stage == 'tools' || inputs.stage == 'boot' || inputs.stage == 'linux' || inputs.stage == 'armadaboot' || inputs.stage == 'all' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
