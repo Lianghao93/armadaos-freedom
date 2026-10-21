@@ -63,7 +63,6 @@ FROM ${NETWORKMANAGER_REF} AS networkmanager
 
 FROM ${WPA_SUPPLICANT_REF} AS wpa_supplicant
 
-FROM ${SCX_SCHEDS_REF} AS scx-scheds
 
 FROM ${JUPITER_HW_SUPPORT_REF} AS jupiter-hw-support
 
