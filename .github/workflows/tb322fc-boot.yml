@@ -352,6 +352,8 @@ jobs:
           echo "kernel dir: ${K}"
           cp "${K}/vmlinuz-7.2.6" vmlinuz
           cp "${K}/initramfs-7.2.6.img" initrd.cpio
+          gzip -9 -c initrd.cpio > initrd.gz
+          ls -la initrd.gz
           cp "${K}/dtb/qcom/sm8750-lenovo-elden.dtb" elden.dtb
           ls -la vmlinuz initrd.cpio elden.dtb
           set -o pipefail
@@ -360,7 +362,7 @@ jobs:
             --stock-boot stock_boot.img \
             --linux-image vmlinuz \
             --dtb elden.dtb \
-            --initrd initrd.cpio \
+            --initrd initrd.gz \
             --runtime kShimC-fast.bin \
             --packer in/out-tools/MultiBootKernelPatcher \
             --unpacker in/out-tools/UnpackTool \
