@@ -400,9 +400,10 @@ jobs:
           sudo podman pull "$IMG"
           mkdir -p out
           sudo podman run --rm --privileged -v "$PWD/out:/out:z" "$IMG" \
-            dracut --force --no-hostonly --kver 7.2.6 --compress xz \
+            dracut --force --no-hostonly --kver 7.2.6 --compress "xz -9 -e" \
             --omit "network network-legacy nfs iscsi fcoe fcoe-uefi lvm dmraid multipath mdraid \
-                    cifs nbd plymouth bootchart iscsi-init" \
+                    cifs nbd plymouth bootchart iscsi-init tpm2-tss pkcs11 \
+                    overlayfs resume qemu qemu-net fips crypt-gpg" \
             /out/initramfs-min.img
           sudo chown -R "$(id -u):$(id -g)" out
           ls -la out/
