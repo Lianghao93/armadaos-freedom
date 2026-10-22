@@ -229,7 +229,7 @@ jobs:
           sudo chmod 666 irdir/dev/null
           chmod 0755 irdir/init
           (cd irdir && find . | cpio -o -H newc --quiet | gzip -9) > initrd.gz
-          ls -la initrd.gz
+          ls -la initramfs-min.img
       - name: Pack maintenance-layout boot (Android + Linux)
         run: |
           set -eux
@@ -343,7 +343,9 @@ jobs:
             "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/boot.img"
           curl -fL --retry 5 -o kShimC-fast.bin \
             "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/kShimC-fast.bin"
-          ls -la stock_boot.img kShimC-fast.bin
+          curl -fL --retry 5 -o initramfs-min.img \
+            "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/initramfs-min.img"
+          ls -la stock_boot.img kShimC-fast.bin initramfs-min.img
       - name: Pack ArmadaOS boot entry
         run: |
           set -eux
@@ -351,18 +353,17 @@ jobs:
           K=$(dirname "$(find bootfiles -name 'vmlinuz-7.2.6' | head -1)")
           echo "kernel dir: ${K}"
           cp "${K}/vmlinuz-7.2.6" vmlinuz
-          cp "${K}/initramfs-7.2.6.img" initrd.cpio
-          gzip -9 -c initrd.cpio > initrd.gz
-          ls -la initrd.gz
+          cp initramfs-min.img initrd.img
+          ls -la initramfs-min.img
           cp "${K}/dtb/qcom/sm8750-lenovo-elden.dtb" elden.dtb
-          ls -la vmlinuz initrd.cpio elden.dtb
+          ls -la vmlinuz initrd.img elden.dtb
           set -o pipefail
           python3 system_files/usr/libexec/armada/kshim-build-boot.py \
             --layout maintenance \
             --stock-boot stock_boot.img \
             --linux-image vmlinuz \
             --dtb elden.dtb \
-            --initrd initrd.gz \
+            --initrd initrd.img \
             --runtime kShimC-fast.bin \
             --packer in/out-tools/MultiBootKernelPatcher \
             --unpacker in/out-tools/UnpackTool \
