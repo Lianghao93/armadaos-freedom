@@ -311,14 +311,17 @@ jobs:
   armadaboot:
     if: ${{ inputs.stage == 'armadaboot' }}
     runs-on: ubuntu-24.04
-    needs: [tools]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: kshim-tools
-          path: in
-      - name: Download image /boot files
+      - name: Download kshim-tools from pinned run
+        env:/n          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          mkdir -p in
+          curl -sSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/12355384232/zip" -o tools.zip
+          unzip -o -q tools.zip -d in
+          chmod +x in/out-tools/MultiBootKernelPatcher in/out-tools/UnpackTool
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
