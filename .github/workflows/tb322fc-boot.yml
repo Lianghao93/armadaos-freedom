@@ -401,12 +401,11 @@ jobs:
           mkdir -p out
           sudo podman run --rm --privileged -v "$PWD/out:/out:z" "$IMG" \
             dracut --force --no-hostonly --kver 7.2.6 --compress xz \
-            --omit "network nfs iscsi fcoe fcoe-uefi lvm dmraid multipath mdraid \
+            --omit "network network-legacy nfs iscsi fcoe fcoe-uefi lvm dmraid multipath mdraid \
                     cifs nbd plymouth bootchart iscsi-init" \
             /out/initramfs-min.img
+          sudo chown -R "$(id -u):$(id -g)" out
           ls -la out/
-          gzip -9 -c out/initramfs-min.img > out/initramfs-min.img.gz
-          ls -la out/ | tail -3
       - uses: actions/upload-artifact@v4
         with:
           name: initramfs-min
