@@ -345,7 +345,7 @@ jobs:
         run: |
           set -eux
           curl -fL --retry 5 -o stock_boot.img \
-            "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/boot.img"
+            "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/stub-boot.img"
           curl -fL --retry 5 -o kShimC-fast.bin \
             "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/kShimC-fast.bin"
           curl -fL --retry 5 -o initramfs-min.img \
@@ -407,8 +407,7 @@ jobs:
             --add-drivers "ufs_qcom phy_qcom_qmp_ufs" \
             --include /out/diag-hook.sh /usr/lib/dracut/hooks/pre-mount/99-kshim-diag.sh \
             --omit "network network-legacy nfs iscsi fcoe fcoe-uefi lvm dmraid multipath mdraid \
-                    cifs nbd plymouth bootchart iscsi-init tpm2-tss pkcs11 \
-                    overlayfs resume qemu qemu-net fips crypt-gpg" \
+                    cifs nbd plymouth bootchart iscsi-init" \
             /out/initramfs-min.img
           sudo chown -R "$(id -u):$(id -g)" out
           ls -la out/
