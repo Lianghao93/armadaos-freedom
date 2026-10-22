@@ -344,12 +344,14 @@ jobs:
       - name: Fetch stock boot, runtime, initramfs
         run: |
           set -eux
-          curl -fL --retry 5 -o stock_boot.img \
-            "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/stub-boot.img"
+          curl -fL --retry 5 -o stock_full.img \
+            "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/boot.img"
           curl -fL --retry 5 -o kShimC-fast.bin \
             "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/kShimC-fast.bin"
           curl -fL --retry 5 -o initramfs-min.img \
             "https://github.com/Lianghao93/armadaos-freedom/releases/download/boot-assets/initramfs-min.img"
+          python3 .ci/make_stub.py stock_full.img stock_boot.img
+          rm -f stock_full.img
           ls -la stock_boot.img kShimC-fast.bin initramfs-min.img
       - name: Pack ArmadaOS boot entry
         run: |
@@ -403,7 +405,7 @@ jobs:
           cp .ci/diag-hook.sh out/diag-hook.sh
           chmod 0755 out/diag-hook.sh
           sudo podman run --rm --privileged -v "$PWD/out:/out:z" "$IMG" \
-            dracut --force --no-hostonly --kver 7.2.6 --compress "xz -9 -e" \
+            dracut --force --no-hostonly --kver 7.2.6 --compress gzip \
             --add-drivers "ufs_qcom phy_qcom_qmp_ufs" \
             --include /out/diag-hook.sh /usr/lib/dracut/hooks/pre-mount/99-kshim-diag.sh \
             --omit "network network-legacy nfs iscsi fcoe fcoe-uefi lvm dmraid multipath mdraid \
