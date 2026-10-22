@@ -31,8 +31,7 @@ def main(src, dst):
     struct.pack_into("<Q", header, 16, STUB_SIZE)          # image_size
     stub = bytes(header) + b"\x00" * (STUB_SIZE - 64)
 
-    out = bytearray(len(data))
-    out[:PAGE] = data[:PAGE]
+    out = bytearray(data)   # keep vbmeta blob and AVB footer untouched
     struct.pack_into("<I", out, 8, STUB_SIZE)    # kernel_size
     struct.pack_into("<I", out, 12, 0)           # ramdisk_size
     struct.pack_into("<I", out, 28, 0)           # signature_size
