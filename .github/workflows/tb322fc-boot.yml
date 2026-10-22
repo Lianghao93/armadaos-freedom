@@ -372,7 +372,7 @@ jobs:
             --repacker in/out-tools/repack_boot_v4.py \
             --avbtool in/out-tools/avbtool.py \
             --bootargs "root=UUID=402b5e5a-d297-4f60-8557-8670259c662e rootflags=subvol=/root,noatime,compress=zstd:1 rw rootwait console=tty0 loglevel=7 ignore_loglevel" \
-            --out out-armada 2>&1 | tail -40
+            --out out-armada 2>&1 | tail -200
           ls -la out-armada
       - uses: actions/upload-artifact@v4
         with:
