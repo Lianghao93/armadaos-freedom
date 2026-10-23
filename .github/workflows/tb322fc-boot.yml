@@ -362,6 +362,7 @@ jobs:
           ls -la vmlinuz elden.dtb initramfs-min.img
           python3 system_files/usr/libexec/armada/kshim-build-boot.py \
             --layout maintenance \
+            --default-entry maintenance \
             --stock-boot stock_boot.img \
             --linux-image vmlinuz \
             --dtb elden.dtb \
@@ -384,7 +385,7 @@ jobs:
     if: ${{ inputs.stage == 'miniinitramfs' }}
     runs-on: ubuntu-24.04-arm
     permissions:
-      contents: read
+      contents: write
       packages: read
     steps:
       - uses: actions/checkout@v4
@@ -414,6 +415,23 @@ jobs:
             /out/initramfs-min.img
           sudo chown -R "$(id -u):$(id -g)" out
           ls -la out/
+      - name: Publish initramfs to boot-assets release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          api="https://api.github.com/repos/${{ github.repository }}"
+          rid=$(curl -sS -H "Authorization: Bearer ${GH_TOKEN}" "${api}/releases/tags/boot-assets" | jq -r .id)
+          test "${rid}" != "null"
+          for aid in $(curl -sS -H "Authorization: Bearer ${GH_TOKEN}" "${api}/releases/${rid}/assets?per_page=100" \
+                       | jq -r '.[] | select(.name=="initramfs-min.img") | .id'); do
+            curl -sS -X DELETE -H "Authorization: Bearer ${GH_TOKEN}" "${api}/releases/assets/${aid}"
+          done
+          curl -sS -X POST -H "Authorization: Bearer ${GH_TOKEN}" -H "Content-Type: application/octet-stream" \
+            --data-binary @out/initramfs-min.img \
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/${rid}/assets?name=initramfs-min.img" \
+            -o /tmp/up.json -w 'upload http=%{http_code}\n'
+          jq -r '.state // .message // empty' /tmp/up.json
       - uses: actions/upload-artifact@v4
         with:
           name: initramfs-min
