@@ -408,6 +408,7 @@ jobs:
             dracut --force --no-hostonly --kver 7.2.6 --compress gzip \
             --add-drivers "ufs_qcom phy_qcom_qmp_ufs" \
             --include /out/diag-hook.sh /usr/lib/dracut/hooks/pre-mount/99-kshim-diag.sh \
+            --include /out/diag-hook.sh /usr/lib/dracut/hooks/initqueue/timeout/99-kshim-diag.sh \
             --omit "network network-legacy nfs iscsi fcoe fcoe-uefi lvm dmraid multipath mdraid \
                     cifs nbd plymouth bootchart iscsi-init" \
             /out/initramfs-min.img
